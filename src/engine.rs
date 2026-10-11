@@ -2579,7 +2579,11 @@ fn transition(
     if ids.is_empty() {
         return Err(SdError::usage("at least one seed id is required"));
     }
-    let snap = b.snapshot(None)?;
+    let snap = if b.scoped_reads() {
+        b.snapshot_items(&ids)?
+    } else {
+        b.snapshot(None)?
+    };
     let (mut writes, mut done, mut skipped, mut comments) = (vec![], vec![], vec![], vec![]);
     for id in &ids {
         let before = snap.get(id)?;

@@ -130,6 +130,125 @@ fn comment_list_preserves_an_unavailable_indexed_read() {
 }
 
 #[test]
+fn status_transitions_read_named_items_and_keep_atomic_comments() {
+    let (mut reader, id, other, _) = comment_reader();
+    let unrelated = reader
+        .inner
+        .snapshot(None)
+        .unwrap()
+        .get(&other)
+        .unwrap()
+        .clone();
+    let (done, _, tx) = engine::defer_with(
+        &mut reader,
+        &ctx(6),
+        &[id.clone(), id.clone()],
+        None,
+        Some("vendor wait"),
+    )
+    .unwrap();
+    assert_eq!(done.len(), 1);
+    let after = reader.inner.snapshot(None).unwrap();
+    assert_eq!(after.get(&id).unwrap().status, "deferred");
+    assert_eq!(after.comments_on(&id).last().unwrap().index, 3);
+    assert_eq!(after.comments_on(&id).last().unwrap().text, "vendor wait");
+    assert_eq!(after.get(&other).unwrap(), &unrelated);
+    let before = reader.inner.snapshot(Some(tx - 1)).unwrap();
+    assert_eq!(before.get(&id).unwrap().status, "open");
+    assert_eq!(before.comments_on(&id).len(), 2);
+    engine::undefer_with(
+        &mut reader,
+        &ctx(7),
+        std::slice::from_ref(&id),
+        Some("ready"),
+    )
+    .unwrap();
+    engine::close(
+        &mut reader.inner,
+        &ctx(8),
+        std::slice::from_ref(&id),
+        Some("done"),
+        false,
+    )
+    .unwrap();
+    engine::reopen(
+        &mut reader,
+        &ctx(9),
+        std::slice::from_ref(&id),
+        Some("again"),
+    )
+    .unwrap();
+    assert_eq!(
+        *reader.items.borrow(),
+        vec![vec![id.clone()], vec![id.clone()], vec![id]]
+    );
+    assert!(
+        reader.snapshots.borrow().is_empty(),
+        "status transitions read the whole board"
+    );
+}
+
+#[test]
+fn status_transitions_refuse_partial_or_unavailable_reads_without_writes() {
+    let (mut reader, id, _, _) = comment_reader();
+    let tx = reader.inner.snapshot(None).unwrap().tx;
+    assert_eq!(
+        engine::defer_with(
+            &mut reader,
+            &ctx(6),
+            &[id.clone(), "absent".into()],
+            None,
+            Some("wait")
+        )
+        .unwrap_err()
+        .kind,
+        ErrorKind::NotFound
+    );
+    assert_eq!(reader.inner.snapshot(None).unwrap().tx, tx);
+    reader.fail_items = true;
+    assert_eq!(
+        engine::defer_with(
+            &mut reader,
+            &ctx(7),
+            std::slice::from_ref(&id),
+            None,
+            Some("wait")
+        )
+        .unwrap_err()
+        .message,
+        "item read unavailable"
+    );
+    assert_eq!(reader.inner.snapshot(None).unwrap().tx, tx);
+    assert!(
+        reader.snapshots.borrow().is_empty(),
+        "failed targeted read fell back to a board read"
+    );
+}
+
+#[test]
+fn status_transitions_keep_unindexed_snapshot_and_skip_semantics() {
+    let (mut reader, id, _, _) = comment_reader();
+    reader.indexed = false;
+    let before = reader.inner.snapshot(None).unwrap().tx;
+    let (done, skipped, tx) = engine::undefer_with(
+        &mut reader,
+        &ctx(6),
+        std::slice::from_ref(&id),
+        Some("unused"),
+    )
+    .unwrap();
+    assert!(done.is_empty());
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(tx, before);
+    assert_eq!(*reader.snapshots.borrow(), vec![None]);
+    assert!(reader.items.borrow().is_empty());
+    assert_eq!(
+        reader.inner.snapshot(None).unwrap().comments_on(&id).len(),
+        2
+    );
+}
+
+#[test]
 fn item_snapshot_matches_full_state_without_unrelated_seeds() {
     let mut b = backend();
     let first = mk(&mut b, "first", 1);

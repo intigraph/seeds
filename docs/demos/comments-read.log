@@ -1,0 +1,20 @@
+Script started on 2026-10-11 11:45:56-04:00 [COMMAND="bash docs/demos/comments-read.sh" <not executed on terminal>]
+BEFORE: base 0d44421 comment_list route + regression fixture
+cargo test --test core comment_list_
+running 3 tests
+test comment_list_reads_only_the_named_current_item ... FAILED
+test comment_list_keeps_pinned_and_unindexed_snapshot_semantics ... ok
+test comment_list_preserves_an_unavailable_indexed_read ... FAILED
+assertion `left == right` failed
+  left: []
+ right: [["sd-v5z"]]
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.09s
+AFTER: scoped current-item route; same fixture and command
+cargo test --test core comment_list_
+running 3 tests
+test comment_list_reads_only_the_named_current_item ... ok
+test comment_list_preserves_an_unavailable_indexed_read ... ok
+test comment_list_keeps_pinned_and_unindexed_snapshot_semantics ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.07s
+
+Script done on 2026-10-11 11:46:07-04:00 [COMMAND_EXIT_CODE="0"]

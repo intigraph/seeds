@@ -424,6 +424,12 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String]) -> Vec<Stri
             });
         }
     }
+    for id in all_ids.iter().map(String::as_str).chain(["nope"]) {
+        out.push(format!(
+            "comments {id:?} {:?}",
+            engine::comment_list(b, id, None)
+        ));
+    }
     let mut shows: Vec<Vec<String>> = all_ids.iter().map(|id| vec![id.clone()]).collect();
     shows.push(ids(&[n[3].as_str(), n[1].as_str(), n[EPH].as_str()]));
     shows.push(ids(&[n[0].as_str(), "nope"]));

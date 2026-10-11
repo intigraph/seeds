@@ -3697,7 +3697,13 @@ pub fn comment_add(
 
 /// `sd comments list <id>`, as of `at`.
 pub fn comment_list(b: &dyn Backend, id: &str, at: Option<u64>) -> Result<Vec<Comment>> {
-    let snap = b.snapshot(at)?;
+    // Exact-ID comment reads need neither unrelated seeds nor their comments.
+    // Keep historical pins on the transaction snapshot, as `show` does.
+    let snap = if scoped(b, at) {
+        b.snapshot_items(&[id.to_string()])?
+    } else {
+        b.snapshot(at)?
+    };
     snap.get(id)?;
     Ok(snap.comments_on(id).into_iter().cloned().collect())
 }

@@ -11,5 +11,9 @@ sd comments list sd-a3f --json
 else the actor. Comments are append-only and numbered 1, 2, 3 per seed; the
 number is the comment's `id`.
 
+Current remote `comments list` reads only the named seed and its comments,
+including its ephemeral graph. Historical `--at` reads retain transaction
+snapshot semantics. A missing item or an unavailable read remains an error.
+
 **`--json`**: one comment (add) or an array (list), each `{id, issue_id,
 author, text, created_at}`; `add` also carries `tx`.

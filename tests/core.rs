@@ -26,6 +26,109 @@ fn ctx(n: u32) -> Ctx {
     }
 }
 
+struct CommentReads {
+    inner: QuipuBackend,
+    indexed: bool,
+    fail_items: bool,
+    snapshots: std::cell::RefCell<Vec<Option<u64>>>,
+    items: std::cell::RefCell<Vec<Vec<String>>>,
+}
+
+impl Backend for CommentReads {
+    fn snapshot(&self, at: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.snapshots.borrow_mut().push(at);
+        self.inner.snapshot(at)
+    }
+    fn scoped_reads(&self) -> bool {
+        self.indexed
+    }
+    fn snapshot_items(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.items.borrow_mut().push(ids.to_vec());
+        if self.fail_items {
+            return Err(seeds::error::SdError::failed("item read unavailable"));
+        }
+        self.inner.snapshot_items(ids)
+    }
+    fn ready_ids(&self, at: Option<u64>) -> seeds::error::Result<Vec<String>> {
+        self.inner.ready_ids(at)
+    }
+    fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+        self.inner.claims_of(id)
+    }
+    fn commit(&mut self, batch: &WriteBatch, ctx: &Ctx) -> seeds::error::Result<u64> {
+        self.inner.commit(batch, ctx)
+    }
+}
+
+fn comment_reader() -> (CommentReads, String, String, u64) {
+    let mut inner = backend();
+    let id = mk(&mut inner, "named item", 1);
+    let other = mk(&mut inner, "unrelated item", 2);
+    let (_, first_tx) =
+        engine::comment_add(&mut inner, &ctx(3), &id, "first", Some("alice")).unwrap();
+    engine::comment_add(&mut inner, &ctx(4), &id, "second", Some("bob")).unwrap();
+    engine::comment_add(&mut inner, &ctx(5), &other, "unrelated", None).unwrap();
+    (
+        CommentReads {
+            inner,
+            indexed: true,
+            fail_items: false,
+            snapshots: Default::default(),
+            items: Default::default(),
+        },
+        id,
+        other,
+        first_tx,
+    )
+}
+
+#[test]
+fn comment_list_reads_only_the_named_current_item() {
+    let (reader, id, other, _) = comment_reader();
+    let expected = engine::comment_list(&reader.inner, &id, None).unwrap();
+    assert_eq!(engine::comment_list(&reader, &id, None).unwrap(), expected);
+    assert_eq!(*reader.items.borrow(), vec![vec![id]]);
+    assert!(
+        reader.snapshots.borrow().is_empty(),
+        "current comments read the whole board"
+    );
+    assert_eq!(
+        engine::comment_list(&reader, &other, None).unwrap()[0].text,
+        "unrelated"
+    );
+    assert_eq!(
+        engine::comment_list(&reader, "absent", None)
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
+    assert!(reader.snapshots.borrow().is_empty());
+}
+
+#[test]
+fn comment_list_keeps_pinned_and_unindexed_snapshot_semantics() {
+    let (mut reader, id, _, first_tx) = comment_reader();
+    let historical = engine::comment_list(&reader, &id, Some(first_tx)).unwrap();
+    assert_eq!(historical.len(), 1);
+    assert_eq!(historical[0].text, "first");
+    assert_eq!(*reader.snapshots.borrow(), vec![Some(first_tx)]);
+    assert!(reader.items.borrow().is_empty());
+    reader.indexed = false;
+    assert_eq!(engine::comment_list(&reader, &id, None).unwrap().len(), 2);
+    assert_eq!(*reader.snapshots.borrow(), vec![Some(first_tx), None]);
+    assert!(reader.items.borrow().is_empty());
+}
+
+#[test]
+fn comment_list_preserves_an_unavailable_indexed_read() {
+    let (mut reader, id, _, _) = comment_reader();
+    reader.fail_items = true;
+    let error = engine::comment_list(&reader, &id, None).unwrap_err();
+    assert_eq!(error.message, "item read unavailable");
+    assert_eq!(*reader.items.borrow(), vec![vec![id]]);
+    assert!(reader.snapshots.borrow().is_empty());
+}
+
 #[test]
 fn item_snapshot_matches_full_state_without_unrelated_seeds() {
     let mut b = backend();

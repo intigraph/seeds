@@ -23,7 +23,7 @@ single fact can be read as of any transaction.
    beads store to do (see [The bd intent map](intent-map.md)), three go away
    entirely when the store is a graph.
 3. **Ledgers that share cleanly.** Two teams can exchange and reconcile work as
-   qpacks (see [Sharing a ledger](qpack-sharing.md)).
+   pendants (see [Sharing a ledger](qpack-sharing.md)).
 
 ## Design rules
 

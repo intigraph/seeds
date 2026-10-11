@@ -34,8 +34,8 @@ name comes from the counting board: a *quipucamayoc* moved seeds across a
 - **No commit step, no server to babysit.** The transaction id is the cursor;
   there is no dirty state, no garbage collection and no SQL server lifecycle.
 - **Share a ledger like a package.** A project is one named graph, and a quipu
-  qpack carries it and its shapes to another team (seeds-side sharing is not
-  built yet).
+  pendant carries it and its shapes to another team. Use `sd export` and
+  `sd import`; remote export is unpinned (see [Storage modes](docs/book/src/storage-modes.md)).
 
 The full case, and exactly what it is and is not:
 [Introduction](docs/book/src/introduction.md).
@@ -48,7 +48,7 @@ attached to each [GitHub release](https://github.com/scbrown/seeds/releases)
 (tags `seeds-ai-v<version>`), with a `SHA256SUMS.txt`.
 
 ```bash
-V=seeds-ai-v0.1.3 T=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin
+V=seeds-ai-v0.2.3 T=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin
 curl -fsSLO "https://github.com/scbrown/seeds/releases/download/$V/sd-$V-$T.tar.gz"
 curl -fsSLO "https://github.com/scbrown/seeds/releases/download/$V/SHA256SUMS.txt"
 sha256sum --ignore-missing -c SHA256SUMS.txt     # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS.txt
@@ -69,7 +69,7 @@ sd --version
 ```
 
 ```text
-sd 0.1.3 (seeds)
+sd 0.2.3 (seeds)
 ```
 
 **Already have `sd`?** [chmln/sd](https://github.com/chmln/sd), the popular

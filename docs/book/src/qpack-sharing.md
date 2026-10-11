@@ -1,52 +1,38 @@
-# Sharing a ledger as a qpack
+# Sharing a ledger as a pendant
 
-A project is one named graph, and that graph **is** the ledger. quipu already
-knows how to package a graph for another team as a **qpack**, so sharing work
-between teams is the same operation as sharing any other knowledge.
+A project is one named graph, and that graph is the ledger. Seeds exports it
+as a Quipu **pendant**, a directory of share files, and imports another pendant
+into the configured store.
 
-## Full share
+## Export and import
 
-A qpack carries:
+```bash
+sd export --to ledger-pendant
+sd import ledger-pendant
+```
 
-- `manifest.ttl`: what is in the pack and who produced it;
-- `payload.nq`: the graph as RDF canonicalised with RDFC-1.0, whose sha256 is
-  the ledger's identity;
-- `shapes.ttl`: the shapes the data conforms to.
+The export carries `export.nt` (the ledger), `shapes.ttl` (its constraints),
+`manifest.json` and `manifest.ttl` (producer, transaction and hashes), and
+`.gitattributes` for Git merging. Seeds exports data and shapes; its readiness
+logic remains in seeds. Quipu can separately carry registered stored queries
+in `queries.ttl`; that does not make seeds' ready query a registered query.
 
-The standard share carries data and shapes only, **not** stored queries.
-Queries travel in quipu's older SQLite pack (`quipu pack --queries`) and in
-the full reconstruction share. So for a recipient to get the definition of
-"ready" along with the data, seeds' ready query has to be shipped as a camayoc
-stored query installed separately, or quipu's standard share has to learn to
-carry queries.
+A seeds pendant is marked `destination: internal`: no outward identifier
+scrub ran. Export is not permission to publish private comments or internal
+names. Review what leaves before sharing it outside its original scope.
 
-## Incremental share
+## Reconcile a repository ledger
 
-A delta is a SPARQL update bound to its parent's hash. A chain of deltas is a
-hash chain of ledger updates: the equivalent of a push, with each step
-verifiable against the one before.
+Configure `[pendant] dir` to keep the ledger beside the code. Every command
+reconciles the working store with that directory. When both changed since
+last matching, seeds refuses to choose a side silently. An explicit
+`sd import <dir> --prefer pendant|store` resolves that choice;
+`--replace` instead makes the store match the pendant, removing absent seeds.
+See [Storage modes](storage-modes.md) for the configuration, manifest handling
+and the three-way merge rules.
 
-## What leaves, and what gets in
-
-- **Outbound**, a scrub step decides what leaves: private comments and
-  internal names stay home. Signing names the producer.
-- **Inbound**, a term from a vocabulary the recipient does not know is
-  quarantined rather than silently accepted.
-
-## Reconciling two ledgers
-
-When two teams have both changed the same work, a shape-aware three-way merge
-reconciles them:
-
-- **functional** predicates (status, assignee) cannot hold two values, so a
-  conflict escalates to a person;
-- **multi-valued** predicates (labels, dependencies, comments) take the union.
-
-That replaces a database-level sync or merge. One known limit: if the two
-sides minted different IRIs for the same item, the merge cannot see it.
-
-## Status
-
-Nothing in this chapter is implemented in seeds yet. The qpack machinery lives
-in quipu; seeds' job is to keep one project in one named graph so the
-machinery applies without change.
+The local ledger can retain its history while the exported pendant contains
+current facts. A remote export acquires unpinned current facts: it refuses
+`export --at`, and the manifest transaction belongs to the local scratch
+producer, not a historical remote snapshot. Do not use it as a cross-team pin.
+Historical work-item reads such as `show --at` are a separate capability.

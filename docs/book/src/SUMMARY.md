@@ -11,7 +11,7 @@
   - [Storage modes](storage-modes.md)
   - [WebAssembly](wasm.md)
   - [Pinning: `--at <tx>`](pinning.md)
-  - [Sharing a ledger as a qpack](qpack-sharing.md)
+  - [Sharing a ledger as a pendant](qpack-sharing.md)
 - [The verbs](verbs/index.md)
   - [Cutover JSONL exchange](verbs/cutover.md)
   - [init](verbs/init.md)

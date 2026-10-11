@@ -38,7 +38,7 @@ is what a work item is: something in motion that ends up in the record.
   (camayoc's governance constraints plus the tracker's own), so a seed with an unknown status or a dependency on
   nothing is refused at the door. See [The storage model](storage.md).
 - **Share a ledger like a package.** A project's graph, its shapes and the
-  queries that define "ready" travel together as a qpack.
+  queries that define "ready" can travel as a pendant with separately registered stored queries.
   See [Sharing a ledger](qpack-sharing.md).
 
 ## Where it fits

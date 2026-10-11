@@ -30,7 +30,7 @@ current. That is a fact-level pin.
 
 ## A pin that crosses teams
 
-When a ledger is shared as a qpack (see [Sharing a ledger](qpack-sharing.md)),
+When a ledger is shared as a pendant (see [Sharing a ledger](qpack-sharing.md)),
 a pinned reference is three things:
 
 - the payload hash of the shared ledger;
@@ -48,5 +48,5 @@ A write with `--at` is refused (exit 2): a write always applies to the current
 state. `tests/core.rs` (`at_pins_a_seed_to_an_earlier_transaction`) and
 `tests/cli.rs` run the demo above.
 
-The cross-team pin (payload hash plus transaction plus IRI) depends on qpack
-sharing and is not built yet.
+The cross-team pin (payload hash plus transaction plus IRI) requires a verified source snapshot receipt; current remote pendant export
+is unpinned and cannot supply that receipt.

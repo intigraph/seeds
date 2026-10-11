@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.3] - 2026-10-11
+
+### Fixed
+
+- Scope current comment reads to the named item (#123) ([6b2bfc2](https://github.com/scbrown/seeds/commit/6b2bfc2ee0a62b0e0f721103a23a5e8b30bfc5cd))
+
 ## [0.2.2] - 2026-10-10
 
 ### Fixed

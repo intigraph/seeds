@@ -203,7 +203,8 @@ for mode in ["refused", "versions", "truncated", "missing", "recreated"]:
                 assert "truncated" in r["stderr"], r
             if mode == "recreated":
                 assert "continuous version coverage" in r["stderr"], r
-                assert not r["stdout"], r
+                assert "error" in json.loads(r["stdout"]), r
+                assert "versions" not in json.loads(r["stdout"]), r
 print(
     "PASS: exact historical versions, unrelated growth invariance, refusal/truncation/missing and every request scoped"
 )

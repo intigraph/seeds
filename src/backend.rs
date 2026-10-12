@@ -302,6 +302,14 @@ pub trait Backend {
         self.snapshot_items(ids)
     }
 
+    /// One exact seed as of `at`, without comments or unrelated seeds.
+    /// Local backends may retain their inexpensive complete snapshot. Remote
+    /// implementations must scope every historical read as well as the current
+    /// read; history must never hydrate the whole board before a refusal.
+    fn snapshot_seed_at(&self, _id: &str, at: Option<u64>) -> Result<Snapshot> {
+        self.snapshot(at)
+    }
+
     /// The current state of every seed that may match `q`: a SUPERSET of the
     /// seeds that do (the caller applies its exact filter again), never a
     /// subset. Comments are not guaranteed. The default is the whole

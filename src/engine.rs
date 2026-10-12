@@ -1536,7 +1536,7 @@ pub struct HistoryEntry {
 
 /// The seed's revision as of `tx`, or 0 if it did not exist yet.
 fn revision_at(b: &dyn Backend, id: &str, tx: u64) -> Result<u64> {
-    Ok(b.snapshot(Some(tx))?
+    Ok(b.snapshot_seed_at(id, Some(tx))?
         .seeds
         .get(id)
         .map_or(0, |s| s.revision))
@@ -1569,13 +1569,13 @@ fn first_tx_after(b: &dyn Backend, id: &str, after: u64, mut lo: u64) -> Result<
 /// transaction that wrote it and what changed. This is the seed's FACT
 /// history in quipu (what `--at` reads), not br's local backup files.
 pub fn history(b: &dyn Backend, id: &str) -> Result<Vec<HistoryEntry>> {
-    let current = b.snapshot(None)?.get(id)?.clone();
+    let current = b.snapshot_seed_at(id, None)?.get(id)?.clone();
     let claims = b.claims_of(id)?;
     let mut out: Vec<HistoryEntry> = Vec::new();
     let (mut after, mut lo) = (0u64, 1u64);
     while after < current.revision {
         let tx = first_tx_after(b, id, after, lo)?;
-        let snap = b.snapshot(Some(tx))?;
+        let snap = b.snapshot_seed_at(id, Some(tx))?;
         let Some(seed) = snap.seeds.get(id).cloned() else {
             break;
         };
@@ -1599,6 +1599,17 @@ pub fn history(b: &dyn Backend, id: &str) -> Result<Vec<HistoryEntry>> {
             changes,
             claims: claimed,
         });
+    }
+    // A disappearance/recreation can break the monotonic revision assumption
+    // used by galloping. Refuse an observed gap or a stale terminal version
+    // instead of publishing a partial history as every version.
+    if out.first().is_none_or(|entry| entry.seed.revision != 1)
+        || out
+            .windows(2)
+            .any(|pair| pair[1].seed.revision != pair[0].seed.revision + 1)
+        || out.last().is_none_or(|entry| entry.seed != current)
+    {
+        return Err(SdError::failed("history cannot prove continuous version coverage; revision gap or stale terminal version"));
     }
     Ok(out)
 }

@@ -2118,6 +2118,53 @@ fn history_finds_the_exact_tx_of_every_version_amid_other_writes() {
     mk(&mut b, "after", 10);
 
     let h = engine::history(&b, &x).unwrap();
+    // Every history read must use the exact-item seam, even revision probes.
+    // A whole-snapshot fallback fails this control immediately.
+    struct ScopedHistory<'a> {
+        inner: &'a QuipuBackend,
+        expected: &'a str,
+    }
+    impl seeds::backend::Backend for ScopedHistory<'_> {
+        fn snapshot(&self, _: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+            panic!("history requested the whole board");
+        }
+        fn snapshot_seed_at(
+            &self,
+            id: &str,
+            at: Option<u64>,
+        ) -> seeds::error::Result<seeds::model::Snapshot> {
+            assert_eq!(id, self.expected);
+            let mut snap = self.inner.snapshot(at)?;
+            snap.seeds.retain(|key, _| key == id);
+            snap.comments.clear();
+            Ok(snap)
+        }
+        fn ready_ids(&self, _: Option<u64>) -> seeds::error::Result<Vec<String>> {
+            unreachable!()
+        }
+        fn commit(&mut self, _: &seeds::backend::WriteBatch, _: &Ctx) -> seeds::error::Result<u64> {
+            unreachable!()
+        }
+        fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+            assert_eq!(id, self.expected);
+            self.inner.claims_of(id)
+        }
+    }
+    let scoped = engine::history(
+        &ScopedHistory {
+            inner: &b,
+            expected: &x,
+        },
+        &x,
+    )
+    .unwrap();
+    assert_eq!(h.len(), scoped.len());
+    for (full, exact) in h.iter().zip(&scoped) {
+        assert_eq!(full.tx, exact.tx);
+        assert_eq!(full.seed, exact.seed);
+        assert_eq!(full.changes, exact.changes);
+        assert_eq!(full.claims, exact.claims);
+    }
     assert_eq!(
         h.iter().map(|e| e.tx).collect::<Vec<_>>(),
         [t_create, t_update, t_close],

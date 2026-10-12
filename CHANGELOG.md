@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] - 2026-10-11
+
+### Fixed
+
+- Scope status transition reads to requested items (#125) ([f737d25](https://github.com/scbrown/seeds/commit/f737d25a206ac6af351f005191cb88716e643303))
+
 ## [0.2.3] - 2026-10-11
 
 ### Fixed

@@ -1055,6 +1055,22 @@ impl Backend for RemoteBackend {
 
     /// The named seeds and their comments: the seeds by IRI, the comments
     /// found by a bound `schema:parentItem` pattern per seed, in both graphs.
+    fn snapshot_seed_at(&self, id: &str, at: Option<u64>) -> Result<Snapshot> {
+        let subject = vocab::item_iri(id);
+        let mut graphs = Vec::new();
+        for graph in self.both_graphs() {
+            let mut facts = Facts::new();
+            // A single bound subject per graph. Truncation/timeout refuses;
+            // neither a historical failure nor an absent item falls back to
+            // graph_facts or a current-state answer.
+            self.read_subjects(&graph, &[&subject], at, &mut facts)?;
+            graphs.push(facts);
+        }
+        let mut snapshot = Snapshot::from_graphs(&graphs[0], &graphs[1]);
+        snapshot.tx = at.unwrap_or(0);
+        Ok(snapshot)
+    }
+
     fn snapshot_items(&self, ids: &[String]) -> Result<Snapshot> {
         let items: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
         let mut subjects = items.clone();

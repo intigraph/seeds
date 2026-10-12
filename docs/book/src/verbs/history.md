@@ -18,7 +18,13 @@ sd show sd-a3f --at 12       # read any one version in full
 - Works against a local store and a quipu server alike. A quipu server
   reports no head transaction and its writes report none either
   (aegis-xajsgn), so history finds each version by searching `--at` reads,
-  a handful of reads per version.
+  a handful of reads per version. Each remote read binds the exact item in
+  both project graphs; unrelated items and comments are never hydrated.
+  A historical read refused by the server (including attached-store transaction
+  ambiguity) remains a refusal, with no current-state or whole-board fallback.
+- A detected revision gap or terminal version differing from the current item
+  refuses the result instead of returning a partial version list. This can
+  occur with deletion/recreation or imported revision sequences.
 - `--at` does not apply: history is every version.
 
 **`--json`**: `{meaning, id, versions: [<seed object> + tx + changes]}`.

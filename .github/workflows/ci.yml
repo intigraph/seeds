@@ -32,6 +32,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Historical reads stay scoped under unrelated board growth
+        run: |
+          cargo build --locked --bin sd
+          python3 tests/history_wire.py
       # The core without the CLI or SHACL (the feature set the wasm build uses),
       # natively: exercises the non-SHACL validation path.
       - run: cargo test --no-default-features

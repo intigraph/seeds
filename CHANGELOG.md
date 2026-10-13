@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-10-13
+
+### Fixed
+
+- *(reads)* Distinguish missing caller from SDK producer (#130) ([1e56ca5](https://github.com/scbrown/seeds/commit/1e56ca5b7b1bbc90874043e693fc67d7b481132d))
+
 ## [0.2.5] - 2026-10-12
 
 ### Documentation

@@ -175,6 +175,9 @@ pub fn read_headers_from(
 
 /// Apply read metadata only. Writer provenance/signatures use `apply` unchanged.
 pub fn apply_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
+    // Preserve the writer's legacy first-request snapshot, even when that
+    // request is a read. Read declarations remain separate from that snapshot.
+    let _ = headers();
     for (name, value) in read_headers_from(
         |k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()),
         hostname,
@@ -217,6 +220,38 @@ mod tests {
 
     fn expect(pairs: &[(&'static str, &str)]) -> BTreeMap<&'static str, String> {
         pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
+    }
+
+    #[test]
+    fn read_initializes_existing_write_snapshot() {
+        const CHILD: &str = "SEEDS_WRITE_SNAPSHOT_CONTROL";
+        if std::env::var(CHILD).as_deref() == Ok("1") {
+            // The isolated child owns its environment; no supervisor or other
+            // parallel test process is changed. Builders send no network traffic.
+            let read = apply_read(ureq::get("http://example.test/health"), "health");
+            assert_eq!(read.header("X-Quipu-Agent"), Some("before"));
+            std::env::set_var("QUIPU_AGENT", "after");
+            let write = apply(ureq::post("http://example.test/update"));
+            assert_eq!(write.header("X-Quipu-Agent"), Some("before"));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native::provenance::tests::read_initializes_existing_write_snapshot",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .env("QUIPU_AGENT", "before")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

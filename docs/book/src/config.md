@@ -74,7 +74,7 @@ or `[quipu] token_file`); reads send none.
 
 ### Write provenance
 
-Every request to the server carries `X-Quipu-Client: seeds` and up to five
+Every write request to the server carries `X-Quipu-Client: seeds` and up to five
 provenance headers, filled from the environment, never typed:
 
 | header            | first of                                                                  |

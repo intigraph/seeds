@@ -150,6 +150,10 @@ fn quipu_request(req: ureq::Request) -> ureq::Request {
     super::provenance::apply(req.set("X-Quipu-Client", "seeds"))
 }
 
+fn quipu_read_request(req: ureq::Request, operation: &str) -> ureq::Request {
+    super::provenance::apply_read(req.set("X-Quipu-Client", "seeds"), operation)
+}
+
 fn transport(url: &str, e: &ureq::Transport) -> SdError {
     SdError::new(
         ErrorKind::Unreachable,
@@ -253,7 +257,7 @@ impl RemoteBackend {
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
         };
-        match quipu_request(b.agent.get(&format!("{}/health", b.base))).call() {
+        match quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health").call() {
             Ok(_) => Ok(b),
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
@@ -301,7 +305,13 @@ impl RemoteBackend {
         auth: bool,
     ) -> std::result::Result<String, (bool, SdError)> {
         let url = format!("{}{path}", self.base);
-        let mut req = quipu_request(self.agent.post(&url))
+        let request = self.agent.post(&url);
+        let request = if path == "/query" && !auth {
+            quipu_read_request(request, "query")
+        } else {
+            quipu_request(request)
+        };
+        let mut req = request
             .set("Content-Type", content_type)
             .set("Accept", "application/sparql-results+json");
         if auth {
@@ -844,7 +854,7 @@ impl RemoteBackend {
     /// The server's registered graph IRIs, or `None` if it would not say (an
     /// older server, or any failure): then every graph is created, as before.
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
-        let text = quipu_request(self.agent.get(&format!("{}/graphs", self.base)))
+        let text = quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
             .call()
             .ok()?
             .into_string()
@@ -1779,7 +1789,7 @@ mod tests {
 
     // aegis-1jh5en: every request seeds sends to quipu (the health check,
     // the graph listing, a signed-or-bearer POST and a bearer-only POST)
-    // carries the client label and this process's write provenance.
+    // carries the client label and the appropriate read/write declarations.
     #[test]
     fn every_quipu_request_carries_the_provenance_headers() {
         let (base, seen) = recording_server();
@@ -1818,6 +1828,25 @@ mod tests {
             );
         }
         for (line, headers) in &requests {
+            let operation = if line.starts_with("GET /health") {
+                Some("health")
+            } else if line.starts_with("GET /graphs") {
+                Some("graphs")
+            } else {
+                None
+            };
+            let read_expected;
+            let expected = if let Some(operation) = operation {
+                read_expected = super::super::provenance::read_headers_from(
+                    |k| std::env::var(k).ok(),
+                    super::super::provenance::hostname,
+                    operation,
+                );
+                read_expected.as_slice()
+            } else {
+                expected
+            };
+            let names: Vec<&str> = expected.iter().map(|(n, _)| *n).collect();
             let get = |name: &str| {
                 let name = name.to_ascii_lowercase();
                 headers

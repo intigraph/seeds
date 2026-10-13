@@ -136,6 +136,58 @@ pub fn apply(mut req: ureq::Request) -> ureq::Request {
     req
 }
 
+/// Read attribution is separate from writer provenance. An absent caller is
+/// omitted rather than naming the executable as a crew member. Source and
+/// operation are bounded diagnostic declarations, not authentication or metric
+/// labels. Existing servers may ignore these two extension headers.
+pub fn read_headers_from(
+    env: impl Fn(&str) -> Option<String>,
+    hostname: impl FnOnce() -> Option<String>,
+    operation: &str,
+) -> Vec<(&'static str, String)> {
+    let in_session = env("CLAUDECODE").as_deref() == Some("1")
+        || env("CODEX_HOME").is_some_and(|v| !v.is_empty());
+    let declared = env("QUIPU_AGENT")
+        .filter(|v| !v.is_empty())
+        .or_else(|| in_session.then(|| env("SHANTY_AGENT")).flatten());
+    let mut result = headers_from(&env, hostname);
+    if declared.as_deref().and_then(clean).is_none() {
+        result.retain(|(name, _)| *name != "X-Quipu-Agent");
+    }
+    for (header, value) in [
+        (
+            "X-Quipu-Source",
+            env("QUIPU_SOURCE")
+                .and_then(|v| task_header(&v))
+                .unwrap_or_else(|| PRODUCER.to_string()),
+        ),
+        (
+            "X-Quipu-Operation",
+            env("QUIPU_OPERATION")
+                .and_then(|v| task_header(&v))
+                .unwrap_or_else(|| operation.to_string()),
+        ),
+    ] {
+        result.push((header, value));
+    }
+    result
+}
+
+/// Apply read metadata only. Writer provenance/signatures use `apply` unchanged.
+pub fn apply_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
+    // Preserve the writer's legacy first-request snapshot, even when that
+    // request is a read. Read declarations remain separate from that snapshot.
+    let _ = headers();
+    for (name, value) in read_headers_from(
+        |k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()),
+        hostname,
+        operation,
+    ) {
+        req = req.set(name, &value);
+    }
+    req
+}
+
 /// The machine's hostname: the kernel's on Linux, else `hostname(1)`.
 pub(super) fn hostname() -> Option<String> {
     let read = |p: &str| std::fs::read_to_string(p).ok();
@@ -168,6 +220,92 @@ mod tests {
 
     fn expect(pairs: &[(&'static str, &str)]) -> BTreeMap<&'static str, String> {
         pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
+    }
+
+    #[test]
+    fn read_initializes_existing_write_snapshot() {
+        const CHILD: &str = "SEEDS_WRITE_SNAPSHOT_CONTROL";
+        if std::env::var(CHILD).as_deref() == Ok("1") {
+            // The isolated child owns its environment; no supervisor or other
+            // parallel test process is changed. Builders send no network traffic.
+            let read = apply_read(ureq::get("http://example.test/health"), "health");
+            assert_eq!(read.header("X-Quipu-Agent"), Some("before"));
+            std::env::set_var("QUIPU_AGENT", "after");
+            let write = apply(ureq::post("http://example.test/update"));
+            assert_eq!(write.header("X-Quipu-Agent"), Some("before"));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native::provenance::tests::read_initializes_existing_write_snapshot",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .env("QUIPU_AGENT", "before")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn reads_keep_unknown_distinct_from_producer_and_preserve_writer_contract() {
+        let read: BTreeMap<_, _> = read_headers_from(|_| None, || Some("host".into()), "query")
+            .into_iter()
+            .collect();
+        assert!(!read.contains_key("X-Quipu-Agent"));
+        assert_eq!(read["X-Quipu-Source"], "seeds");
+        assert_eq!(read["X-Quipu-Operation"], "query");
+        assert_eq!(run(&[], Some("host"))["X-Quipu-Agent"], "seeds");
+    }
+
+    #[test]
+    fn read_context_preserves_explicit_declarations_and_ignores_stale_crew() {
+        let vars = BTreeMap::from([
+            ("QUIPU_AGENT", "reader"),
+            ("SHANTY_AGENT", "stale"),
+            ("QUIPU_TASK", "test-work"),
+            ("QUIPU_SESSION", "session"),
+            ("QUIPU_SOURCE", "supervisor"),
+            ("QUIPU_OPERATION", "ready"),
+        ]);
+        let result: BTreeMap<_, _> =
+            read_headers_from(|k| vars.get(k).map(|v| v.to_string()), || None, "query")
+                .into_iter()
+                .collect();
+        for (key, expected) in [
+            ("X-Quipu-Agent", "reader"),
+            ("X-Quipu-Task", "test-work"),
+            ("X-Quipu-Session", "session"),
+            ("X-Quipu-Source", "supervisor"),
+            ("X-Quipu-Operation", "ready"),
+        ] {
+            assert_eq!(result[key], expected);
+        }
+        let stale = read_headers_from(
+            |k| (k == "SHANTY_AGENT").then(|| "stale".into()),
+            || None,
+            "health",
+        );
+        assert!(!stale.iter().any(|(k, _)| *k == "X-Quipu-Agent"));
+        let known = read_headers_from(
+            |k| match k {
+                "SHANTY_AGENT" => Some("crew".into()),
+                "CODEX_HOME" => Some("declared".into()),
+                _ => None,
+            },
+            || None,
+            "query",
+        );
+        assert!(known
+            .iter()
+            .any(|(k, v)| *k == "X-Quipu-Agent" && v == "crew"));
     }
 
     #[test]

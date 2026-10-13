@@ -73,6 +73,20 @@ they are lowercased for the server's bounded task label. Invalid or absent
 values send no task header and remain unattributed. This header grants no
 authority and does not change the selected graph, actor or signed writes.
 
+Remote health, graph-list and query reads preserve explicit caller, session and
+task declarations. With no caller declaration or actual harness context, reads
+omit `X-Quipu-Agent`; the executable is not a crew identity. Inherited
+`SHANTY_AGENT` alone remains insufficient outside a harness. Write provenance,
+actors, authentication and signatures retain their existing contract.
+
+Reads separately declare `X-Quipu-Source` (default `seeds`) and
+`X-Quipu-Operation` (finite endpoint name: `health`, `graphs`, `query`). Wrappers
+may supply `QUIPU_SOURCE` and `QUIPU_OPERATION`, using the same bounded token
+syntax as task ids. These are diagnostic extension headers, not authenticated
+identity or new metric labels. Servers that do not expose them still cannot
+join a completion to its source operation; header propagation alone does not
+prove that server visibility. No request body or credential is logged.
+
 Owner-filtered readiness discovers only explicitly open candidates before
 checking dependencies. Closed ownership history does not create readiness
 requests. Deferred inclusion still uses its separate existing read, and all

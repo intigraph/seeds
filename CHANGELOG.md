@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.5] - 2026-10-12
+
+### Documentation
+
+- Align Seeds install examples with published 0.2.4 ([f487858](https://github.com/scbrown/seeds/commit/f487858fe7b90d14883f81ed3cb536fc0e381ed5))
+
+### Fixed
+
+- *(history)* Scope reads to one item and refuse detected version gaps (#129) ([fed90bc](https://github.com/scbrown/seeds/commit/fed90bc8a8183ec6e046c47b51400388e86773f9))
+
 ## [0.2.4] - 2026-10-11
 
 ### Fixed

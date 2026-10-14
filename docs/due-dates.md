@@ -10,7 +10,8 @@ priority_days = [1, 3, 14, 30, 90] # calendar days, P0 through P4
 The project setting overrides the user setting. Each value must be positive
 and at most 36500. An absent table leaves existing projects unchanged.
 `create`, `q` and bulk markdown creation use the configured deadline when no
-explicit due value is supplied. Explicit dates win. Inbox pointers (`inbox:` or
+explicit due value is supplied. An empty due input uses the configured default.
+Explicit dates win. Inbox pointers (`inbox:` or
 `mail:` titles, or the `inbox` label) do not receive defaults.
 
 Changing or clearing an existing date requires a nonempty reason committed

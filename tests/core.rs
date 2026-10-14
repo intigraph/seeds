@@ -3854,6 +3854,18 @@ fn configured_due_defaults_preserve_explicit_and_exclude_messages() {
         .unwrap();
         assert!(s.due_at.unwrap().starts_with(expected));
     }
+    let (blank, _) = engine::create(
+        &mut b,
+        &ctx(7),
+        &CreateReq {
+            title: "empty input uses configured default".into(),
+            due: Some(String::new()),
+            due_priority_days: Some([1, 3, 14, 30, 90]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(blank.due_at.unwrap().starts_with("2026-10-14"));
     let (explicit, _) = engine::create(
         &mut b,
         &ctx(8),

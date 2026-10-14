@@ -2964,6 +2964,8 @@ fn due_policy_configuration_and_reviewed_plan_round_trip() {
     std::fs::write(&config, "[due_dates]\npriority_days=[1,3,14,30,90]\n").unwrap();
     let first = s.json(&["create", "configured", "--priority", "1"]);
     assert!(first["due_at"].as_str().is_some());
+    let blank = s.json(&["create", "empty input", "--priority", "1", "--due", ""]);
+    assert!(blank["due_at"].as_str().is_some());
     let old_due = first["due_at"].as_str().unwrap();
     let id = first["id"].as_str().unwrap();
     assert!(!s.run(&["update", id, "--due", "+10d"]).status.success());

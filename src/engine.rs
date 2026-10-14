@@ -147,7 +147,7 @@ fn new_seed(
         ephemeral: req.ephemeral,
         ..Seed::default()
     };
-    if seed.due_at.is_none() && req.due.is_none() && !deadline_message(&seed) {
+    if seed.due_at.is_none() && !deadline_message(&seed) {
         if let Some(days) = req.due_priority_days {
             seed.due_at = Some(parse_when(
                 &format!("+{}d", days[seed.priority as usize]),

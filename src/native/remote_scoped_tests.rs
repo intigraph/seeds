@@ -430,6 +430,15 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String]) -> Vec<Stri
             engine::comment_list(b, id, None)
         ));
     }
+    // aegis-9lq: dep list read the whole board; it now reads the show scope.
+    for id in all_ids {
+        for up in [false, true] {
+            out.push(match engine::dep_list(b, id, up, None) {
+                Ok(rows) => format!("dep list {id:?} up={up} {}", output::dep_list_json(&rows)),
+                Err(e) => format!("dep list {id:?} up={up} {}", err(&e)),
+            });
+        }
+    }
     let mut shows: Vec<Vec<String>> = all_ids.iter().map(|id| vec![id.clone()]).collect();
     shows.push(ids(&[n[3].as_str(), n[1].as_str(), n[EPH].as_str()]));
     shows.push(ids(&[n[0].as_str(), "nope"]));
@@ -655,11 +664,21 @@ fn write(op: usize, b: &mut dyn Backend, c: &Ctx, n: &[String]) -> String {
             engine::dep_add(b, c, n[33].as_str(), n[20].as_str(), "related")
                 .map(|d| format!("{:?}", (d.action, d.dep_type))),
         ),
+        // aegis-9lq: dep remove read the whole board; it now reads only the
+        // dependent. 21 removes the edge 16 added; 22 refuses a missing one.
+        21 => r(
+            engine::dep_remove(b, c, n[33].as_str(), n[35].as_str(), "blocks")
+                .map(|d| format!("{:?}", (d.action, d.dep_type))),
+        ),
+        22 => r(
+            engine::dep_remove(b, c, n[33].as_str(), n[34].as_str(), "blocks")
+                .map(|d| format!("{:?}", (d.action, d.dep_type))),
+        ),
         _ => unreachable!(),
     }
 }
 
-const WRITES: usize = 21;
+const WRITES: usize = 23;
 
 #[test]
 fn scoped_reads_print_exactly_what_a_whole_snapshot_prints() {
@@ -721,6 +740,8 @@ fn scoped_reads_print_exactly_what_a_whole_snapshot_prints() {
             2 => assert!(sw.contains("already claimed by tester"), "write {op}: {sw}"),
             7 => assert!(sw.contains("is blocked by"), "write {op}: {sw}"),
             16 => assert!(sw.contains("added"), "write {op}: {sw}"),
+            21 => assert!(sw.contains("removed"), "write {op}: {sw}"),
+            22 => assert!(sw.contains("has no"), "write {op}: {sw}"),
             _ => {}
         }
         let (sa, sb) = (a.snapshot(None).unwrap(), b.snapshot(None).unwrap());
@@ -1108,4 +1129,114 @@ fn owner_ready_discovery_errors_never_become_an_empty_ready_set() {
         );
         handle.join().unwrap();
     }
+}
+
+/// A backend that refuses every whole-board read: a scoped command must
+/// answer from the named items alone (aegis-9lq).
+struct NoWhole<'a>(&'a mut RemoteBackend);
+
+impl Backend for NoWhole<'_> {
+    fn snapshot(&self, _at: Option<u64>) -> Result<Snapshot> {
+        Err(SdError::failed("whole-board snapshot refused by the test"))
+    }
+    fn scoped_reads(&self) -> bool {
+        true
+    }
+    fn snapshot_items(&self, ids: &[String]) -> Result<Snapshot> {
+        self.0.snapshot_items(ids)
+    }
+    fn snapshot_seeds(&self, ids: &[String]) -> Result<Snapshot> {
+        self.0.snapshot_seeds(ids)
+    }
+    fn snapshot_dependents(&self, ids: &[String]) -> Result<Snapshot> {
+        self.0.snapshot_dependents(ids)
+    }
+    fn subjects_of_id(&self, id: &str) -> Result<Vec<String>> {
+        self.0.subjects_of_id(id)
+    }
+    fn ready_ids(&self, at: Option<u64>) -> Result<Vec<String>> {
+        self.0.ready_ids(at)
+    }
+    fn commit(&mut self, batch: &WriteBatch, ctx: &Ctx) -> Result<u64> {
+        self.0.commit(batch, ctx)
+    }
+    fn claims_of(&self, id: &str) -> Result<Vec<(u64, crate::backend::Claims)>> {
+        self.0.claims_of(id)
+    }
+    fn max_write_bytes(&self) -> Option<usize> {
+        self.0.max_write_bytes()
+    }
+    fn max_write_clauses(&self) -> Option<usize> {
+        self.0.max_write_clauses()
+    }
+}
+
+// aegis-9lq: on a large board, `sd dep list` and `sd dep remove` took a
+// whole snapshot and the server refused the join (HTTP 422). They must answer
+// from the item, its targets and its dependents.
+#[test]
+fn dep_list_and_remove_never_read_the_whole_board() {
+    let Some(server) = quipu_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
+        return;
+    };
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/dep-scope",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let c = ctx();
+    let mk = |r: &mut RemoteBackend, title: &str| {
+        engine::create(
+            r,
+            &c,
+            &CreateReq {
+                title: title.into(),
+                ..CreateReq::default()
+            },
+        )
+        .unwrap()
+        .0
+        .id
+    };
+    let (a, b, other) = (
+        mk(&mut r, "dependent"),
+        mk(&mut r, "blocker"),
+        mk(&mut r, "unrelated"),
+    );
+    engine::dep_add(&mut r, &c, &a, &b, "blocks").unwrap();
+    let mut n = NoWhole(&mut r);
+    // Positive control: a pinned read keeps the whole snapshot, so it is refused here.
+    let pinned = engine::dep_list(&n, &a, false, Some(1)).unwrap_err();
+    assert!(
+        pinned.message.contains("whole-board snapshot refused"),
+        "{}",
+        pinned.message
+    );
+    let down = engine::dep_list(&n, &a, false, None).unwrap();
+    assert_eq!(
+        down.iter()
+            .map(|d| d.depends_on_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![b.as_str()]
+    );
+    assert!(down[0].other.is_some(), "the target's body is read too");
+    let up = engine::dep_list(&n, &b, true, None).unwrap();
+    assert_eq!(
+        up.iter().map(|d| d.issue_id.as_str()).collect::<Vec<_>>(),
+        vec![a.as_str()]
+    );
+    assert!(engine::dep_list(&n, &other, true, None).unwrap().is_empty());
+    let missing = engine::dep_remove(&mut n, &c, &a, &other, "blocks").unwrap_err();
+    assert!(missing.message.contains("has no"), "{}", missing.message);
+    let removed = engine::dep_remove(&mut n, &c, &a, &b, "blocks").unwrap();
+    assert_eq!(removed.action, "removed");
+    assert!(
+        engine::dep_list(&n, &a, false, None).unwrap().is_empty(),
+        "the remove is visible on re-list"
+    );
+    assert!(engine::dep_list(&n, &b, true, None).unwrap().is_empty());
 }

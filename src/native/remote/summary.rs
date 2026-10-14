@@ -221,10 +221,7 @@ impl RemoteBackend {
             (vocab::ephemeral_graph(&self.graph), &mut eph),
         ] {
             if graph != self.graph {
-                let body = json!({"query":format!("ASK {{ GRAPH <{graph}> {{ ?s ?p ?o }} }}")})
-                    .to_string();
-                let answer = self.post("/query", "application/json", &body, false)?;
-                has_ephemeral = ask_answer(&graph, &answer)?;
+                has_ephemeral = self.ephemeral_may_hold_facts()?;
                 if !has_ephemeral {
                     continue;
                 }

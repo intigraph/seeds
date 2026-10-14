@@ -134,6 +134,12 @@ pub struct RemoteBackend {
     agent: ureq::Agent,
     graph_registered: bool,
     ephemeral_registered: bool,
+    /// The ephemeral graph was seen holding facts (an existence ASK said so,
+    /// or this backend wrote to it). Only ever set: a later read of that graph
+    /// then skips the existence ASK and reads it, which is what every read did
+    /// before the ASK existed, so a stale `true` costs an empty read and never
+    /// a missed or phantom seed. "Empty" is never remembered (aegis-r7k).
+    ephemeral_seen: std::cell::Cell<bool>,
     /// Refuse, unsent, a write request larger than this many bytes.
     max_write_bytes: usize,
     /// Refuse, unsent, a write nesting more guard clauses than this.
@@ -253,6 +259,7 @@ impl RemoteBackend {
             agent,
             graph_registered: false,
             ephemeral_registered: false,
+            ephemeral_seen: std::cell::Cell::new(false),
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
@@ -460,16 +467,30 @@ impl RemoteBackend {
         }
         let eph_graph = crate::vocab::ephemeral_graph(&self.graph);
         self.read_all(&self.graph, subjects, None, &mut main)?;
-        // An empty ephemeral graph needs one bounded existence check instead
-        // of an empty fact read for every hydration batch. No result is cached
-        // across snapshots, so a later read can observe new ephemeral work.
-        let body =
-            json!({"query": format!("ASK {{ GRAPH <{eph_graph}> {{ ?s ?p ?o }} }}")}).to_string();
-        let answer = self.post("/query", "application/json", &body, false)?;
-        if ask_answer(&eph_graph, &answer)? {
+        if self.ephemeral_may_hold_facts()? {
             self.read_all(&eph_graph, subjects, None, &mut eph)?;
         }
         Ok((main, eph))
+    }
+
+    /// Whether the ephemeral graph may hold facts, so a read must look in it.
+    /// An empty ephemeral graph needs one bounded existence check instead of
+    /// an empty fact read for every hydration batch. An "empty" answer is not
+    /// remembered, so a later read can observe new ephemeral work; a
+    /// "holds facts" answer is (see [`RemoteBackend::ephemeral_seen`]).
+    fn ephemeral_may_hold_facts(&self) -> Result<bool> {
+        if self.ephemeral_seen.get() {
+            return Ok(true);
+        }
+        let eph_graph = crate::vocab::ephemeral_graph(&self.graph);
+        let body =
+            json!({"query": format!("ASK {{ GRAPH <{eph_graph}> {{ ?s ?p ?o }} }}")}).to_string();
+        let answer = self.post("/query", "application/json", &body, false)?;
+        let holds = ask_answer(&eph_graph, &answer)?;
+        if holds {
+            self.ephemeral_seen.set(true);
+        }
+        Ok(holds)
     }
 
     /// A [`Snapshot`] of exactly `subjects` (plus nothing), current state,
@@ -1514,6 +1535,12 @@ impl Backend for RemoteBackend {
             )));
         }
         let sent = self.send("/update", "application/x-www-form-urlencoded", &form, true);
+        if sent.is_ok() && !insert[1].is_empty() {
+            // The server took a write inserting into the ephemeral graph. If
+            // its guard did not match, the graph may still be empty, and the
+            // remembered answer only makes a read look in it.
+            self.ephemeral_seen.set(true);
+        }
         if let Ok(body) = &sent {
             // quipu >= #411 reports what it committed. Every seeds write also
             // inserts a fresh write-provenance record, so asserted > 0 exactly
@@ -2219,5 +2246,105 @@ mod tests {
             .read_subjects(fat_graph, &[&small], None, &mut alone)
             .unwrap();
         assert_eq!(alone[&small].len(), 1);
+    }
+
+    /// `/query` requests this server has counted from seeds.
+    fn seeds_queries(base: &str) -> u64 {
+        let text = ureq::get(&format!("{base}/metrics"))
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap();
+        text.lines()
+            .filter(|l| {
+                l.starts_with("quipu_http_client_requests_total{")
+                    && l.contains("client=\"seeds\"")
+                    && l.contains("endpoint=\"/query\"")
+            })
+            .map(|l| l.rsplit_once(' ').unwrap().1.parse::<u64>().unwrap())
+            .sum()
+    }
+
+    // aegis-r7k: a backend remembers that its ephemeral graph holds facts, and
+    // stops asking; it never remembers that the graph is empty, so another
+    // writer's new ephemeral work is still seen. A remembered "holds facts"
+    // on a graph since emptied reads nothing, never a phantom seed.
+    #[test]
+    fn ephemeral_presence_is_remembered_and_absence_is_not() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
+            return;
+        };
+        let graph = "https://seeds.local/project/r7k";
+        let eph = vocab::ephemeral_graph(graph);
+        let mut reader = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        reader.register_graph(true).unwrap();
+        let writer = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let (m, e) = (vocab::item_iri("r7k-main"), vocab::item_iri("r7k-eph"));
+        update(
+            &writer,
+            &format!("INSERT DATA {{ GRAPH <{graph}> {{ <{m}> <urn:x:p> \"main\" . }} }}"),
+        );
+        let both: BTreeSet<String> = [m.clone(), e.clone()].into();
+
+        // Empty: asked, and not remembered.
+        let (main, got) = reader.subjects_facts(&both).unwrap();
+        assert!(main.contains_key(&m) && got.is_empty());
+        assert!(!reader.ephemeral_seen.get());
+
+        // Another writer's ephemeral fact is seen by the next read.
+        let insert_eph = format!("INSERT DATA {{ GRAPH <{eph}> {{ <{e}> <urn:x:p> \"eph\" . }} }}");
+        update(&writer, &insert_eph);
+        let (_, got) = reader.subjects_facts(&both).unwrap();
+        assert!(
+            got.contains_key(&e),
+            "a stale empty answer hid new ephemeral work"
+        );
+        assert!(reader.ephemeral_seen.get());
+
+        // Remembered: the same read costs one /query fewer than a backend
+        // that has to ask, and answers the same facts.
+        let fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let q0 = seeds_queries(&server.base);
+        let remembered = reader.subjects_facts(&both).unwrap();
+        let q1 = seeds_queries(&server.base);
+        let asked = fresh.subjects_facts(&both).unwrap();
+        let q2 = seeds_queries(&server.base);
+        assert_eq!(
+            (sorted(remembered.0), sorted(remembered.1)),
+            (sorted(asked.0), sorted(asked.1))
+        );
+        assert_eq!(
+            q1 - q0 + 1,
+            q2 - q1,
+            "remembered {} vs asked {}",
+            q1 - q0,
+            q2 - q1
+        );
+
+        // Emptied after it was seen: an empty read, never a phantom seed.
+        update(
+            &writer,
+            &format!("DELETE DATA {{ GRAPH <{eph}> {{ <{e}> <urn:x:p> \"eph\" . }} }}"),
+        );
+        let (main, got) = reader.subjects_facts(&both).unwrap();
+        assert!(main.contains_key(&m) && got.is_empty());
+
+        // Another graph is another backend: nothing carries over.
+        let other = RemoteBackend::connect(
+            &server.base,
+            "https://seeds.local/project/r7k-other",
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(!other.ephemeral_seen.get());
+        update(&writer, &insert_eph);
+        let (_, got) = other.subjects_facts(&both).unwrap();
+        assert!(
+            got.is_empty(),
+            "another project's ephemeral graph leaked in"
+        );
     }
 }

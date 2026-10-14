@@ -4086,3 +4086,77 @@ fn push_only_resumes_a_partial_split_without_rewriting_landed_items() {
     sync::apply_sync_plan(p, &mut local, &mut remote, &ctx(10), false, &mut |_| {}).unwrap();
     assert_same(&local, remote.inner);
 }
+
+#[test]
+fn external_target_discovery_is_exact_and_ambiguous_graphs_refuse() {
+    use quipu::store::Datum;
+    use quipu::types::{Op, Value};
+    use seeds::blockers::condition;
+    let mut b = backend();
+    foreign_status(&mut b, "open", Op::Assert, 1);
+    let st = b.store_mut();
+    let g = st.graph_create("urn:test:foreign-project").unwrap();
+    let entity = st.intern("urn:test:foreign-work").unwrap();
+    let label = st.intern(seeds::vocab::RDFS_LABEL).unwrap();
+    let ty = st.intern(seeds::vocab::RDF_TYPE).unwrap();
+    let action = st.intern(&seeds::vocab::term::work_item()).unwrap();
+    let facts = [
+        Datum {
+            entity,
+            attribute: label,
+            value: Value::Str("Foreign work".into()),
+            valid_from: ctx(2).now.clone(),
+            valid_to: None,
+            op: Op::Assert,
+        },
+        Datum {
+            entity,
+            attribute: ty,
+            value: Value::Ref(action),
+            valid_from: ctx(2).now.clone(),
+            valid_to: None,
+            op: Op::Assert,
+        },
+    ];
+    st.transact_to_graph(&facts, &ctx(2).now, Some("tester"), Some("fixture"), g)
+        .unwrap();
+    assert_eq!(
+        condition::resolve_name(&b, "Foreign work", None).unwrap(),
+        "urn:test:foreign-work"
+    );
+    assert_eq!(
+        condition::discover_graph(&b, "urn:test:foreign-work")
+            .unwrap()
+            .as_deref(),
+        Some("urn:test:foreign-project")
+    );
+    assert_eq!(
+        condition::default_kind(
+            &b,
+            "urn:test:foreign-work",
+            Some("urn:test:foreign-project")
+        )
+        .unwrap(),
+        "closed"
+    );
+    assert!(
+        condition::default_kind(&b, "urn:test:foreign-work", None).is_err(),
+        "ROOT miss cannot infer type from another graph"
+    );
+    assert!(condition::validate_iri("relative/path").is_err());
+    assert!(condition::validate_iri("urn:test:bad> } UNION { ?s ?p ?o").is_err());
+    let st = b.store_mut();
+    let other = st.graph_create("urn:test:second-project").unwrap();
+    st.transact_to_graph(&facts, &ctx(3).now, Some("tester"), Some("fixture"), other)
+        .unwrap();
+    assert!(condition::discover_graph(&b, "urn:test:foreign-work").is_err());
+    assert_eq!(
+        condition::default_kind(
+            &b,
+            "urn:test:foreign-work",
+            Some("urn:test:foreign-project")
+        )
+        .unwrap(),
+        "closed"
+    );
+}

@@ -595,8 +595,13 @@ impl Seed {
     }
 
     /// Bridge-owned carry stays in `extra` on reads, but replaces old values on writes.
-    pub(crate) fn owned_extra_predicates() -> [String; 2] {
-        [vocab::seeds("beadsJson"), vocab::seeds("dependencyOrigin")]
+    pub(crate) fn owned_extra_predicates() -> [String; 4] {
+        [
+            vocab::seeds("beadsJson"),
+            vocab::seeds("dependencyOrigin"),
+            crate::blockers::ledger_predicate(),
+            crate::blockers::edge_predicate(),
+        ]
     }
 
     /// Creation attribution keyed by (target, dependency type), never item creator.
@@ -1148,7 +1153,8 @@ impl Snapshot {
 
     /// The ids of `seed`'s `blocks` targets that are not closed.
     pub fn open_blockers(&self, seed: &Seed) -> Vec<String> {
-        seed.blocked_on
+        let mut blockers: Vec<String> = seed
+            .blocked_on
             .iter()
             .filter(|b| {
                 self.seeds
@@ -1156,7 +1162,9 @@ impl Snapshot {
                     .is_some_and(|s| s.status != "closed" && !s.is_tombstone())
             })
             .cloned()
-            .collect()
+            .collect();
+        blockers.extend(crate::blockers::unresolved(seed));
+        blockers
     }
 
     /// Comments on one seed, in order.

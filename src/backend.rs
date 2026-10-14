@@ -229,6 +229,34 @@ impl WriteBatch {
 
 /// Storage for one project.
 pub trait Backend {
+    /// Explicit project dataset for declarations that refer to local seed IDs.
+    fn project_graph(&self) -> Option<&str> {
+        None
+    }
+    /// A bounded read of a declared external blocker condition. Implementations
+    /// must distinguish ASK false from an unreadable or invalid response.
+    fn blocker_query(
+        &self,
+        _query: &str,
+        _graph: Option<&str>,
+        _at: Option<u64>,
+    ) -> Result<serde_json::Value> {
+        Err(crate::error::SdError::refused(
+            "this backend cannot read external blocker conditions",
+        ))
+    }
+
+    /// Seeds carrying external-blocker metadata. Remote implementations use
+    /// indexed discovery; the local/wasm default retains its complete snapshot.
+    fn blocker_snapshot(&self, at: Option<u64>) -> Result<Snapshot> {
+        let mut snapshot = self.snapshot(at)?;
+        snapshot
+            .seeds
+            .retain(|_, seed| crate::blockers::has_metadata(seed));
+        snapshot.comments.clear();
+        Ok(snapshot)
+    }
+
     /// Every seed and comment, as of transaction `at` (current state when
     /// `None`).
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot>;

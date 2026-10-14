@@ -1020,6 +1020,49 @@ fn sparql_obj(o: &Obj) -> String {
 }
 
 impl Backend for RemoteBackend {
+    fn project_graph(&self) -> Option<&str> {
+        Some(&self.graph)
+    }
+    fn blocker_query(
+        &self,
+        query: &str,
+        graph: Option<&str>,
+        at: Option<u64>,
+    ) -> Result<serde_json::Value> {
+        let mut body = json!({"query": query});
+        if let Some(graph) = graph {
+            crate::blockers::condition::validate_iri(graph)?;
+            body["graph"] = graph.into();
+        }
+        if let Some(at) = at {
+            body["tx"] = at.into();
+        }
+        let text = self.post("/query", "application/json", &body.to_string(), false)?;
+        serde_json::from_str(&text)
+            .map_err(|_| SdError::failed("unreadable blocker query response"))
+    }
+
+    fn blocker_snapshot(&self, at: Option<u64>) -> Result<Snapshot> {
+        if at.is_some() {
+            return Err(SdError::refused(
+                "external blocker discovery requires current state",
+            ));
+        }
+        let mut subjects = BTreeSet::new();
+        for graph in self.both_graphs() {
+            for predicate in [
+                crate::blockers::ledger_predicate(),
+                crate::blockers::edge_predicate(),
+            ] {
+                subjects.extend(self.subjects_where(
+                    &graph,
+                    &format!("?s <{predicate}> ?state"),
+                    None,
+                )?);
+            }
+        }
+        self.snapshot_of(&subjects)
+    }
     fn list_page(&self, req: &crate::engine::ListReq) -> Result<Option<crate::engine::Page>> {
         self.list_summary(req).map(Some)
     }

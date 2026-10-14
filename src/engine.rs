@@ -2008,6 +2008,7 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         .filter(|s| req.include_deferred || !is_deferred(s, &ctx.now))
         .filter(|s| under.as_ref().is_none_or(|u| u.contains(&s.id)))
         .filter(|s| f.matches(s))
+        .filter(|s| crate::blockers::currently_done(b, s, at))
         .cloned()
         .collect();
     match sort {
@@ -2287,7 +2288,18 @@ pub fn update(
     for id in ids {
         let before = snap.get(id)?;
         let mut s = before.clone();
+        if req.status.is_some() && crate::blockers::has_metadata(before) {
+            let mut ledger = crate::blockers::load(before)?;
+            // An explicit status edit takes ownership away from reconciliation.
+            ledger.managed_status = false;
+            crate::blockers::save(&mut s, &ledger)?;
+        }
         if req.claim {
+            if !crate::blockers::currently_done(b, before, None) {
+                return Err(SdError::refused(
+                    "external prerequisites are unresolved or unreadable; cannot claim",
+                ));
+            }
             claim(&snap, &mut s, &ctx.actor)?;
         }
         if let Some(t) = &req.title {
@@ -3440,7 +3452,7 @@ pub fn dep_add(
         return Err(SdError::refused(format!("{issue} cannot depend on itself")));
     }
     let snap = if dep_type == "parent-child" {
-        b.snapshot(None)?
+        parent_snapshot(b, &[issue.into(), depends_on.into()])?
     } else if dep_type == "blocks" {
         blocking_snapshot(b, &[issue.into(), depends_on.into()], true)?
     } else {
@@ -3474,6 +3486,7 @@ pub fn dep_add(
         }
     }
     if dep_type == "parent-child" {
+        reparent(&snap, issue, depends_on)?;
         if let Some(p) = &before.parent {
             return Err(SdError::refused(format!(
                 "{issue} already has parent {p}; remove that dependency first"
@@ -3504,6 +3517,38 @@ pub fn dep_add(
         action: "added",
         tx,
     })
+}
+
+/// Exact seed reads of the reachable parent chain, with revision consistency.
+fn parent_snapshot(b: &dyn Backend, ids: &[String]) -> Result<Snapshot> {
+    let mut snap = b.snapshot_items(ids)?;
+    let mut seen: BTreeSet<String> = ids.iter().cloned().collect();
+    loop {
+        let next: Vec<String> = snap
+            .seeds
+            .values()
+            .filter_map(|s| s.parent.as_ref())
+            .filter(|id| !seen.contains(*id))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if next.is_empty() {
+            break;
+        }
+        seen.extend(next.iter().cloned());
+        let extra = b.snapshot_items(&next)?;
+        if extra.tx != snap.tx {
+            return Err(SdError::conflict(
+                "parent context changed while reading; nothing was written",
+            ));
+        }
+        for id in &next {
+            extra.get(id)?;
+        }
+        snap.seeds.extend(extra.seeds);
+    }
+    Ok(snap)
 }
 
 /// Load the blocking context needed by a claim (direct targets) or cycle check

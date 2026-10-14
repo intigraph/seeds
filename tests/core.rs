@@ -3830,3 +3830,190 @@ fn push_only_resumes_a_partial_split_without_rewriting_landed_items() {
     sync::apply_sync_plan(p, &mut local, &mut remote, &ctx(10), false, &mut |_| {}).unwrap();
     assert_same(&local, remote.inner);
 }
+
+#[test]
+fn configured_due_defaults_preserve_explicit_and_exclude_messages() {
+    let mut b = backend();
+    for (priority, expected) in [
+        (0, "2026-10-01"),
+        (1, "2026-10-03"),
+        (2, "2026-10-14"),
+        (3, "2026-10-30"),
+        (4, "2026-12-29"),
+    ] {
+        let (s, _) = engine::create(
+            &mut b,
+            &ctx(priority),
+            &CreateReq {
+                title: format!("priority {priority}"),
+                priority: Some(priority.to_string()),
+                due_priority_days: Some([1, 3, 14, 30, 90]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(s.due_at.unwrap().starts_with(expected));
+    }
+    let (explicit, _) = engine::create(
+        &mut b,
+        &ctx(8),
+        &CreateReq {
+            title: "explicit".into(),
+            due: Some("2027-01-01".into()),
+            due_priority_days: Some([1, 3, 14, 30, 90]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(explicit.due_at.unwrap().starts_with("2027-01-01"));
+    for title in ["inbox: notice", "mail: legacy"] {
+        let (s, _) = engine::create(
+            &mut b,
+            &ctx(9),
+            &CreateReq {
+                title: title.into(),
+                due_priority_days: Some([1, 3, 14, 30, 90]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(s.due_at.is_none());
+    }
+    let (unconfigured, _) = engine::create(
+        &mut b,
+        &ctx(10),
+        &CreateReq {
+            title: "other project".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(unconfigured.due_at.is_none());
+}
+
+#[test]
+fn due_redating_requires_atomic_reason_and_same_date_is_idempotent() {
+    let mut b = backend();
+    let (s, _) = engine::create(
+        &mut b,
+        &ctx(0),
+        &CreateReq {
+            title: "deadline".into(),
+            due: Some("+1d".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ids = vec![s.id.clone()];
+    for due in ["+2d", ""] {
+        assert!(engine::update(
+            &mut b,
+            &ctx(1),
+            &ids,
+            &UpdateReq {
+                due: Some(due.into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(
+            engine::show(&b, &ids, None).unwrap()[0].seed.due_at,
+            s.due_at
+        );
+    }
+    engine::update(
+        &mut b,
+        &ctx(1),
+        &ids,
+        &UpdateReq {
+            due: s.due_at.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    engine::update(
+        &mut b,
+        &ctx(2),
+        &ids,
+        &UpdateReq {
+            due: Some("+2d".into()),
+            transition_comment: Some("New external delivery estimate".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_ne!(
+        engine::show(&b, &ids, None).unwrap()[0].seed.due_at,
+        s.due_at
+    );
+    assert!(b
+        .snapshot(None)
+        .unwrap()
+        .comments
+        .iter()
+        .any(|c| c.text.contains("New external delivery estimate")));
+}
+
+#[test]
+fn due_backfill_is_exact_revision_checked_and_atomic() {
+    let mut b = backend();
+    let mut ids = Vec::new();
+    for (i, title) in ["first", "second", "inbox: ignored"].iter().enumerate() {
+        let (s, _) = engine::create(
+            &mut b,
+            &ctx(i as u32),
+            &CreateReq {
+                title: (*title).into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ids.push(s.id);
+    }
+    let plan = engine::plan_due_backfill(&b, [1, 3, 14, 30, 90]).unwrap();
+    assert_eq!(plan.len(), 2);
+    assert!(plan.iter().all(|e| e.due_at.starts_with("2026-10-14")));
+    let mut tampered = plan.clone();
+    tampered[0].due_at = "2099-01-01T00:00:00Z".into();
+    assert!(engine::apply_due_backfill(&mut b, &ctx(4), [1, 3, 14, 30, 90], &tampered).is_err());
+    assert!(b
+        .snapshot(None)
+        .unwrap()
+        .seeds
+        .values()
+        .all(|s| s.due_at.is_none()));
+    engine::update(
+        &mut b,
+        &ctx(4),
+        &[ids[0].clone()],
+        &UpdateReq {
+            title: Some("changed during review".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(engine::apply_due_backfill(&mut b, &ctx(5), [1, 3, 14, 30, 90], &plan).is_err());
+    assert!(b
+        .snapshot(None)
+        .unwrap()
+        .seeds
+        .values()
+        .all(|s| s.due_at.is_none()));
+    let fresh = engine::plan_due_backfill(&b, [1, 3, 14, 30, 90]).unwrap();
+    assert_eq!(
+        engine::apply_due_backfill(&mut b, &ctx(6), [1, 3, 14, 30, 90], &fresh)
+            .unwrap()
+            .0,
+        2
+    );
+    assert!(engine::plan_due_backfill(&b, [1, 3, 14, 30, 90])
+        .unwrap()
+        .is_empty());
+    assert!(b
+        .snapshot(None)
+        .unwrap()
+        .get(&ids[2])
+        .unwrap()
+        .due_at
+        .is_none());
+}

@@ -1437,6 +1437,8 @@ fn due_estimate_and_overdue_round_trip() {
         &soon,
         "--due",
         "2001-01-02T03:04:05Z",
+        "--transition-comment",
+        "Reviewed revised deadline",
         "--estimate",
         "0",
     ]);
@@ -1447,7 +1449,14 @@ fn due_estimate_and_overdue_round_trip() {
         ids(&sb.json(&["list", "--overdue"])),
         std::slice::from_ref(&soon)
     );
-    sb.ok(&["update", &soon, "--due", ""]);
+    sb.ok(&[
+        "update",
+        &soon,
+        "--due",
+        "",
+        "--transition-comment",
+        "Deadline no longer applicable",
+    ]);
     assert!(sb.json(&["show", &soon])[0]["due_at"].is_null());
     for bad in [
         vec!["update", none.as_str(), "--estimate", "-1"],
@@ -2945,4 +2954,52 @@ fn exact_info_excludes_title_and_full_peers_and_releases_slots_after_failure() {
             .unwrap();
         lock.try_lock().unwrap();
     }
+}
+
+#[test]
+fn due_policy_configuration_and_reviewed_plan_round_trip() {
+    let s = Sandbox::new("due-policy");
+    std::fs::create_dir_all(s.work().join(".seeds")).unwrap();
+    let config = s.work().join(".seeds/config.toml");
+    std::fs::write(&config, "[due_dates]\npriority_days=[1,3,14,30,90]\n").unwrap();
+    let first = s.json(&["create", "configured", "--priority", "1"]);
+    assert!(first["due_at"].as_str().is_some());
+    let old_due = first["due_at"].as_str().unwrap();
+    let id = first["id"].as_str().unwrap();
+    assert!(!s.run(&["update", id, "--due", "+10d"]).status.success());
+    assert_eq!(s.json(&["show", id])[0]["due_at"], old_due);
+    s.ok(&[
+        "update",
+        id,
+        "--due",
+        "+10d",
+        "--transition-comment",
+        "New delivery estimate",
+    ]);
+    std::fs::write(&config, "").unwrap();
+    let missing = s.json(&["create", "legacy missing"]);
+    s.ok(&["create", "inbox: ignored"]);
+    std::fs::write(&config, "[due_dates]\npriority_days=[1,3,14,30,90]\n").unwrap();
+    let path = s.root.join("reviewed.json");
+    let plan = s.json(&["due-backfill", "--plan-output", path.to_str().unwrap()]);
+    assert_eq!(plan["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["entries"][0]["id"], missing["id"]);
+    let result = s.json(&["due-backfill", "--apply-plan", path.to_str().unwrap()]);
+    assert_eq!(result["updated"], 1);
+    assert!(s.json(&["due-backfill"])["entries"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // Existing reviewed packet is never overwritten, and a foreign graph refuses.
+    assert!(!s
+        .run(&["due-backfill", "--plan-output", path.to_str().unwrap()])
+        .status
+        .success());
+    let mut foreign = plan;
+    foreign["graph"] = serde_json::json!("https://example.org/other");
+    std::fs::write(&path, serde_json::to_string(&foreign).unwrap()).unwrap();
+    assert!(!s
+        .run(&["due-backfill", "--apply-plan", path.to_str().unwrap()])
+        .status
+        .success());
 }

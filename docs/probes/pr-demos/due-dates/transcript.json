@@ -1,0 +1,15 @@
+{
+  "before_unconfigured_installed_cli": {
+    "priority": 1,
+    "due_at": null,
+    "created_at": "2026-10-14T21:48:00Z",
+    "dry_run": true
+  },
+  "after_configured_candidate": {
+    "priority": 1,
+    "due_at": "2026-10-17T21:48:00Z",
+    "created_at": "2026-10-14T21:48:00Z",
+    "dry_run": true
+  },
+  "limit": "Isolated dry-run fixture; configuration enabled only for candidate. No installed acceptance or board backfill."
+}

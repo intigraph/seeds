@@ -31,6 +31,8 @@ pub type Warnings = Vec<String>;
 /// `sd create`.
 #[derive(Debug, Clone, Default)]
 pub struct CreateReq {
+    /// Deployment-provided calendar days by P0-P4; explicit due wins.
+    pub due_priority_days: Option<[u32; 5]>,
     /// Title (required, non-empty).
     pub title: String,
     /// Description.
@@ -145,6 +147,15 @@ fn new_seed(
         ephemeral: req.ephemeral,
         ..Seed::default()
     };
+    if seed.due_at.is_none() && !deadline_message(&seed) {
+        if let Some(days) = req.due_priority_days {
+            seed.due_at = Some(parse_when(
+                &format!("+{}d", days[seed.priority as usize]),
+                &ctx.now,
+                "configured due",
+            )?);
+        }
+    }
     for spec in &req.deps {
         let (dep_type, target) = parse_dep_spec(spec)?;
         snap.get(&target)?;
@@ -2360,6 +2371,15 @@ pub fn update(
                 None => None,
             };
         }
+        if before.due_at.is_some()
+            && s.due_at != before.due_at
+            && req
+                .transition_comment
+                .as_deref()
+                .is_none_or(|reason| reason.trim().is_empty())
+        {
+            return Err(SdError::usage(format!("{id}: changing or clearing an existing due date requires --transition-comment with a reason")));
+        }
         if let Some(m) = &req.estimate {
             s.estimated_minutes = Some(parse_estimate(m)?);
         }
@@ -3827,4 +3847,119 @@ fn clean_labels(labels: &[String]) -> BTreeSet<String> {
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Inbox pointers are delivery records rather than deadline-bearing work.
+pub fn deadline_message(seed: &Seed) -> bool {
+    let title = seed.title.trim_start();
+    title.starts_with("inbox:")
+        || title.starts_with("mail:")
+        || seed
+            .labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case("inbox"))
+}
+
+/// A reviewed backfill entry binds the computed date to the exact source revision.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DueBackfillEntry {
+    pub id: String,
+    pub revision: u64,
+    pub priority: u8,
+    pub created_at: String,
+    pub due_at: String,
+}
+
+fn due_backfill_entry(seed: &Seed, days: [u32; 5]) -> Result<Option<DueBackfillEntry>> {
+    if !matches!(seed.status.as_str(), "open" | "in_progress" | "blocked")
+        || seed.due_at.is_some()
+        || deadline_message(seed)
+    {
+        return Ok(None);
+    }
+    let count = days
+        .get(seed.priority as usize)
+        .ok_or_else(|| SdError::usage(format!("{}: invalid priority", seed.id)))?;
+    if *count == 0 || *count > 36500 {
+        return Err(SdError::usage("invalid configured due day count"));
+    }
+    let due_at = parse_when(
+        &format!("+{count}d"),
+        &seed.created_at,
+        "created_at for due backfill",
+    )?;
+    Ok(Some(DueBackfillEntry {
+        id: seed.id.clone(),
+        revision: seed.revision,
+        priority: seed.priority,
+        created_at: seed.created_at.clone(),
+        due_at,
+    }))
+}
+
+/// Read-only plan; an unreadable creation time fails the whole enumeration.
+pub fn plan_due_backfill(b: &dyn Backend, days: [u32; 5]) -> Result<Vec<DueBackfillEntry>> {
+    let snap = b.snapshot_where(&SeedQuery {
+        statuses: Some(
+            ["open", "in_progress", "blocked"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ),
+        ..SeedQuery::default()
+    })?;
+    let mut entries = Vec::new();
+    for seed in snap.seeds.values() {
+        if let Some(entry) = due_backfill_entry(seed, days)? {
+            entries.push(entry);
+        }
+    }
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(entries)
+}
+
+/// Apply exactly the reviewed entries in one revision-checked transaction.
+/// Changed dates/statuses/revisions or tampered dates refuse before any write.
+pub fn apply_due_backfill(
+    b: &mut dyn Backend,
+    ctx: &Ctx,
+    days: [u32; 5],
+    entries: &[DueBackfillEntry],
+) -> Result<(usize, u64)> {
+    let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+    if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() {
+        return Err(SdError::usage("duplicate backfill id"));
+    }
+    if ids.is_empty() {
+        return Ok((0, 0));
+    }
+    let snap = b.snapshot_seeds(&ids)?;
+    let mut writes = Vec::new();
+    for entry in entries {
+        let before = snap.get(&entry.id)?;
+        if due_backfill_entry(before, days)?.as_ref() != Some(entry) {
+            return Err(SdError::usage(format!(
+                "{}: backfill plan is stale or changed; generate and review a new plan",
+                entry.id
+            )));
+        }
+        let mut seed = before.clone();
+        seed.due_at = Some(entry.due_at.clone());
+        seed.updated_at = ctx.now.clone();
+        seed.revision += 1;
+        writes.push(SeedWrite {
+            seed,
+            expected_revision: Some(before.revision),
+        });
+    }
+    let tx = b.commit(
+        &WriteBatch {
+            seeds: writes,
+            source: "seeds:due-backfill".into(),
+            ..WriteBatch::default()
+        },
+        ctx,
+    )?;
+    Ok((entries.len(), tx))
 }

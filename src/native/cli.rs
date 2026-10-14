@@ -77,6 +77,15 @@ pub struct Cli {
 pub enum Command {
     /// Create a seed
     Create(CreateArgs),
+    /// Plan a missing-due backfill, or apply a reviewed JSON plan atomically
+    DueBackfill {
+        /// Write the read-only plan to this file (also prints JSON)
+        #[arg(long, conflicts_with = "apply_plan")]
+        plan_output: Option<String>,
+        /// Apply exactly this reviewed plan; changed rows refuse as a batch
+        #[arg(long)]
+        apply_plan: Option<String>,
+    },
     /// Show one or more seeds, with dependencies and comments
     Show(ShowArgs),
     /// List seeds (open ones by default; 50 at a time, --limit 0 for all)
@@ -1319,6 +1328,7 @@ impl Command {
         match self {
             Command::Cutover(a) => !a.dry_run && matches!(a.operation.as_str(), "import" | "sync"),
             Command::Q(_) => true,
+            Command::DueBackfill { apply_plan, .. } => apply_plan.is_some(),
             Command::Create(_)
             | Command::Update(_)
             | Command::Close(_)
@@ -1383,6 +1393,7 @@ impl Command {
         match self {
             Command::Cutover(_) => "cutover",
             Command::Create(_) => "create",
+            Command::DueBackfill { .. } => "due-backfill",
             Command::Show(_) => "show",
             Command::List(_) => "list",
             Command::Ready(_) => "ready",

@@ -2198,6 +2198,15 @@ fn vocabulary_check(
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DueBackfillPlan {
+    schema: u32,
+    graph: String,
+    priority_days: [u32; 5],
+    entries: Vec<engine::DueBackfillEntry>,
+}
+
 fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result<Outcome> {
     let json = cli.json;
     // Doctor reports an old-vocabulary ledger as a failed check instead.
@@ -2206,9 +2215,34 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
     }
     let at = cli.at;
     match &cli.command {
+        Command::DueBackfill { plan_output, apply_plan } => {
+            let days = cfg.due_priority_days.ok_or_else(|| SdError::usage("due-backfill requires configured [due_dates] priority_days"))?;
+            let graph = cfg.graph.clone().ok_or_else(|| SdError::usage("due-backfill requires a resolved graph"))?;
+            if let Some(path) = apply_plan {
+                let plan: DueBackfillPlan = serde_json::from_str(&read_text(path)?)
+                    .map_err(|e| SdError::usage(format!("invalid backfill plan: {e}")))?;
+                if plan.schema != 1 || plan.graph != graph || plan.priority_days != days {
+                    return Err(SdError::usage("backfill plan graph/schema/config differs; generate and review a new plan"));
+                }
+                let (count, tx) = engine::apply_due_backfill(b, ctx, days, &plan.entries)?;
+                Ok(ok(json, serde_json::json!({"updated":count,"tx":tx}), format!("updated {count} due dates{}", tx_note(tx)), vec![]))
+            } else {
+                let plan = DueBackfillPlan { schema:1, graph, priority_days:days, entries:engine::plan_due_backfill(b,days)? };
+                let text = serde_json::to_string_pretty(&plan).map_err(|e| SdError::failed(e.to_string()))?;
+                if let Some(path) = plan_output {
+                    // Never overwrite a previously reviewed packet.
+                    use std::io::Write;
+                    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+                        .map_err(|e| SdError::failed(format!("cannot create backfill plan: {e}")))?;
+                    file.write_all(text.as_bytes()).map_err(|e| SdError::failed(e.to_string()))?;
+                }
+                Ok(ok(json, serde_json::to_value(&plan).map_err(|e| SdError::failed(e.to_string()))?, text, vec![]))
+            }
+        }
         Command::Create(a) if a.file.is_some() => {
             let path = a.file.as_deref().unwrap_or_default();
-            let items = engine::parse_bulk_markdown(&read_text(path)?)?;
+            let mut items = engine::parse_bulk_markdown(&read_text(path)?)?;
+            for item in &mut items { item.req.due_priority_days = cfg.due_priority_days; }
             let (seeds, tx) = engine::create_many(b, ctx, &items, a.dry_run)?;
             let verb = if a.dry_run { "would create" } else { "created" };
             let text = if a.silent {
@@ -2246,6 +2280,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 (None, None) => None,
             };
             let req = engine::CreateReq {
+                due_priority_days: cfg.due_priority_days,
                 title,
                 description,
                 issue_type: a.issue_type.clone(),
@@ -2290,6 +2325,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         }
         Command::Q(a) => {
             let req = engine::CreateReq {
+                due_priority_days: cfg.due_priority_days,
                 title: a.title.join(" "),
                 description: a.description.clone(),
                 issue_type: a.issue_type.clone(),

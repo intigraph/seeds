@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-10-14
+
+### Fixed
+
+- *(deps)* Read dep list and dep remove from the item, not the whole board (#132) ([0b6ee84](https://github.com/scbrown/seeds/commit/0b6ee8447496a46c75d98ef72e53114794924186))
+
+### Perf
+
+- *(remote)* Remember that the ephemeral graph holds facts (#133) ([2c7b05a](https://github.com/scbrown/seeds/commit/2c7b05aa2c71d6f61995417b58bb5a5f34c74bbc))
+
 ## [0.2.6] - 2026-10-13
 
 ### Fixed

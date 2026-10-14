@@ -3573,7 +3573,14 @@ pub fn dep_remove(
     dep_type: &str,
 ) -> Result<DepChange> {
     let dep_type = model::parse_dep_type(dep_type)?;
-    let snap = b.snapshot(None)?;
+    // Removing an edge needs only the dependent: the write is guarded by its
+    // revision and cannot create a cycle. A whole-board read here exceeded the
+    // server's join budget on a large board (aegis-9lq).
+    let snap = if scoped(&*b, None) {
+        b.snapshot_seeds(&[issue.to_string()])?
+    } else {
+        b.snapshot(None)?
+    };
     let before = snap.get(issue)?;
     if !before.has_dep(depends_on, &dep_type) {
         return Err(SdError::new(
@@ -3639,7 +3646,13 @@ pub fn unblocked_by(b: &dyn Backend, id: &str) -> Result<Vec<Seed>> {
 /// `sd dep list <id>`: what `id` depends on (`up == false`) or what depends
 /// on it (`up == true`), as of `at`.
 pub fn dep_list(b: &dyn Backend, id: &str, up: bool, at: Option<u64>) -> Result<Vec<DepRow>> {
-    let snap = b.snapshot(at)?;
+    // The item, what it depends on and what depends on it, by bound patterns,
+    // exactly as `show` reads them; a pinned read keeps the whole snapshot.
+    let snap = if scoped(b, at) {
+        show_scope(b, &[id.to_string()])?
+    } else {
+        b.snapshot(at)?
+    };
     let seed = snap.get(id)?;
     let rows = if up {
         snap.dependents(id)

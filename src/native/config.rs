@@ -70,6 +70,16 @@ pub struct FileConfig {
     /// `[sync]`: the remote `sd sync` exchanges with (mode 3).
     #[serde(default)]
     pub sync: SyncSection,
+    /// Configured creation deadlines; absent leaves other projects unchanged.
+    #[serde(default)]
+    pub due_dates: DueDatesSection,
+}
+
+/// `[due_dates]`: calendar days by priority P0 through P4.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DueDatesSection {
+    pub priority_days: Option<[u32; 5]>,
 }
 
 /// `[pendant]`.
@@ -143,6 +153,7 @@ pub enum Location {
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
+    pub due_priority_days: Option<[u32; 5]>,
     /// Where the graph lives.
     pub location: Location,
     /// Which layer decided the location, for messages and `--json` errors.
@@ -542,7 +553,17 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         "SEEDS_MAX_WRITE_CLAUSES",
         DEFAULT_MAX_WRITE_CLAUSES,
     )?;
+    let due_priority_days = project
+        .as_ref()
+        .and_then(|c| c.due_dates.priority_days)
+        .or_else(|| user.as_ref().and_then(|c| c.due_dates.priority_days));
+    if due_priority_days.is_some_and(|days| days.iter().any(|d| *d == 0 || *d > 36500)) {
+        return Err(config_error(
+            "[due_dates] priority_days must contain five positive day counts at most 36500".into(),
+        ));
+    }
     Ok(Resolved {
+        due_priority_days,
         location,
         location_source,
         prefix,

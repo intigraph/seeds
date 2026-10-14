@@ -4,8 +4,8 @@ The key that signs your writes to a quipu server, so no bearer goes on the wire
 (see [Signed writes](../config.md#signed-writes-no-bearer-on-the-wire)).
 
 ```bash
-sd key init --introducer wu            # session defaults to seeds-<host>-<user>
-sd key init --introducer wu --session seeds-ci --agent urn:ci:seeds
+sd key init --introducer <lead>            # session defaults to seeds-<host>-<user>
+sd key init --introducer <lead> --session seeds-ci --agent urn:ci:seeds
 sd key show
 ```
 

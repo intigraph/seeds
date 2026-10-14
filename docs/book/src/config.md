@@ -128,7 +128,7 @@ records the write as yours, not as "whoever holds the token".
 [quipu]
 signing_key_file = "~/.config/seeds/keys/seeds-myhost-me.key"
 signing_session = "seeds-myhost-me"
-signing_introducer = "wu"
+signing_introducer = "<lead>"
 ```
 
 - A signed write never also sends the bearer.
@@ -147,7 +147,10 @@ signing_introducer = "wu"
   `unbound` (the key is not registered: `sd key show`), `scope` (registered
   without write), `revoked`/`expired`, `replay`, `badsig`.
 
-See [sd key](verbs/key.md).
+See [sd key](verbs/key.md). To set up an agent end to end (its own user, its key,
+enrollment on the Quipu host, verification and revocation), follow CABOODLE's
+[agent identity and write access](https://scbrown.github.io/caboodle/agents.html#agent-identity-and-write-access)
+guide.
 
 ## The project id
 

@@ -1020,6 +1020,40 @@ fn sparql_obj(o: &Obj) -> String {
 }
 
 impl Backend for RemoteBackend {
+    fn spec_change_ids(&self) -> Result<Vec<String>> {
+        let branches: Vec<_> = [&self.graph, &vocab::ephemeral_graph(&self.graph)]
+            .iter()
+            .map(|graph| {
+                format!(
+                    "{{ GRAPH <{graph}> {{ ?s <{}> ?v ; <{}> ?id }} }}",
+                    vocab::seeds("specVersion"),
+                    term::identifier()
+                )
+            })
+            .collect();
+        let (rows, truncated) = self.select_marked(
+            &format!(
+                "SELECT ?id WHERE {{ {} }} LIMIT 501",
+                branches.join(" UNION ")
+            ),
+            None,
+        )?;
+        if truncated || rows.len() >= 501 {
+            return Err(SdError::failed(
+                "spec change read exceeded its bounded 500-item ceiling",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        for mut row in rows {
+            match row.remove("id") {
+                Some(Obj::Str(id)) if !id.is_empty() => {
+                    ids.insert(id);
+                }
+                _ => return Err(SdError::failed("invalid spec change identity")),
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
     fn list_page(&self, req: &crate::engine::ListReq) -> Result<Option<crate::engine::Page>> {
         self.list_summary(req).map(Some)
     }

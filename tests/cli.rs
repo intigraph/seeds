@@ -1052,6 +1052,15 @@ fn capabilities_are_derived_and_classify_every_verb() {
     assert_eq!(op("list").as_deref(), Some("read"));
     assert_eq!(op("graph").as_deref(), Some("read"));
     assert_eq!(op("query").as_deref(), Some("elsewhere"));
+    assert_eq!(op("rescope").as_deref(), Some("write"));
+    assert_eq!(op("ack").as_deref(), Some("write"));
+    assert_eq!(op("spec-events").as_deref(), Some("read"));
+    assert_eq!(op("spec-state").as_deref(), Some("read"));
+    assert_eq!(op("spec-receipt-ack").as_deref(), Some("write"));
+    assert_eq!(
+        sb.json(&["capabilities", "--for", "spec-receipt"])["pins_with_at"],
+        false
+    );
     let codes: Vec<i64> = c["exit_codes"]
         .as_array()
         .unwrap()
@@ -3004,4 +3013,72 @@ fn due_policy_configuration_and_reviewed_plan_round_trip() {
         .run(&["due-backfill", "--apply-plan", path.to_str().unwrap()])
         .status
         .success());
+}
+
+#[test]
+fn rescope_cli_replaces_lints_and_acknowledges_exact_generation() {
+    let sb = Sandbox::new("rescope");
+    let seed = sb.json(&[
+        "create",
+        "scoped work",
+        "--description",
+        "old spec",
+        "--assignee",
+        "tester",
+    ]);
+    let id = seed["id"].as_str().unwrap();
+    let path = sb.work().join("spec.md");
+    std::fs::write(&path, "New consolidated requirement.").unwrap();
+    let file = path.to_str().unwrap();
+    let changed = sb.json(&[
+        "rescope",
+        id,
+        "--spec-file",
+        file,
+        "--quote",
+        "change scope",
+        "--summary",
+        "consolidate",
+        "--session",
+        "fixture",
+    ]);
+    assert_eq!(changed["version"], 1);
+    assert_eq!(changed["unacked"], true);
+    let shown = sb.json(&["show", id]);
+    let item = shown.as_array().unwrap().first().unwrap();
+    assert_eq!(
+        item["description"],
+        "SPEC v1\nNew consolidated requirement."
+    );
+    assert_eq!(
+        sb.json(&["spec-events"])["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(code(&sb.run(&["ack", id, "--version", "2"])), 2);
+    assert_eq!(sb.json(&["ack", id, "--version", "1"])["unacked"], false);
+    assert!(sb.json(&["ack", id, "--version", "1"])["tx"].is_null());
+    std::fs::write(&path, "ADDITION: layered spec").unwrap();
+    assert_eq!(
+        code(&sb.run(&[
+            "rescope",
+            id,
+            "--spec-file",
+            file,
+            "--quote",
+            "change",
+            "--summary",
+            "layered",
+            "--session",
+            "fixture"
+        ])),
+        2
+    );
+    let again = sb.json(&["show", id]);
+    assert_eq!(
+        again.as_array().unwrap()[0]["description"],
+        item["description"]
+    );
 }

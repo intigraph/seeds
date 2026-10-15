@@ -229,6 +229,21 @@ impl WriteBatch {
 
 /// Storage for one project.
 pub trait Backend {
+    /// IDs carrying governed rescope metadata. Remote readers must override
+    /// this with a bounded indexed read; an incomplete answer is an error.
+    fn spec_change_ids(&self) -> Result<Vec<String>> {
+        let snap = self.snapshot(None)?;
+        Ok(snap
+            .seeds
+            .values()
+            .filter(|seed| {
+                seed.extra
+                    .iter()
+                    .any(|(p, _)| p == &crate::vocab::seeds("specVersion"))
+            })
+            .map(|seed| seed.id.clone())
+            .collect())
+    }
     /// Every seed and comment, as of transaction `at` (current state when
     /// `None`).
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot>;

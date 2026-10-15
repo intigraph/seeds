@@ -2305,6 +2305,11 @@ pub fn update(
             s.title = t.trim().to_string();
         }
         if let Some(d) = &req.description {
+            if crate::spec::governed(before)? && before.description.as_deref() != Some(d) {
+                return Err(SdError::usage(
+                    "governed spec replacement requires rescope with quote/provenance",
+                ));
+            }
             s.description = replace_text(id, "description", &before.description, d, req.force)?;
         }
         if let Some(n) = &req.notes {
@@ -2411,6 +2416,9 @@ pub fn update(
         }
         if let Some(st) = &status {
             set_status(&mut s, st, &ctx.now, None);
+        }
+        if req.claim || status.as_deref() == Some("in_progress") {
+            crate::spec::mark_start(&mut s, ctx)?;
         }
         if s == *before {
             continue;

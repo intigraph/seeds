@@ -595,8 +595,15 @@ impl Seed {
     }
 
     /// Bridge-owned carry stays in `extra` on reads, but replaces old values on writes.
-    pub(crate) fn owned_extra_predicates() -> [String; 2] {
+    pub(crate) fn owned_extra_predicates() -> Vec<String> {
         [vocab::seeds("beadsJson"), vocab::seeds("dependencyOrigin")]
+            .into_iter()
+            .chain(
+                crate::spec::PREDICATES
+                    .iter()
+                    .map(|name| vocab::seeds(name)),
+            )
+            .collect()
     }
 
     /// Creation attribution keyed by (target, dependency type), never item creator.

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-10-15
+
+### Documentation
+
+- Include shantytown in the shared Quipu stack (#146) ([4a0715d](https://github.com/scbrown/seeds/commit/4a0715d35320b8ab163f7eec79ca3ef14b8cff72))
+
+### Fixed
+
+- *(remote)* Match integer counts and history to current server contracts (#145) ([7adf742](https://github.com/scbrown/seeds/commit/7adf74220219daa3005c9bba6e04c4b827845dcb))
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

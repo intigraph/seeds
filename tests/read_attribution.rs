@@ -91,7 +91,9 @@ fn probe(extra: &[(&str, &str)]) -> Vec<Headers> {
             reader.read_exact(&mut body).unwrap();
             log.lock().unwrap().push(headers);
             let reply = if first.contains("/query ") {
-                if String::from_utf8_lossy(&body).contains("ASK") {
+                if String::from_utf8_lossy(&body).contains("SELECT ?probe WHERE") {
+                    r#"{"head":{"vars":["probe"]},"results":{"bindings":[{"probe":{"type":"literal","value":"complete"}}]},"truncated":false}"#
+                } else if String::from_utf8_lossy(&body).contains("ASK") {
                     r#"{"head":{},"boolean":false,"result":false}"#
                 } else {
                     r#"{"head":{"vars":[]},"results":{"bindings":[]},"rows":[],"count":0,"truncated":false}"#
@@ -127,7 +129,11 @@ fn probe(extra: &[(&str, &str)]) -> Vec<Headers> {
         String::from_utf8_lossy(&result.stderr)
     );
     let result = seen.lock().unwrap().clone();
-    assert_eq!(result.len(), 9, "health and eight unchanged query requests");
+    assert_eq!(
+        result.len(),
+        8,
+        "health and seven queries: one combined preflight replaces two guards"
+    );
     for headers in &result {
         assert_eq!(headers["x-quipu-client"], "seeds");
         assert_eq!(headers["x-quipu-source"], "seeds");

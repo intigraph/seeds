@@ -60,11 +60,26 @@ impl RemoteBackend {
             guard
         };
         let mut subjects = BTreeSet::new();
-        for graph in self.both_graphs() {
-            let pattern = self
-                .search_branches(&needle, &visible, false, req.full, &graph)
+        if req.full {
+            let branches = self
+                .both_graphs()
+                .into_iter()
+                .map(|graph| {
+                    let pattern = self
+                        .search_branches(&needle, &visible, false, true, &graph)
+                        .join(" UNION ");
+                    format!("{{ GRAPH <{graph}> {{ {pattern} }} }}")
+                })
+                .collect::<Vec<_>>()
                 .join(" UNION ");
-            subjects.extend(self.subjects_where(&graph, &pattern, None)?);
+            subjects.extend(self.subjects_scoped(&branches, "full-search graphs", None)?);
+        } else {
+            for graph in self.both_graphs() {
+                let pattern = self
+                    .search_branches(&needle, &visible, false, false, &graph)
+                    .join(" UNION ");
+                subjects.extend(self.subjects_where(&graph, &pattern, None)?);
+            }
         }
         let hidden_closed = if hidden {
             let fields = if req.filter == Filter::default() {

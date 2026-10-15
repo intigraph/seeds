@@ -2450,3 +2450,8 @@ mod tests {
         );
     }
 }
+
+// The acquisition contract is exercised only by an owned synthetic fixture.
+// This does not enable remote export or change its historical-pin refusal.
+#[cfg(all(test, target_os = "linux"))]
+mod acquisition_fixture;

@@ -57,3 +57,7 @@ ci: check wasm wasm-test
 remote-test:
     test -x "${SEEDS_TEST_QUIPU_SERVER:?set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary}"
     cargo test --test modes -- --nocapture
+
+# Opt-in synthetic acquisition controls: independent pinned producer, one driver.
+acquisition-fixture-test:
+    bash tests/run-acquisition-fixture.sh

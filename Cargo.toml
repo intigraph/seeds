@@ -71,3 +71,6 @@ shacl-pin = { package = "shacl", version = "=0.3.16", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+serde_json = { version = "1.0.151", features = ["raw_value"] }

@@ -1,0 +1,6 @@
+Script started on 2026-10-15 00:11:22-04:00 [COMMAND="python3 docs/design/assets/integer-count/demo.py --server "$SEEDS_TEST_QUIPU_SERVER"" <not executed on terminal>]
+before accepted indices: ['0', '1', '1', '18446744073709551616', '9223372036854775807', '9223372036854775808']
+after accepted indices: ['0', '1', '1', '9223372036854775807']
+PASS: oversized indices excluded; maximum valid i64 preserved. Synthetic query fixture only, not installed SDK proof.
+
+Script done on 2026-10-15 00:11:22-04:00 [COMMAND_EXIT_CODE="0"]

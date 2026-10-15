@@ -978,6 +978,58 @@ pub fn secure_enough(url: &str) -> bool {
 /// The named graph a project's write provenance goes to (never exported).
 pub use crate::vocab::provenance_graph;
 
+/// Complete bounded W3C probe results only. The sentinel proves the query
+/// produced a result; unknown, duplicate or truncated bindings refuse.
+fn preflight_answer(body: &str) -> Result<(bool, bool, bool)> {
+    let invalid =
+        || SdError::failed("combined vocabulary/presence preflight incomplete or invalid");
+    let value: Json = serde_json::from_str(body).map_err(|_| invalid())?;
+    if value
+        .get("truncated")
+        .is_some_and(|v| v != &Json::Bool(false))
+    {
+        return Err(invalid());
+    }
+    let rows = value["results"]["bindings"]
+        .as_array()
+        .ok_or_else(invalid)?;
+    if rows.is_empty() || rows.len() > 4 {
+        return Err(invalid());
+    }
+    let mut found = BTreeSet::new();
+    for row in rows {
+        let row = row.as_object().ok_or_else(invalid)?;
+        if row.len() != 1 {
+            return Err(invalid());
+        }
+        let term = row.get("probe").ok_or_else(invalid)?;
+        if term["type"] != "literal"
+            || term.get("xml:lang").is_some()
+            || term
+                .get("datatype")
+                .is_some_and(|d| d != "http://www.w3.org/2001/XMLSchema#string")
+        {
+            return Err(invalid());
+        }
+        let tag = term["value"].as_str().ok_or_else(invalid)?;
+        if !matches!(
+            tag,
+            "complete" | "main_legacy" | "eph_legacy" | "eph_present"
+        ) || !found.insert(tag)
+        {
+            return Err(invalid());
+        }
+    }
+    if !found.contains("complete") {
+        return Err(invalid());
+    }
+    Ok((
+        found.contains("main_legacy"),
+        found.contains("eph_legacy"),
+        found.contains("eph_present"),
+    ))
+}
+
 /// The answer to the old-vocabulary ASK on `graph`, from the server's
 /// response body. Fails closed: anything but a JSON boolean is an error,
 /// never a "no".
@@ -1054,6 +1106,49 @@ impl Backend for RemoteBackend {
         }
         Ok(ids.into_iter().collect())
     }
+    fn project_graph(&self) -> Option<&str> {
+        Some(&self.graph)
+    }
+    fn blocker_query(
+        &self,
+        query: &str,
+        graph: Option<&str>,
+        at: Option<u64>,
+    ) -> Result<serde_json::Value> {
+        let mut body = json!({"query": query});
+        if let Some(graph) = graph {
+            crate::blockers::condition::validate_iri(graph)?;
+            body["graph"] = graph.into();
+        }
+        if let Some(at) = at {
+            body["tx"] = at.into();
+        }
+        let text = self.post("/query", "application/json", &body.to_string(), false)?;
+        serde_json::from_str(&text)
+            .map_err(|_| SdError::failed("unreadable blocker query response"))
+    }
+
+    fn blocker_snapshot(&self, at: Option<u64>) -> Result<Snapshot> {
+        if at.is_some() {
+            return Err(SdError::refused(
+                "external blocker discovery requires current state",
+            ));
+        }
+        let mut subjects = BTreeSet::new();
+        for graph in self.both_graphs() {
+            for predicate in [
+                crate::blockers::ledger_predicate(),
+                crate::blockers::edge_predicate(),
+            ] {
+                subjects.extend(self.subjects_where(
+                    &graph,
+                    &format!("?s <{predicate}> ?state"),
+                    None,
+                )?);
+            }
+        }
+        self.snapshot_of(&subjects)
+    }
     fn list_page(&self, req: &crate::engine::ListReq) -> Result<Option<crate::engine::Page>> {
         self.list_summary(req).map(Some)
     }
@@ -1106,6 +1201,65 @@ impl Backend for RemoteBackend {
             ))?;
         }
         Ok((seeds, comments, tx))
+    }
+
+    fn history_transaction_at_or_after(&self, probe: u64) -> Result<Option<u64>> {
+        use std::io::Read as _;
+        let since = probe.saturating_sub(1);
+        if probe == 0 || probe > i64::MAX as u64 {
+            return Err(SdError::failed("invalid history transaction probe"));
+        }
+        let path = format!("/transactions?since={since}&limit=1");
+        let response = quipu_read_request(
+            self.agent.get(&format!("{}{path}", self.base)),
+            "transactions",
+        )
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Transport(t) => transport(&self.base, &t),
+            ureq::Error::Status(code, r) => status_error(
+                "history transaction lookup",
+                code,
+                &r.into_string().unwrap_or_default(),
+            ),
+        })?;
+        // One metadata row only. Never accept an ignored limit or a truncated
+        // body as an empty feed, and never hydrate source transaction payloads.
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(65537)
+            .read_to_end(&mut body)
+            .map_err(|e| SdError::failed(format!("reading history transaction lookup: {e}")))?;
+        if body.len() > 65536 {
+            return Err(SdError::failed(
+                "history transaction metadata byte cap exceeded",
+            ));
+        }
+        let value: Json = serde_json::from_slice(&body)
+            .map_err(|_| SdError::failed("invalid history transaction metadata"))?;
+        let rows = value["transactions"]
+            .as_array()
+            .ok_or_else(|| SdError::failed("missing history transaction metadata"))?;
+        if rows.len() > 1
+            || value["count"].as_u64() != Some(rows.len() as u64)
+            || value.get("error").is_some()
+            || value
+                .get("truncated")
+                .is_some_and(|v| v != &Json::Bool(false))
+        {
+            return Err(SdError::failed(
+                "incomplete or unbounded history transaction metadata",
+            ));
+        }
+        rows.first()
+            .map(|row| {
+                row["id"]
+                    .as_u64()
+                    .filter(|tx| *tx >= probe && *tx <= i64::MAX as u64)
+                    .ok_or_else(|| SdError::failed("invalid committed history transaction ID"))
+            })
+            .transpose()
     }
 
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot> {
@@ -1296,17 +1450,24 @@ impl Backend for RemoteBackend {
     }
 
     fn legacy_present(&self) -> Result<bool> {
-        for graph in [
-            self.graph.clone(),
-            crate::vocab::ephemeral_graph(&self.graph),
-        ] {
-            let body = json!({ "query": vocab::legacy_presence_query(&graph) });
-            let text = self.post("/query", "application/json", &body.to_string(), false)?;
-            if ask_answer(&graph, &text)? {
-                return Ok(true);
-            }
+        let eph = vocab::ephemeral_graph(&self.graph);
+        let legacy = vocab::LEGACY_REVISION;
+        // At most four tagged rows: bounded existence probes, never seed hydration.
+        // Empty is not cached: another writer can add ephemeral facts immediately.
+        let query = format!(
+            "SELECT ?probe WHERE {{ {{ BIND(\"complete\" AS ?probe) }} \
+             UNION {{ SELECT (\"main_legacy\" AS ?probe) WHERE {{ GRAPH <{}> {{ ?s <{legacy}> ?r }} }} LIMIT 1 }} \
+             UNION {{ SELECT (\"eph_legacy\" AS ?probe) WHERE {{ GRAPH <{eph}> {{ ?s <{legacy}> ?r }} }} LIMIT 1 }} \
+             UNION {{ SELECT (\"eph_present\" AS ?probe) WHERE {{ GRAPH <{eph}> {{ ?s ?p ?o }} }} LIMIT 1 }} }} LIMIT 5",
+            self.graph
+        );
+        let body = json!({"query": query});
+        let answer = self.post("/query", "application/json", &body.to_string(), false)?;
+        let (main_legacy, eph_legacy, eph_present) = preflight_answer(&answer)?;
+        if eph_present {
+            self.ephemeral_seen.set(true);
         }
-        Ok(false)
+        Ok(main_legacy || eph_legacy)
     }
 
     fn legacy_items(&self) -> Result<u64> {
@@ -1710,6 +1871,148 @@ mod scoped_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preflight_fixture(a: bool, b: bool, c: bool) -> Json {
+        let mut rows = vec![json!({"probe":{"type":"literal","value":"complete"}})];
+        for (present, tag) in [(a, "main_legacy"), (b, "eph_legacy"), (c, "eph_present")] {
+            if present {
+                rows.push(json!({"probe":{"type":"literal","value":tag}}));
+            }
+        }
+        json!({"results":{"bindings":rows}})
+    }
+
+    #[test]
+    fn combined_preflight_requires_complete_typed_probes() {
+        for a in [false, true] {
+            for b in [false, true] {
+                for c in [false, true] {
+                    assert_eq!(
+                        preflight_answer(&preflight_fixture(a, b, c).to_string()).unwrap(),
+                        (a, b, c)
+                    );
+                }
+            }
+        }
+        let good = preflight_fixture(false, false, false);
+        let mut bad = Vec::new();
+        let mut x = good.clone();
+        x["results"]["bindings"] = json!([]);
+        bad.push(x);
+        let mut x = good.clone();
+        x["truncated"] = json!(true);
+        bad.push(x);
+        let mut x = good.clone();
+        x["truncated"] = json!("false");
+        bad.push(x);
+        let mut x = good.clone();
+        x["results"]["bindings"][0] = json!({});
+        bad.push(x);
+        let mut x = good.clone();
+        x["results"]["bindings"][0]["probe"]["type"] = json!("uri");
+        bad.push(x);
+        let mut x = good.clone();
+        x["results"]["bindings"][0]["probe"]["datatype"] =
+            json!("http://www.w3.org/2001/XMLSchema#boolean");
+        bad.push(x);
+        let mut x = good.clone();
+        x["results"]["bindings"][0]["probe"]["value"] = json!("UNKNOWN");
+        bad.push(x);
+        let mut x = good.clone();
+        let duplicate = x["results"]["bindings"][0].clone();
+        x["results"]["bindings"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        bad.push(x);
+        let mut x = preflight_fixture(true, false, false);
+        x["results"]["bindings"].as_array_mut().unwrap().remove(0);
+        bad.push(x);
+        for x in bad {
+            assert!(preflight_answer(&x.to_string()).is_err(), "{x}");
+        }
+        for x in ["", "not json", "{}", "{\"boolean\":false}"] {
+            assert!(preflight_answer(x).is_err());
+        }
+    }
+
+    #[test]
+    fn combined_preflight_native_scope_counts_and_new_facts() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for native preflight control");
+            return;
+        };
+        let graph = "https://seeds.local/project/preflight-fixture";
+        let eph = vocab::ephemeral_graph(graph);
+        let mut reader = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        reader.register_graph(true).unwrap();
+        let subject = vocab::item_iri("fixture-item");
+        update(
+            &reader,
+            &format!("INSERT DATA {{ GRAPH <{graph}> {{ <{subject}> <urn:p> \"main\" }} }}"),
+        );
+        let before = seeds_queries(&server.base);
+        assert!(!reader.legacy_present().unwrap());
+        let calls = seeds_queries(&server.base) - before;
+        assert_eq!(calls, 1);
+        eprintln!("empty-graph vocabulary preflight: {calls} request (old: 2)");
+        assert!(!reader.ephemeral_seen.get(), "absence must not be cached");
+        update(
+            &reader,
+            &format!("INSERT DATA {{ GRAPH <{eph}> {{ <{subject}> <urn:p> \"new\" }} }}"),
+        );
+        let (_, facts) = reader.subjects_facts(&[subject.clone()].into()).unwrap();
+        assert!(
+            facts.contains_key(&subject),
+            "new work after preflight must be observed"
+        );
+        eprintln!("new ephemeral fact after an empty preflight: observed");
+        // A fresh preflight can remember only PRESENT and avoids the later ASK.
+        let fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let before = seeds_queries(&server.base);
+        assert!(!fresh.legacy_present().unwrap());
+        assert!(fresh.ephemeral_seen.get());
+        fresh.subjects_facts(&[subject.clone()].into()).unwrap();
+        assert_eq!(
+            seeds_queries(&server.base) - before,
+            3,
+            "one preflight plus two facts reads"
+        );
+        for g in [graph.to_string(), eph.clone()] {
+            update(
+                &reader,
+                &format!(
+                    "INSERT DATA {{ GRAPH <{g}> {{ <{subject}> <{}> 1 }} }}",
+                    vocab::LEGACY_REVISION
+                ),
+            );
+            assert!(reader.legacy_present().unwrap(), "legacy graph {g} escaped");
+            update(
+                &reader,
+                &format!(
+                    "DELETE DATA {{ GRAPH <{g}> {{ <{subject}> <{}> 1 }} }}",
+                    vocab::LEGACY_REVISION
+                ),
+            );
+        }
+        // Foreign graph's old data cannot taint this project's preflight.
+        reader
+            .post(
+                "/graph/create",
+                "application/json",
+                &json!({"graph":"urn:foreign:preflight"}).to_string(),
+                true,
+            )
+            .unwrap();
+        update(
+            &reader,
+            &format!(
+                "INSERT DATA {{ GRAPH <urn:foreign:preflight> {{ <{subject}> <{}> 1 }} }}",
+                vocab::LEGACY_REVISION
+            ),
+        );
+        assert!(!reader.legacy_present().unwrap());
+    }
 
     // seeds#96 follow-up: the old-vocabulary ASK fails closed.
     #[test]
@@ -2382,3 +2685,8 @@ mod tests {
         );
     }
 }
+
+// The acquisition contract is exercised only by an owned synthetic fixture.
+// This does not enable remote export or change its historical-pin refusal.
+#[cfg(all(test, target_os = "linux"))]
+mod acquisition_fixture;

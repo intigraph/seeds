@@ -178,6 +178,10 @@ pub fn target(name: &str) -> Option<Json> {
         ]),
         "issue-details" => seed_with(&[
             (
+                "external_blockers",
+                json!({"type":"object","required":["status","blockers"],"properties":{"status":{"type":"string"},"blockers":{"type":"array"}}}),
+            ),
+            (
                 "dependencies",
                 json!({"type": "array", "items": edge.clone()}),
             ),

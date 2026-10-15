@@ -2,9 +2,11 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import threading
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 G = "https://seeds.local/project/aegis"
@@ -20,8 +22,22 @@ def term(v, t="literal"):
     return d
 
 
+def bounded_preflight(query):
+    # Exact bounded control exception to the seed-bound historical queries.
+    # No general SELECT/graph-scan exemption: all three graph branches and
+    # their limits, the sentinel and the outer ceiling must match.
+    eph = G + "#seeds-ephemeral"
+    expected = f"""SELECT ?probe WHERE {{ {{ BIND("complete" AS ?probe) }}
+      UNION {{ SELECT ("main_legacy" AS ?probe) WHERE {{ GRAPH <{G}> {{ ?s <{ON}revision> ?r }} }} LIMIT 1 }}
+      UNION {{ SELECT ("eph_legacy" AS ?probe) WHERE {{ GRAPH <{eph}> {{ ?s <{ON}revision> ?r }} }} LIMIT 1 }}
+      UNION {{ SELECT ("eph_present" AS ?probe) WHERE {{ GRAPH <{eph}> {{ ?s ?p ?o }} }} LIMIT 1 }} }} LIMIT 5"""
+    normalize = lambda text: re.sub(r"\s+", " ", text.strip())
+    return normalize(query) == normalize(expected)
+
+
 def run_fixture(mode, size):
     queries = []
+    metadata_requests = []
     responses = []
     subjects = [S] + [
         f"https://seeds.local/item/aegis-other-{i:04}" for i in range(size - 1)
@@ -64,7 +80,35 @@ def run_fixture(mode, size):
             self.wfile.write(b)
 
         def do_GET(self):
-            self.reply({"status": "ok"})
+            path = urlsplit(self.path)
+            if path.path != "/transactions":
+                self.reply({"status": "ok"})
+                return
+            params = parse_qs(path.query)
+            assert set(params) == {"since", "limit"} and params["limit"] == ["1"], params
+            since = int(params["since"][0])
+            metadata_requests.append(since)
+            if mode == "empty-feed":
+                self.reply({"count": 0, "transactions": []})
+                return
+            if mode == "truncated-feed":
+                self.reply({"count": 0, "transactions": [], "truncated": True})
+                return
+            if mode == "oversized-feed":
+                self.reply({"count": 0, "transactions": [], "padding": "x" * 65536})
+                return
+            if mode == "bad-feed":
+                self.reply({"count": 1, "transactions": [{"id": since}]})
+                return
+            if mode == "wide-feed":
+                self.reply({"count": 2, "transactions": [{"id": since + 1}, {"id": since + 2}]})
+                return
+            if mode == "feed-error":
+                self.reply({"error": "unavailable"}, 503)
+                return
+            commits = [1, 10, 20, 30] if mode == "gapped" else range(1, 31)
+            rows = [{"id": tx} for tx in commits if tx > since][:1]
+            self.reply({"count": len(rows), "transactions": rows})
 
         def do_POST(self):
             if self.path != "/query":
@@ -73,6 +117,9 @@ def run_fixture(mode, size):
             b = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             q = b["query"]
             queries.append(b)
+            if "tx" in b and (b["tx"] > 30 or (mode == "gapped" and b["tx"] not in [1,10,20,30])):
+                self.reply({"error": "not an existing committed source transaction"}, 400)
+                return
             if "tx" in b and mode == "refused":
                 self.reply(
                     {
@@ -80,6 +127,9 @@ def run_fixture(mode, size):
                     },
                     400,
                 )
+                return
+            if bounded_preflight(q):
+                self.reply({"head":{"vars":["probe"]},"results":{"bindings":[{"probe":term("complete")}]},"truncated":False})
                 return
             if q.lstrip().startswith("ASK"):
                 self.reply({"boolean": False})
@@ -131,6 +181,7 @@ def run_fixture(mode, size):
             "SEEDS_STORE",
         ]:
             env.pop(k, None)
+        command = ["show", "aegis-probe", "--at", "31", "--json"] if mode == "future" else ["history", "aegis-probe", "--json"]
         proc = subprocess.run(
             [
                 os.environ.get(
@@ -143,9 +194,7 @@ def run_fixture(mode, size):
                 f"http://127.0.0.1:{server.server_port}",
                 "--graph",
                 G,
-                "history",
-                "aegis-probe",
-                "--json",
+                *command,
             ],
             check=False,
             env=env,
@@ -159,6 +208,7 @@ def run_fixture(mode, size):
         "board_items": size,
         "exit": proc.returncode,
         "queries": len(queries),
+        "metadata_requests": len(metadata_requests),
         "response_bytes": sum(responses),
         "requests": queries,
         "stdout": proc.stdout,
@@ -168,9 +218,20 @@ def run_fixture(mode, size):
 
 results = [
     run_fixture(mode, size)
-    for mode in ["refused", "versions", "truncated", "missing", "recreated"]
+    for mode in ["refused", "versions", "gapped", "truncated", "missing", "recreated", "bad-feed", "wide-feed", "feed-error", "empty-feed", "truncated-feed", "oversized-feed", "future"]
     for size in [1, 101]
 ]
+
+# The new exception is an exact bounded control query, not permission for a
+# general projection, foreign graph, larger limit or whole-board fallback.
+for result in results:
+    assert bounded_preflight(result["requests"][0]["query"]), result
+sample = results[0]["requests"][0]["query"]
+for widened in [sample.replace(G,"urn:foreign:project"),
+                sample.replace("LIMIT 1","LIMIT 2",1),
+                sample.replace("LIMIT 5",""),
+                sample + " UNION { ?s ?p ?o }"]:
+    assert not bounded_preflight(widened), widened
 
 print(
     json.dumps(
@@ -180,23 +241,29 @@ print(
         ]
     )
 )
-for mode in ["refused", "versions", "truncated", "missing", "recreated"]:
+for mode in ["refused", "versions", "gapped", "truncated", "missing", "recreated", "bad-feed", "wide-feed", "feed-error", "empty-feed", "truncated-feed", "oversized-feed", "future"]:
     pair = [r for r in results if r["mode"] == mode]
     assert pair[0]["queries"] == pair[1]["queries"], pair
+    assert pair[0]["metadata_requests"] == pair[1]["metadata_requests"], pair
+    assert pair[0]["metadata_requests"] <= 64, pair
     assert pair[0]["response_bytes"] == pair[1]["response_bytes"], pair
     for r in pair:
-        assert all(
-            "COUNT(" not in b["query"]
-            and ("ASK" in b["query"] or "<" + S + ">" in b["query"])
-            for b in r["requests"]
-        ), r
-        if mode == "versions":
+        if mode != "future":
+            assert all(
+                "COUNT(" not in b["query"]
+                and (bounded_preflight(b["query"]) or "ASK" in b["query"] or "<" + S + ">" in b["query"])
+                for b in r["requests"]
+            ), r
+        if mode in ("versions", "gapped"):
             assert r["exit"] == 0, r
             versions = json.loads(r["stdout"])["versions"]
             assert [v["tx"] for v in versions] == [10, 20, 30], versions
             assert [v["revision"] for v in versions] == [1, 2, 3], versions
         else:
             assert r["exit"] != 0, r
+            if mode == "future":
+                assert "existing committed source transaction" in r["stderr"], r
+                assert r["metadata_requests"] == 0, r
             if mode == "refused":
                 assert "as_of_tx" in r["stderr"], r
             if mode == "truncated":

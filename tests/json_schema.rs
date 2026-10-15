@@ -184,7 +184,15 @@ fn every_verb_prints_its_documented_keys() {
     assert_eq!(show.as_array().unwrap().len(), 2);
     assert_eq!(
         keys(&show[0]),
-        with(SEED_KEYS, &["comments", "dependencies", "dependents"]),
+        with(
+            SEED_KEYS,
+            &[
+                "comments",
+                "dependencies",
+                "dependents",
+                "external_blockers"
+            ]
+        ),
         "show"
     );
     assert_eq!(keys(&show[0]["dependencies"][0]), set(EDGE_KEYS));

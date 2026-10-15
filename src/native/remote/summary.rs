@@ -8,9 +8,11 @@ fn literal(s: &str) -> String {
 
 // Self-subtraction must be the integer term zero (not decimal/double zero),
 // and adding integer zero must preserve term identity (not promote a typed
-// integer subtype). Checked i64 arithmetic retains MAX without f64 rounding.
+// integer subtype). Bound the range explicitly: newer Quipu versions preserve
+// arbitrary-sized xsd:integer terms, but the snapshot decoder accepts i64 only.
+// Checked i64 arithmetic retains MAX without f64 rounding.
 pub(super) fn nonnegative_integer_guard(variable: &str) -> String {
-    format!("sameTerm({variable} - {variable}, 0) && sameTerm({variable}, {variable} + 0) && {variable} >= 0")
+    format!("sameTerm({variable} - {variable}, 0) && sameTerm({variable}, {variable} + 0) && {variable} >= 0 && {variable} <= 9223372036854775807")
 }
 
 fn principal_guard(variable: &str) -> String {

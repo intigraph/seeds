@@ -1,0 +1,27 @@
+Script started on 2026-10-14 21:41:52-04:00 [COMMAND="python3 docs/demos/reactivation/reproduce.py "$SD_DEMO_BEFORE" "$SD_DEMO_AFTER"" <not executed on terminal>]
+BEFORE
+$ sd update <fixture> --status in_progress --json
+{
+  "status": "in_progress",
+  "defer_until": "2099-01-01",
+  "notes": "Evidence retained.\nresume_when: date:2099-01-01"
+}
+$ sd update <fixture> --status in_progress --defer 2099-02-01 --json
+{
+  "status": "in_progress",
+  "defer_until": "2099-02-01"
+}
+AFTER
+$ sd update <fixture> --status in_progress --json
+{
+  "status": "in_progress",
+  "defer_until": null,
+  "notes": "Evidence retained.\nhistorical resume condition: date:2099-01-01"
+}
+$ sd update <fixture> --status in_progress --defer 2099-02-01 --json
+{
+  "status": "in_progress",
+  "defer_until": "2099-02-01"
+}
+
+Script done on 2026-10-14 21:41:53-04:00 [COMMAND_EXIT_CODE="0"]

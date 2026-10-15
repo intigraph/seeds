@@ -1,0 +1,3 @@
+Retained pre-fix official Quipu 0.14 SDK history responses:
+sd ["history", "sd-z9e", "--json"] exited Some(1): sd: quipu /query failed (HTTP 400): {"error":"tx 12 does not identify an existing committed source transaction"}
+sd ["history", "sd-5pd", "--json"] exited Some(1): sd: quipu /query failed (HTTP 400): {"error":"tx 12 does not identify an existing committed source transaction"}

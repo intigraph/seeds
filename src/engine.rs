@@ -1547,6 +1547,10 @@ pub struct HistoryEntry {
 
 /// The seed's revision as of `tx`, or 0 if it did not exist yet.
 fn revision_at(b: &dyn Backend, id: &str, tx: u64) -> Result<u64> {
+    let Some(tx) = b.history_transaction_at_or_after(tx)? else {
+        // An empty bounded feed brackets the search; never fabricate a version.
+        return Ok(u64::MAX);
+    };
     Ok(b.snapshot_seed_at(id, Some(tx))?
         .seeds
         .get(id)
@@ -1555,8 +1559,8 @@ fn revision_at(b: &dyn Backend, id: &str, tx: u64) -> Result<u64> {
 
 /// The first transaction from `lo` at which the seed's revision exceeds
 /// `after` (revisions only grow). Galloping, then binary search, over `--at`
-/// reads: it needs no head transaction, which a quipu server does not report,
-/// because a read as of a tx past the head is the current state.
+/// reads. Remote probes resolve the next committed transaction first, so gaps
+/// and probes beyond the head never issue an invalid historical read.
 fn first_tx_after(b: &dyn Backend, id: &str, after: u64, mut lo: u64) -> Result<u64> {
     let mut hi = lo.max(1);
     while revision_at(b, id, hi)? <= after {
@@ -1573,7 +1577,11 @@ fn first_tx_after(b: &dyn Backend, id: &str, after: u64, mut lo: u64) -> Result<
             lo = mid + 1;
         }
     }
-    Ok(lo)
+    b.history_transaction_at_or_after(lo)?.ok_or_else(|| {
+        SdError::failed(format!(
+            "{id}: no committed transaction covers the next version"
+        ))
+    })
 }
 
 /// `sd history <id>`: every version of one seed, oldest first, with the
@@ -2019,6 +2027,7 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         .filter(|s| req.include_deferred || !is_deferred(s, &ctx.now))
         .filter(|s| under.as_ref().is_none_or(|u| u.contains(&s.id)))
         .filter(|s| f.matches(s))
+        .filter(|s| crate::blockers::currently_done(b, s, at))
         .cloned()
         .collect();
     match sort {
@@ -2298,7 +2307,18 @@ pub fn update(
     for id in ids {
         let before = snap.get(id)?;
         let mut s = before.clone();
+        if req.status.is_some() && crate::blockers::has_metadata(before) {
+            let mut ledger = crate::blockers::load(before)?;
+            // An explicit status edit takes ownership away from reconciliation.
+            ledger.managed_status = false;
+            crate::blockers::save(&mut s, &ledger)?;
+        }
         if req.claim {
+            if !crate::blockers::currently_done(b, before, None) {
+                return Err(SdError::refused(
+                    "external prerequisites are unresolved or unreadable; cannot claim",
+                ));
+            }
             claim(&snap, &mut s, &ctx.actor)?;
         }
         if let Some(t) = &req.title {
@@ -2419,6 +2439,16 @@ pub fn update(
         }
         if req.claim || status.as_deref() == Some("in_progress") {
             crate::spec::mark_start(&mut s, ctx)?;
+        }
+        // Explicit status/claim is a lifecycle decision. Clear the previous
+        // parking metadata in this same revision-checked write, unless this
+        // request deliberately supplies a new deadline. Metadata-only edits
+        // leave both legacy field-based and status-based holds intact.
+        if (status.is_some() || req.claim)
+            && s.status != "deferred"
+            && req.defer.as_deref().is_none_or(|d| d.trim().is_empty())
+        {
+            clear_deferral(&mut s);
         }
         if s == *before {
             continue;
@@ -2766,7 +2796,7 @@ pub fn undefer_with(
         |s| (s.status != "deferred").then(|| format!("not deferred (status: {})", s.status)),
         |s| {
             s.status = "open".into();
-            s.defer_until = None;
+            clear_deferral(s);
         },
         comment,
     )
@@ -3256,6 +3286,47 @@ fn claim(snap: &Snapshot, s: &mut Seed, actor: &str) -> Result<()> {
     Ok(())
 }
 
+/// Retire a resume marker without discarding its evidence or condition.
+/// This runs on the transaction snapshot, never on a separate caller read.
+fn clear_deferral(s: &mut Seed) {
+    s.defer_until = None;
+    let Some(notes) = &s.notes else { return };
+    let mut out = String::with_capacity(notes.len());
+    let mut copied = 0;
+    for (start, _) in notes.char_indices() {
+        if start < copied {
+            continue;
+        }
+        let rest = &notes[start..];
+        if !rest
+            .get(..6)
+            .is_some_and(|p| p.eq_ignore_ascii_case("resume"))
+        {
+            continue;
+        }
+        let tail = &rest[6..];
+        let tail = tail.strip_prefix(['_', ' ', '-']).unwrap_or(tail);
+        if !tail
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("when"))
+        {
+            continue;
+        }
+        let tail = tail[4..].trim_start();
+        if !tail.starts_with([':', '=']) {
+            continue;
+        }
+        let end = notes.len() - tail.len() + 1;
+        out.push_str(&notes[copied..start]);
+        out.push_str("historical resume condition:");
+        copied = end;
+    }
+    if copied != 0 {
+        out.push_str(&notes[copied..]);
+        s.notes = Some(out);
+    }
+}
+
 fn set_status(s: &mut Seed, status: &str, now: &str, reason: Option<&str>) {
     set_status_as(s, status, now, reason, None);
 }
@@ -3468,7 +3539,7 @@ pub fn dep_add(
         return Err(SdError::refused(format!("{issue} cannot depend on itself")));
     }
     let snap = if dep_type == "parent-child" {
-        b.snapshot(None)?
+        parent_snapshot(b, &[issue.into(), depends_on.into()])?
     } else if dep_type == "blocks" {
         blocking_snapshot(b, &[issue.into(), depends_on.into()], true)?
     } else {
@@ -3502,6 +3573,7 @@ pub fn dep_add(
         }
     }
     if dep_type == "parent-child" {
+        reparent(&snap, issue, depends_on)?;
         if let Some(p) = &before.parent {
             return Err(SdError::refused(format!(
                 "{issue} already has parent {p}; remove that dependency first"
@@ -3532,6 +3604,38 @@ pub fn dep_add(
         action: "added",
         tx,
     })
+}
+
+/// Exact seed reads of the reachable parent chain, with revision consistency.
+fn parent_snapshot(b: &dyn Backend, ids: &[String]) -> Result<Snapshot> {
+    let mut snap = b.snapshot_items(ids)?;
+    let mut seen: BTreeSet<String> = ids.iter().cloned().collect();
+    loop {
+        let next: Vec<String> = snap
+            .seeds
+            .values()
+            .filter_map(|s| s.parent.as_ref())
+            .filter(|id| !seen.contains(*id))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if next.is_empty() {
+            break;
+        }
+        seen.extend(next.iter().cloned());
+        let extra = b.snapshot_items(&next)?;
+        if extra.tx != snap.tx {
+            return Err(SdError::conflict(
+                "parent context changed while reading; nothing was written",
+            ));
+        }
+        for id in &next {
+            extra.get(id)?;
+        }
+        snap.seeds.extend(extra.seeds);
+    }
+    Ok(snap)
 }
 
 /// Load the blocking context needed by a claim (direct targets) or cycle check

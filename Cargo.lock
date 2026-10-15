@@ -2504,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "seeds-ai"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2512,6 +2512,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "jiff",
+ "oxiri 0.2.11",
  "oxsdatatypes",
  "quipu-ai",
  "serde",

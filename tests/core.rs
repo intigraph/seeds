@@ -368,6 +368,262 @@ fn mk(b: &mut QuipuBackend, title: &str, n: u32) -> String {
     .id
 }
 
+fn foreign_status(b: &mut QuipuBackend, status: &str, op: quipu::types::Op, n: u32) {
+    use quipu::store::Datum;
+    use quipu::types::Value;
+    let st = b.store_mut();
+    let g = st.graph_create("urn:test:foreign-project").unwrap();
+    let e = st.intern("urn:test:foreign-work").unwrap();
+    let a = st.intern(&seeds::vocab::term::status()).unwrap();
+    st.transact_to_graph(
+        &[Datum {
+            entity: e,
+            attribute: a,
+            value: Value::Str(status.into()),
+            valid_from: ctx(n).now.clone(),
+            valid_to: None,
+            op,
+        }],
+        &ctx(n).now,
+        Some("tester"),
+        Some("fixture"),
+        g,
+    )
+    .unwrap();
+}
+
+#[test]
+fn external_unlock_outbox_is_persistent_receipted_and_rearms() {
+    use seeds::blockers::{self, Blocker, State};
+    let mut b = backend();
+    let id = mk(&mut b, "external prerequisite", 1);
+    foreign_status(&mut b, "open", quipu::types::Op::Assert, 2);
+    blockers::engine::add(
+        &mut b,
+        &ctx(3),
+        &id,
+        Blocker {
+            iri: "urn:test:foreign-work".into(),
+            graph: Some("urn:test:foreign-project".into()),
+            ask: blockers::condition::ask_for("urn:test:foreign-work", "closed").unwrap(),
+            condition: "closed".into(),
+            state: State::Unknown,
+            observed_at: None,
+            actor: "tester".into(),
+            created_at: ctx(3).now,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        b.snapshot(None).unwrap().get(&id).unwrap().status,
+        "blocked"
+    );
+    assert!(blockers::engine::reconcile(&mut b, &ctx(4), &id)
+        .unwrap()
+        .is_none());
+    assert!(blockers::engine::events(&b).unwrap().is_empty());
+    assert!(!ready_ids(&b, 4).contains(&id));
+    foreign_status(&mut b, "closed", quipu::types::Op::Assert, 5);
+    assert!(blockers::engine::reconcile(&mut b, &ctx(6), &id)
+        .unwrap()
+        .is_some());
+    let current = b.snapshot(None).unwrap();
+    assert_eq!(current.get(&id).unwrap().status, "open");
+    assert!(
+        blockers::currently_done(&b, current.get(&id).unwrap(), None),
+        "{:?}",
+        blockers::load(current.get(&id).unwrap())
+    );
+    assert!(ready_ids(&b, 6).contains(&id));
+    let pending = blockers::engine::events(&b).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].assignee, None);
+    assert_eq!(pending, blockers::engine::events(&b).unwrap());
+    assert!(blockers::engine::reconcile(&mut b, &ctx(7), &id)
+        .unwrap()
+        .is_none());
+    blockers::engine::ack(
+        &mut b,
+        &ctx(8),
+        &id,
+        &pending[0].event_id,
+        "retained-receipt-1",
+    )
+    .unwrap();
+    assert!(blockers::engine::ack(
+        &mut b,
+        &ctx(9),
+        &id,
+        &pending[0].event_id,
+        "retained-receipt-1"
+    )
+    .unwrap()
+    .is_none());
+    assert!(blockers::engine::events(&b).unwrap().is_empty());
+    assert!(
+        blockers::engine::ack(&mut b, &ctx(9), &id, &pending[0].event_id, "different").is_err()
+    );
+    foreign_status(&mut b, "closed", quipu::types::Op::Retract, 10);
+    // Cached done cannot hide a newly false condition, even before reconcile.
+    assert!(!ready_ids(&b, 10).contains(&id));
+    assert!(engine::update(
+        &mut b,
+        &ctx(11),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            claim: true,
+            ..Default::default()
+        }
+    )
+    .is_err());
+    blockers::engine::reconcile(&mut b, &ctx(12), &id).unwrap();
+    foreign_status(&mut b, "closed", quipu::types::Op::Assert, 13);
+    blockers::engine::reconcile(&mut b, &ctx(14), &id).unwrap();
+    let second = blockers::engine::events(&b).unwrap();
+    assert_eq!(second.len(), 1);
+    assert_ne!(pending[0].event_id, second[0].event_id);
+    assert_eq!(second[0].ready_generation, 2);
+}
+
+#[test]
+fn parent_dependency_reads_only_exact_ancestor_context_and_refuses_cycles() {
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let root = mk(&mut inner, "root", 3);
+    let unrelated = mk(&mut inner, "unrelated", 4);
+    engine::dep_add(&mut inner, &ctx(5), &parent, &root, "parent-child").unwrap();
+    let mut b = CommentReads {
+        inner,
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    engine::dep_add(&mut b, &ctx(6), &child, &parent, "parent-child").unwrap();
+    assert!(
+        b.snapshots.borrow().is_empty(),
+        "dep validation must not load the board"
+    );
+    assert!(b.items.borrow().iter().flatten().all(|id| id != &unrelated));
+    assert!(b.items.borrow().iter().flatten().any(|id| id == &root));
+    assert!(engine::dep_add(&mut b, &ctx(7), &root, &child, "parent-child").is_err());
+    assert!(b.snapshots.borrow().is_empty());
+}
+
+#[test]
+fn blocker_read_failure_and_manual_holds_do_not_unlock() {
+    use seeds::blockers::{self, Blocker, State};
+    let mut inner = backend();
+    let id = mk(&mut inner, "manual hold", 1);
+    engine::update(
+        &mut inner,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("blocked".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    blockers::engine::add(
+        &mut inner,
+        &ctx(3),
+        &id,
+        Blocker {
+            iri: "urn:test:manual".into(),
+            graph: None,
+            ask: "ASK { FILTER(true) }".into(),
+            condition: "ask".into(),
+            state: State::Unknown,
+            observed_at: None,
+            actor: "tester".into(),
+            created_at: ctx(3).now,
+        },
+    )
+    .unwrap();
+    assert!(blockers::engine::reconcile(&mut inner, &ctx(4), &id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        inner.snapshot(None).unwrap().get(&id).unwrap().status,
+        "blocked"
+    );
+    assert!(blockers::engine::events(&inner).unwrap().is_empty());
+    let mut b = CommentReads {
+        inner,
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    // This backend's missing query capability is a read failure, never done.
+    blockers::engine::reconcile(&mut b, &ctx(5), &id).unwrap();
+    let snap = b.snapshot(None).unwrap();
+    assert_eq!(
+        blockers::load(snap.get(&id).unwrap())
+            .unwrap()
+            .blockers
+            .values()
+            .next()
+            .unwrap()
+            .state,
+        State::Unknown
+    );
+    assert!(blockers::engine::events(&b).unwrap().is_empty());
+}
+
+#[test]
+fn marker_migration_is_a_dry_run_then_one_batch_and_preserves_other_notes() {
+    use seeds::blockers;
+    let mut b = backend();
+    let target = mk(&mut b, "target", 1);
+    let waiting = mk(&mut b, "waiting", 2);
+    let historical = mk(&mut b, "historical mention", 3);
+    engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&waiting),
+        &UpdateReq {
+            notes: Some(format!("retained\nresume_when: closed:{target}")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    engine::defer(&mut b, &ctx(5), std::slice::from_ref(&waiting), None).unwrap();
+    engine::update(
+        &mut b,
+        &ctx(6),
+        std::slice::from_ref(&historical),
+        &UpdateReq {
+            notes: Some(format!("Historical resume_when: closed:{target}")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    engine::defer(&mut b, &ctx(7), std::slice::from_ref(&historical), None).unwrap();
+    let baseline = b.snapshot(None).unwrap();
+    let plan = blockers::migration::migrate(&mut b, &ctx(8), false).unwrap();
+    assert_eq!(plan["count"], 1);
+    assert_eq!(baseline.seeds, b.snapshot(None).unwrap().seeds);
+    let applied = blockers::migration::migrate(&mut b, &ctx(9), true).unwrap();
+    assert!(applied["tx"].is_number());
+    let snap = b.snapshot(None).unwrap();
+    assert_eq!(
+        snap.get(&waiting).unwrap().notes.as_deref(),
+        Some("retained")
+    );
+    assert_eq!(snap.get(&waiting).unwrap().status, "blocked");
+    assert_eq!(
+        snap.get(&historical).unwrap(),
+        baseline.get(&historical).unwrap()
+    );
+    assert_eq!(
+        blockers::migration::migrate(&mut b, &ctx(10), false).unwrap()["count"],
+        0
+    );
+}
+
 fn ready_ids(b: &QuipuBackend, n: u32) -> Vec<String> {
     engine::ready(b, &ctx(n), &ReadyReq::default(), None)
         .unwrap()
@@ -3832,6 +4088,80 @@ fn push_only_resumes_a_partial_split_without_rewriting_landed_items() {
 }
 
 #[test]
+fn external_target_discovery_is_exact_and_ambiguous_graphs_refuse() {
+    use quipu::store::Datum;
+    use quipu::types::{Op, Value};
+    use seeds::blockers::condition;
+    let mut b = backend();
+    foreign_status(&mut b, "open", Op::Assert, 1);
+    let st = b.store_mut();
+    let g = st.graph_create("urn:test:foreign-project").unwrap();
+    let entity = st.intern("urn:test:foreign-work").unwrap();
+    let label = st.intern(seeds::vocab::RDFS_LABEL).unwrap();
+    let ty = st.intern(seeds::vocab::RDF_TYPE).unwrap();
+    let action = st.intern(&seeds::vocab::term::work_item()).unwrap();
+    let facts = [
+        Datum {
+            entity,
+            attribute: label,
+            value: Value::Str("Foreign work".into()),
+            valid_from: ctx(2).now.clone(),
+            valid_to: None,
+            op: Op::Assert,
+        },
+        Datum {
+            entity,
+            attribute: ty,
+            value: Value::Ref(action),
+            valid_from: ctx(2).now.clone(),
+            valid_to: None,
+            op: Op::Assert,
+        },
+    ];
+    st.transact_to_graph(&facts, &ctx(2).now, Some("tester"), Some("fixture"), g)
+        .unwrap();
+    assert_eq!(
+        condition::resolve_name(&b, "Foreign work", None).unwrap(),
+        "urn:test:foreign-work"
+    );
+    assert_eq!(
+        condition::discover_graph(&b, "urn:test:foreign-work")
+            .unwrap()
+            .as_deref(),
+        Some("urn:test:foreign-project")
+    );
+    assert_eq!(
+        condition::default_kind(
+            &b,
+            "urn:test:foreign-work",
+            Some("urn:test:foreign-project")
+        )
+        .unwrap(),
+        "closed"
+    );
+    assert!(
+        condition::default_kind(&b, "urn:test:foreign-work", None).is_err(),
+        "ROOT miss cannot infer type from another graph"
+    );
+    assert!(condition::validate_iri("relative/path").is_err());
+    assert!(condition::validate_iri("urn:test:bad> } UNION { ?s ?p ?o").is_err());
+    let st = b.store_mut();
+    let other = st.graph_create("urn:test:second-project").unwrap();
+    st.transact_to_graph(&facts, &ctx(3).now, Some("tester"), Some("fixture"), other)
+        .unwrap();
+    assert!(condition::discover_graph(&b, "urn:test:foreign-work").is_err());
+    assert_eq!(
+        condition::default_kind(
+            &b,
+            "urn:test:foreign-work",
+            Some("urn:test:foreign-project")
+        )
+        .unwrap(),
+        "closed"
+    );
+}
+
+#[test]
 fn configured_due_defaults_preserve_explicit_and_exclude_messages() {
     let mut b = backend();
     for (priority, expected) in [
@@ -4307,4 +4637,240 @@ fn rescope_owner_start_is_a_fact_not_an_inference_from_receipt() {
     assert_eq!(result["rows"][0]["current_spec"], "2");
     assert_eq!(result["rows"][0]["acknowledged_spec"], "2");
     assert_eq!(result["rows"][0]["acked_current"], true);
+}
+
+#[test]
+fn reactivation_clears_stale_deferral_in_the_status_transaction() {
+    for status in ["open", "hooked", "in_progress", "blocked", "closed"] {
+        for date in ["2026-01-01", "2027-01-01"] {
+            let mut b = backend();
+            let id = mk(&mut b, "resume", 1);
+            let notes =
+                "Evidence λ stays.\nReSuMe_WHEN: date:2026-01-01\nresume when = closed:sd-other";
+            engine::update(
+                &mut b,
+                &ctx(2),
+                std::slice::from_ref(&id),
+                &UpdateReq {
+                    status: Some("deferred".into()),
+                    defer: Some(date.into()),
+                    notes: Some(notes.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let (rows, tx) = engine::update(
+                &mut b,
+                &ctx(3),
+                std::slice::from_ref(&id),
+                &UpdateReq {
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(rows[0].status, status);
+            assert_eq!(rows[0].defer_until, None);
+            assert_eq!(rows[0].notes.as_deref(), Some("Evidence λ stays.\nhistorical resume condition: date:2026-01-01\nhistorical resume condition: closed:sd-other"));
+            let before = b.snapshot(Some(tx - 1)).unwrap();
+            assert_eq!(before.get(&id).unwrap().status, "deferred");
+            assert_eq!(before.get(&id).unwrap().defer_until.as_deref(), Some(date));
+            assert_eq!(before.get(&id).unwrap().notes.as_deref(), Some(notes));
+        }
+    }
+}
+
+#[test]
+fn reactivation_preserves_explicit_new_deferral_and_metadata_only_holds() {
+    let mut b = backend();
+    let id = mk(&mut b, "parked", 1);
+    let notes = "resume_when: date:2027-01-01";
+    engine::update(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            defer: Some("2027-01-01".into()),
+            notes: Some(notes.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (rows, _) = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            priority: Some("0".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].defer_until.as_deref(), Some("2027-01-01"));
+    assert_eq!(rows[0].notes.as_deref(), Some(notes));
+    // Explicitly resuming an already-active seed repairs stale metadata too.
+    let (rows, _) = engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            defer: Some(String::new()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].defer_until, None);
+    assert_eq!(
+        rows[0].notes.as_deref(),
+        Some("historical resume condition: date:2027-01-01")
+    );
+}
+
+#[test]
+fn reactivation_notes_guard_and_undefer_are_atomic() {
+    let mut b = backend();
+    let id = mk(&mut b, "resume", 1);
+    engine::update(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("deferred".into()),
+            defer: Some("2027-01-01".into()),
+            notes: Some("resume-when: date:2027-01-01\nEvidence stays.".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = b.snapshot(None).unwrap();
+    let err = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            notes: Some("discarded evidence".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Refused);
+    let after = b.snapshot(None).unwrap();
+    assert_eq!(after.tx, before.tx);
+    assert_eq!(after.get(&id).unwrap(), before.get(&id).unwrap());
+    let (rows, _, tx) = engine::undefer(&mut b, &ctx(4), std::slice::from_ref(&id)).unwrap();
+    assert_eq!(rows[0].seed.defer_until, None);
+    assert_eq!(
+        rows[0].seed.notes.as_deref(),
+        Some("historical resume condition: date:2027-01-01\nEvidence stays.")
+    );
+    assert_eq!(
+        b.snapshot(Some(tx - 1)).unwrap().get(&id).unwrap(),
+        before.get(&id).unwrap()
+    );
+}
+
+#[test]
+fn reactivation_claim_retires_markers_without_changing_other_text() {
+    let mut b = backend();
+    let id = mk(&mut b, "claim", 1);
+    let notes = "Unicode λ resumeWHEN\t= date:2027-01-01\nresume_whenish: retain\nresume--when: retain\nresume when = date:2027-01-01";
+    engine::update(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            defer: Some("2027-01-01".into()),
+            notes: Some(notes.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (rows, _) = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            claim: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].status, "in_progress");
+    assert_eq!(rows[0].assignee.as_deref(), Some("tester"));
+    assert_eq!(rows[0].defer_until, None);
+    assert_eq!(rows[0].notes.as_deref(), Some("Unicode λ historical resume condition: date:2027-01-01\nresume_whenish: retain\nresume--when: retain\nhistorical resume condition: date:2027-01-01"));
+}
+
+#[test]
+fn rescope_owner_reactivation_marks_start_and_clears_deferral_atomically() {
+    use seeds::spec::{self, RescopeReq};
+    let mut b = backend();
+    let mut owner = ctx(1);
+    owner.actor = "owner".into();
+    owner.claims.session = Some("owner-session".into());
+    let (seed, _) = engine::create(
+        &mut b,
+        &owner,
+        &CreateReq {
+            title: "resume changed scope".into(),
+            assignee: Some("owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    spec::rescope(
+        &mut b,
+        &owner,
+        &seed.id,
+        &RescopeReq {
+            spec: "consolidated requirement",
+            quote: "change scope",
+            requester: "requester",
+            summary: "new scope",
+            urgent: false,
+            dry_run: false,
+            byte_cap: 4096,
+        },
+    )
+    .unwrap();
+    engine::update(
+        &mut b,
+        &owner,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            status: Some("deferred".into()),
+            defer: Some("2027-01-01".into()),
+            notes: Some("Evidence stays.\nresume_when: date:2027-01-01".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = b.snapshot(None).unwrap();
+    let (rows, tx) = engine::update(
+        &mut b,
+        &owner,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].defer_until, None);
+    assert_eq!(
+        rows[0].notes.as_deref(),
+        Some("Evidence stays.\nhistorical resume condition: date:2027-01-01")
+    );
+    assert!(rows[0].extra.contains(&(
+        seeds::vocab::seeds("specStartVersion"),
+        seeds::model::Obj::Int(1)
+    )));
+    assert!(spec::unacked(&rows[0]).unwrap());
+    assert_eq!(
+        b.snapshot(Some(tx - 1)).unwrap().get(&seed.id).unwrap(),
+        before.get(&seed.id).unwrap()
+    );
 }

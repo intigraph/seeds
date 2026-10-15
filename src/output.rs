@@ -39,6 +39,8 @@ fn view_json(v: &SeedView) -> Json {
         .map(|(id, ty, s)| edge(id, ty, s))
         .collect();
     o["comments"] = v.comments.iter().map(Comment::to_json).collect();
+    // The native adapter replaces this with a live observation.
+    o["external_blockers"] = json!({"status":"not_observed","blockers":[]});
     o
 }
 

@@ -39,6 +39,14 @@ Setting status to `closed` records `closed_at`; setting it back to anything
 else clears `closed_at` and `close_reason`. An update that changes nothing
 writes nothing.
 
+Explicitly setting a status other than `deferred` (or using `--claim`) also
+clears an old defer date and retires `resume_when:` notes markers to
+`historical resume condition:` in that same transaction. The condition and
+surrounding evidence remain in the notes. This also repairs stale parking
+metadata when the requested status already matches. A non-empty `--defer`
+in the same request deliberately establishes a new hold and preserves its
+resume marker. Edits without a status or claim preserve existing holds.
+
 **Existing text is not replaced by accident.** Setting a description, notes,
 design, acceptance criteria or agent context
 that already has text to *different* text (including `""`) is refused with

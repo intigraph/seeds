@@ -253,6 +253,31 @@ impl QuipuBackend {
 }
 
 impl Backend for QuipuBackend {
+    fn project_graph(&self) -> Option<&str> {
+        Some(&self.graph_iri)
+    }
+    fn blocker_query(
+        &self,
+        query: &str,
+        graph: Option<&str>,
+        at: Option<u64>,
+    ) -> Result<serde_json::Value> {
+        let mut input = serde_json::json!({"query": query});
+        if let Some(graph) = graph {
+            input["graph"] = graph.into();
+        }
+        if let Some(at) = at {
+            input["tx"] = at.into();
+        }
+        let (result, truncated) = quipu::mcp::query_result(&self.store, &input)?;
+        let (_, bytes) =
+            quipu::w3c::serialize(&self.store, &result, quipu::w3c::ResultFormat::SparqlJson)?
+                .ok_or_else(|| SdError::refused("blocker query must return ASK or SELECT"))?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| SdError::failed("invalid blocker query serialization"))?;
+        value["truncated"] = truncated.into();
+        Ok(value)
+    }
     fn snapshot_items(&self, ids: &[String]) -> Result<Snapshot> {
         let mut graphs = Vec::new();
         for graph in [&self.graph_iri, &vocab::ephemeral_graph(&self.graph_iri)] {

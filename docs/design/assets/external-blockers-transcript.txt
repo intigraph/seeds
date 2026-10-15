@@ -1,0 +1,29 @@
+=== before: isolated local two-graph fixture ===
+sd 0.3.0 (seeds)
+$ sd dep add ITEM --blocker FOREIGN_IRI --blocker-graph urn:demo:foreign --done-when closed
+error: unexpected argument '--blocker' found
+
+  tip: to pass '--blocker' as a value, use '-- --blocker'
+
+Usage: sd dep add <ISSUE> <DEPENDS_ON>
+
+For more information, try '--help'.
+exit=2
+=== after: isolated local two-graph fixture ===
+sd 0.3.0 (seeds)
+$ sd dep add ITEM --blocker FOREIGN_IRI --blocker-graph urn:demo:foreign --done-when closed
+sd-79s blocks on https://seeds.local/item/sd-edj (tx 6)
+exit=0
+$ sd ready --json (negative control: foreign prerequisite still open)
+[]
+$ sd close FOREIGN --reason fixture-complete
+$ sd blockers reconcile --json
+{"changed":[{"issue_id":"sd-79s","tx":10}]}
+$ sd ready --json (same item becomes ready)
+[{"id": "sd-79s", "status": "open", "title": "Waiting work"}]
+$ sd blockers events --json (retained intent; no delivery sender here)
+{"events":[{"assignee":null,"event_id":"seeds:unlock:sd-79s:1","issue_id":"sd-79s","observed_at":"2026-10-14T22:16:33Z","ready_generation":1,"receipt":null}]}
+$ sd blockers reconcile --json (repeat poll makes no write)
+{"changed":[]}
+$ sd blockers events --json (same event ID)
+{"events":[{"assignee":null,"event_id":"seeds:unlock:sd-79s:1","issue_id":"sd-79s","observed_at":"2026-10-14T22:16:33Z","ready_generation":1,"receipt":null}]}

@@ -301,6 +301,60 @@ fn the_transcript_create_dep_ready_close_ready() {
 }
 
 #[test]
+fn external_blocker_cli_is_persistent_and_has_live_show_and_graph() {
+    let sb = Sandbox::new("external-blocker");
+    let id = sb
+        .ok(&["create", "external prerequisite", "--silent"])
+        .trim()
+        .to_string();
+    sb.ok(&[
+        "dep",
+        "add",
+        &id,
+        "--blocker",
+        "urn:test:gate",
+        "--blocker-graph",
+        "urn:test:foreign",
+        "--ask",
+        "ASK { FILTER(false) }",
+    ]);
+    assert!(!ids(&sb.json(&["ready"])).contains(&id));
+    let shown = sb.json(&["show", &id]);
+    assert_eq!(
+        shown[0]["external_blockers"]["blockers"][0]["state"],
+        "pending"
+    );
+    let graph = sb.json(&["graph", &id, "--dependencies"]);
+    assert_eq!(
+        graph["nodes"][0]["external_blockers"]["blockers"][0]["iri"],
+        "urn:test:gate"
+    );
+    assert_eq!(
+        sb.json(&["blockers", "events"])["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    sb.ok(&["dep", "remove", &id, "--blocker", "urn:test:gate"]);
+    sb.ok(&["blockers", "reconcile"]);
+    assert!(ids(&sb.json(&["ready"])).contains(&id));
+    let first = sb.json(&["blockers", "events"]);
+    assert_eq!(first["events"].as_array().unwrap().len(), 1);
+    assert_eq!(first, sb.json(&["blockers", "events"]));
+    let event = first["events"][0]["event_id"].as_str().unwrap();
+    sb.ok(&["blockers", "ack", &id, event, "--receipt", "receipt-1"]);
+    sb.ok(&["blockers", "ack", &id, event, "--receipt", "receipt-1"]);
+    assert_eq!(
+        sb.json(&["blockers", "events"])["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn a_blocker_that_has_its_own_blocker_can_be_added() {
     // c -> b -> a. Adding the c -> b edge used to be refused by the shapes:
     // b was validated with its own blockedOn edge to a, and a was not in the
@@ -2672,6 +2726,7 @@ impl SlowSearchServer {
         let health = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (seen, halt) = (health.clone(), stop.clone());
+        let delayed_queries = Arc::new(AtomicUsize::new(0));
         let thread = std::thread::spawn(move || {
             while !halt.load(Ordering::SeqCst) {
                 let (mut stream, _) = match listener.accept() {
@@ -2683,6 +2738,7 @@ impl SlowSearchServer {
                     Err(e) => panic!("mock search listener: {e}"),
                 };
                 let seen = seen.clone();
+                let delayed_queries = delayed_queries.clone();
                 std::thread::spawn(move || {
                     stream
                         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -2716,12 +2772,15 @@ impl SlowSearchServer {
                     } else {
                         let request: Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
                         let query = request["query"].as_str().unwrap();
-                        if query.contains("https://seeds.local/ontology/revision") {
-                            // Two such reads per search: each is below the
-                            // transport timeout, together longer than admission.
+                        if delayed_queries.fetch_add(1, Ordering::SeqCst) < 4 {
+                            // Keep the initial peers admitted across the 30s
+                            // fence, independent of the number of vocabulary
+                            // probes. Each request stays below transport timeout.
                             std::thread::sleep(std::time::Duration::from_secs(19));
                         }
-                        if query.starts_with("ASK") {
+                        if query.starts_with("SELECT ?probe WHERE") {
+                            serde_json::json!({"results":{"bindings":[{"probe":{"type":"literal","value":"complete"}}]}})
+                        } else if query.starts_with("ASK") {
                             serde_json::json!({"boolean":false})
                         } else if query.contains("COUNT") {
                             serde_json::json!({"results":{"bindings":[{"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"0"}}]}})

@@ -139,6 +139,20 @@ jobs:
           grep -q 'test native::remote::scoped_tests::scoped_reads_print_exactly_what_a_whole_snapshot_prints ... ok' remote-lib.log
           grep -q 'test native::remote::scoped_tests::ready_refuses_a_seed_stored_under_a_non_canonical_iri ... ok' remote-lib.log
 
+  acquisition-fixture:
+    name: Bounded acquisition controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --manifest-path tests/fixtures/acquisition-producer/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path tests/fixtures/acquisition-producer/Cargo.toml -- -D warnings
+      - run: bash tests/run-acquisition-fixture.sh
+
   book:
     runs-on: ubuntu-latest
     steps:

@@ -167,8 +167,11 @@ impl RemoteBackend {
             // its fields, and also accepts ephemeral comments on project seeds.
             let parent = format!("?s a <{}> . {valid_id} {fields} {guard}", term::work_item());
             let effective_parent = format!("{{ GRAPH <{}> {{ {parent} }} FILTER NOT EXISTS {{ GRAPH <{eph}> {{ ?shadow a <{}> ; <{}> ?id }} }} }} UNION {{ GRAPH <{eph}> {{ {parent} }} }}",self.graph,term::work_item(),term::identifier());
+            // Public hits and hidden counts are identity sets. Validate each
+            // comment, then collapse repeated parent identities before checking
+            // item status and shadowing for every matching comment again.
             let identifier = term::identifier();
-            branches.push(format!("{{ {{ SELECT ?comment WHERE {{ ?comment <{}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} ?comment <{}> ?s . {{ {{ GRAPH <{}> {{ ?s <{identifier}> ?id }} }} UNION {{ GRAPH <{eph}> {{ ?s <{identifier}> ?id }} }} }} FILTER(isLiteral(?id) && sameTerm(?id, STR(?id))) FILTER(isIRI(?s) && STRSTARTS(STR(?s), {})) FILTER EXISTS {{ ?comment a <{}> ; <{}> ?index . FILTER({}) }} FILTER EXISTS {{ {effective_parent} }} }}",term::text(),term::comment_on(),self.graph,literal(&format!("{}item/",vocab::SEEDS_BASE)),term::comment(),term::comment_index(),nonnegative_integer_guard("?index")));
+            branches.push(format!("{{ {{ SELECT DISTINCT ?s ?id WHERE {{ {{ SELECT ?comment WHERE {{ ?comment <{}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} ?comment <{}> ?s . {{ {{ GRAPH <{}> {{ ?s <{identifier}> ?id }} }} UNION {{ GRAPH <{eph}> {{ ?s <{identifier}> ?id }} }} }} FILTER(isLiteral(?id) && sameTerm(?id, STR(?id))) FILTER(isIRI(?s) && STRSTARTS(STR(?s), {})) FILTER EXISTS {{ ?comment a <{}> ; <{}> ?index . FILTER({}) }} }} }} FILTER EXISTS {{ {effective_parent} }} }}",term::text(),term::comment_on(),self.graph,literal(&format!("{}item/",vocab::SEEDS_BASE)),term::comment(),term::comment_index(),nonnegative_integer_guard("?index")));
         }
 
         branches

@@ -1152,6 +1152,14 @@ impl Backend for RemoteBackend {
         &self,
         req: &crate::engine::SearchReq,
     ) -> Result<Option<crate::engine::SearchPage>> {
+        if req.full {
+            let needle = req.query.trim().to_lowercase();
+            if needle.contains('\0') || needle.chars().count() < 3 {
+                return Err(SdError::refused(
+                    "remote full-field search requires at least three lowercase Unicode characters and no NUL; refusing an unindexed scan",
+                ));
+            }
+        }
         // RemoteBackend is not Sync (it already has per-call Cell state).
         // Restore the scoped requirement on all returns and unwinding, so
         // ordinary title searches and unrelated verbs retain their contract.
@@ -2379,6 +2387,28 @@ mod tests {
         assert!(backend
             .post("/query", "application/json", r#"{"query":"ASK {}"}"#, false)
             .is_ok());
+    }
+
+    #[test]
+    fn full_search_contract_refuses_unindexable_terms_before_any_query() {
+        for term in ["a", "ab", "  ab  ", "éé", "😃😃", "needle\0"] {
+            let (base, seen) = recording_server_with_contract(Some("v6"));
+            let backend =
+                RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
+                    .unwrap();
+            let req = crate::engine::SearchReq {
+                query: term.into(),
+                full: true,
+                ..Default::default()
+            };
+            assert!(backend
+                .search_page(&req)
+                .unwrap_err()
+                .message
+                .contains("unindexed scan"));
+            assert!(!backend.require_substring.get());
+            assert_eq!(seen.lock().unwrap().len(), 1, "health only for {term:?}");
+        }
     }
 
     /// A quipu-server of our own on a free loopback port, killed on drop.

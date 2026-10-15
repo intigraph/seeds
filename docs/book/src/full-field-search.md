@@ -9,6 +9,9 @@ contract and have a complete compatible index. A cheap readiness request precede
 text selection. Each subsequent request requires the same contract; a missing
 acknowledgement or unavailable index refuses rather than materializing a board
 snapshot. No positive or negative readiness result is cached between searches.
+Terms shorter than three Unicode characters after lowercasing, or containing NUL,
+refuse before query evaluation because this index cannot accelerate them. Default
+title-only searches retain support for short terms.
 
 The backend projects matching subjects before joining compact metadata, validates
 comment parents and integer positions, and deduplicates matching comment parents

@@ -142,6 +142,13 @@ impl Fixture {
         self.call("/acquire/composed", request)
     }
 }
+fn refused(fixture: &Fixture, request: &Json) {
+    let error = fixture.acquire(request).unwrap_err();
+    // The existing transport represents a server's definite 422 refusal as
+    // Failed; Unreachable is UNKNOWN and cannot satisfy a negative control.
+    assert_eq!(error.kind, ErrorKind::Failed);
+    assert!(error.message.contains("HTTP 422"), "{error}");
+}
 fn request(id: &str) -> Json {
     json!({"source_store_id":id,"graphs":[PROJECT,EPHEMERAL]})
 }
@@ -226,11 +233,11 @@ fn bounded_acquisition_g2_g3_then_g4_g6() {
     ] {
         let mut bad = current.clone();
         bad["graphs"] = graphs;
-        assert!(fixture.acquire(&bad).is_err());
+        refused(&fixture, &bad);
     }
     let mut bad = current.clone();
     bad["source_store_id"] = json!("foreign");
-    assert!(fixture.acquire(&bad).is_err());
+    refused(&fixture, &bad);
     let pin = first.source_receipt.main.applied_tx;
     let generation = first.source_receipt.composition.generation.clone();
     let pinned = json!({"source_store_id":id,"graphs":[PROJECT,EPHEMERAL],"tx":pin,"expected_generation":generation});
@@ -260,13 +267,13 @@ fn bounded_acquisition_g2_g3_then_g4_g6() {
     for tx in [1, i64::MAX] {
         let mut bad = pinned.clone();
         bad["tx"] = json!(tx);
-        assert!(fixture.acquire(&bad).is_err());
+        refused(&fixture, &bad);
     }
     let mut bad = pinned.clone();
     bad.as_object_mut().unwrap().remove("expected_generation");
-    assert!(fixture.acquire(&bad).is_err());
+    refused(&fixture, &bad);
     fixture.call("/fixture/restart", &json!({})).unwrap();
-    assert!(fixture.acquire(&pinned).is_err());
+    refused(&fixture, &pinned);
     let fresh_wire = fixture.acquire(&current).unwrap();
     let fresh = verified(&fixture, &fresh_wire, &current).unwrap();
     assert_ne!(fresh.source_receipt.composition.generation, generation);
@@ -332,9 +339,12 @@ fn bounded_acquisition_g2_g3_then_g4_g6() {
     for (i, (pointer, replacement)) in cases.into_iter().enumerate() {
         let wire = mutant(parsed.clone(), pointer, replacement, true);
         let rejected = fixture.dir.join(format!("rejected-{i}"));
+        let error = persist(&fixture, &wire, &current, &rejected)
+            .err()
+            .expect("mutant refused");
         assert!(
-            persist(&fixture, &wire, &current, &rejected).is_err(),
-            "accepted mutant {pointer}"
+            error.contains("HTTP 422"),
+            "mutant {pointer} must reach the actual producer verifier: {error}"
         );
         assert!(
             !rejected.exists(),
@@ -368,7 +378,7 @@ fn bounded_acquisition_g2_g3_then_g4_g6() {
     // Producer constants are pinned by the manifest; no cap changes here.
     let mut small = current.clone();
     small["max_bytes"] = json!(1);
-    assert!(fixture.acquire(&small).is_err());
+    refused(&fixture, &small);
     eprintln!("G4 PASS: raw source receipt byte equality, separate artifact receipt, actual Payload::verify rejects hash/semantic/missing/truncated mutants before writes");
 
     if let Some(evidence) = std::env::var_os("SEEDS_ACQUISITION_FIXTURE_EVIDENCE") {
@@ -419,9 +429,9 @@ fn bounded_acquisition_g2_g3_then_g4_g6() {
     for field in ["overlay", "inferred", "dataset", "service"] {
         let mut unsupported = current.clone();
         unsupported[field] = json!("https://example.org/other-view");
-        assert!(fixture.acquire(&unsupported).is_err());
+        refused(&fixture, &unsupported);
     }
     fixture.call("/fixture/dataset-alias", &json!({})).unwrap();
-    assert!(fixture.acquire(&current).is_err());
+    refused(&fixture, &current);
     eprintln!("G6 PASS: main+committed-comment+ephemeral model parity; omitted-ephemeral mutant differs; excluded provider remains excluded; shared source blank node preserved and SDK unsupported refusal explicit");
 }

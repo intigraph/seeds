@@ -61,15 +61,12 @@ impl RemoteBackend {
         };
         let mut subjects = BTreeSet::new();
         if req.full {
-            // Select all matching subjects once; compact metadata lets the
-            // core apply status/filter rules and count hidden closed matches
-            // without a second full-text scan. Bodies remain page-only.
             let branches = self
                 .both_graphs()
                 .into_iter()
                 .map(|graph| {
                     let pattern = self
-                        .search_branches(&needle, "", false, true, &graph)
+                        .search_branches(&needle, &visible, false, true, &graph)
                         .join(" UNION ");
                     format!("{{ GRAPH <{graph}> {{ {pattern} }} }}")
                 })
@@ -84,7 +81,7 @@ impl RemoteBackend {
                 subjects.extend(self.subjects_where(&graph, &pattern, None)?);
             }
         }
-        let hidden_closed = if hidden && !req.full {
+        let hidden_closed = if hidden {
             let fields = if req.filter == Filter::default() {
                 String::new()
             } else {
@@ -107,9 +104,7 @@ impl RemoteBackend {
         let (compact, has_ephemeral) =
             self.metadata_snapshot(&subjects, &req.filter, req.sort.as_deref(), false)?;
         let mut page = engine::search_matches_page(req, &compact)?;
-        if !req.full {
-            page.hidden_closed = hidden_closed;
-        }
+        page.hidden_closed = hidden_closed;
         let ids = page
             .page
             .issues

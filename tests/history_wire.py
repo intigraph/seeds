@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import threading
@@ -19,6 +20,19 @@ def term(v, t="literal"):
     if t == "integer":
         d.update(type="literal", datatype="http://www.w3.org/2001/XMLSchema#integer")
     return d
+
+
+def bounded_preflight(query):
+    # Exact bounded control exception to the seed-bound historical queries.
+    # No general SELECT/graph-scan exemption: all three graph branches and
+    # their limits, the sentinel and the outer ceiling must match.
+    eph = G + "#seeds-ephemeral"
+    expected = f"""SELECT ?probe WHERE {{ {{ BIND("complete" AS ?probe) }}
+      UNION {{ SELECT ("main_legacy" AS ?probe) WHERE {{ GRAPH <{G}> {{ ?s <{ON}revision> ?r }} }} LIMIT 1 }}
+      UNION {{ SELECT ("eph_legacy" AS ?probe) WHERE {{ GRAPH <{eph}> {{ ?s <{ON}revision> ?r }} }} LIMIT 1 }}
+      UNION {{ SELECT ("eph_present" AS ?probe) WHERE {{ GRAPH <{eph}> {{ ?s ?p ?o }} }} LIMIT 1 }} }} LIMIT 5"""
+    normalize = lambda text: re.sub(r"\s+", " ", text.strip())
+    return normalize(query) == normalize(expected)
 
 
 def run_fixture(mode, size):
@@ -114,6 +128,9 @@ def run_fixture(mode, size):
                     400,
                 )
                 return
+            if bounded_preflight(q):
+                self.reply({"head":{"vars":["probe"]},"results":{"bindings":[{"probe":term("complete")}]},"truncated":False})
+                return
             if q.lstrip().startswith("ASK"):
                 self.reply({"boolean": False})
                 return
@@ -205,6 +222,17 @@ results = [
     for size in [1, 101]
 ]
 
+# The new exception is an exact bounded control query, not permission for a
+# general projection, foreign graph, larger limit or whole-board fallback.
+for result in results:
+    assert bounded_preflight(result["requests"][0]["query"]), result
+sample = results[0]["requests"][0]["query"]
+for widened in [sample.replace(G,"urn:foreign:project"),
+                sample.replace("LIMIT 1","LIMIT 2",1),
+                sample.replace("LIMIT 5",""),
+                sample + " UNION { ?s ?p ?o }"]:
+    assert not bounded_preflight(widened), widened
+
 print(
     json.dumps(
         [
@@ -223,7 +251,7 @@ for mode in ["refused", "versions", "gapped", "truncated", "missing", "recreated
         if mode != "future":
             assert all(
                 "COUNT(" not in b["query"]
-                and ("ASK" in b["query"] or "<" + S + ">" in b["query"])
+                and (bounded_preflight(b["query"]) or "ASK" in b["query"] or "<" + S + ">" in b["query"])
                 for b in r["requests"]
             ), r
         if mode in ("versions", "gapped"):

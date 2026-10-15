@@ -141,6 +141,8 @@ pub struct RemoteBackend {
     /// a missed or phantom seed. "Empty" is never remembered (aegis-r7k).
     ephemeral_seen: std::cell::Cell<bool>,
     /// Refuse, unsent, a write request larger than this many bytes.
+    /// Scoped to one full-search call; never a cached readiness observation.
+    require_substring: std::cell::Cell<bool>,
     max_write_bytes: usize,
     /// Refuse, unsent, a write nesting more guard clauses than this.
     max_write_clauses: usize,
@@ -260,6 +262,7 @@ impl RemoteBackend {
             graph_registered: false,
             ephemeral_registered: false,
             ephemeral_seen: std::cell::Cell::new(false),
+            require_substring: std::cell::Cell::new(false),
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
@@ -321,6 +324,10 @@ impl RemoteBackend {
         let mut req = request
             .set("Content-Type", content_type)
             .set("Accept", "application/sparql-results+json");
+        let require_substring = path == "/query" && !auth && self.require_substring.get();
+        if require_substring {
+            req = req.set("X-Quipu-Require-Substring", "v6");
+        }
         if auth {
             match &self.signer {
                 // A signed write carries the attestation and never the bearer.
@@ -338,6 +345,8 @@ impl RemoteBackend {
             }
         }
         match req.send_string(body) {
+            Ok(r) if require_substring && r.header("X-Quipu-Substring-Index") != Some("v6") => Err((false,
+                SdError::refused("remote full-field search requires the supported complete substring index; server did not acknowledge readiness, refusing a snapshot fallback"))),
             Ok(r) => r.into_string().map_err(|e| {
                 (
                     true,
@@ -648,6 +657,10 @@ impl RemoteBackend {
     /// while filtering by another skips subjects (the order is checked, and
     /// a page out of order is refused).
     fn subjects_where(&self, graph: &str, pattern: &str, at: Option<u64>) -> Result<Vec<String>> {
+        self.subjects_scoped(&format!("GRAPH <{graph}> {{ {pattern} }}"), graph, at)
+    }
+
+    fn subjects_scoped(&self, pattern: &str, graph: &str, at: Option<u64>) -> Result<Vec<String>> {
         let mut out: Vec<String> = Vec::new();
         loop {
             let after = out.last().map_or_else(String::new, |last| {
@@ -655,7 +668,7 @@ impl RemoteBackend {
             });
             let (rows, truncated) = self.select_marked(
                 &format!(
-                    "SELECT ?s WHERE {{ GRAPH <{graph}> {{ {pattern} }} \
+                    "SELECT ?s WHERE {{ {pattern} \
                      FILTER(isIRI(?s)) {after}}} \
                      ORDER BY STR(?s) LIMIT {}",
                     self.subject_page
@@ -1173,10 +1186,32 @@ impl Backend for RemoteBackend {
         &self,
         req: &crate::engine::SearchReq,
     ) -> Result<Option<crate::engine::SearchPage>> {
-        // Explicit full-field search keeps the legacy snapshot semantics and cost.
-        // CLI admission reserves both host-wide slots before reaching here.
         if req.full {
-            return Ok(None);
+            let needle = req.query.trim().to_lowercase();
+            if needle.contains('\0') || needle.chars().count() < 3 {
+                return Err(SdError::refused(
+                    "remote full-field search requires at least three lowercase Unicode characters and no NUL; refusing an unindexed scan",
+                ));
+            }
+        }
+        // RemoteBackend is not Sync (it already has per-call Cell state).
+        // Restore the scoped requirement on all returns and unwinding, so
+        // ordinary title searches and unrelated verbs retain their contract.
+        struct Restore<'a>(&'a std::cell::Cell<bool>, bool);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        let previous = self.require_substring.replace(req.full);
+        let _restore = Restore(&self.require_substring, previous);
+        if req.full {
+            let text = self.post("/query", "application/json", r#"{"query":"ASK {}"}"#, false)?;
+            let answer: Json = serde_json::from_str(&text)
+                .map_err(|_| SdError::failed("invalid substring readiness response"))?;
+            if answer["boolean"].as_bool() != Some(true) {
+                return Err(SdError::failed("substring readiness control was not true"));
+            }
         }
         self.search_summary(req).map(Some)
     }
@@ -2107,7 +2142,13 @@ mod tests {
     /// A one-thread HTTP server that answers 200 to everything and records
     /// each request's first line and lowercased header names and values.
     fn recording_server() -> (String, Recorded) {
+        recording_server_with_contract(None)
+    }
+    fn recording_server_with_contract(contract: Option<&'static str>) -> (String, Recorded) {
         use std::io::{BufRead, BufReader, Read, Write};
+        let contract_header = contract
+            .map(|v| format!("X-Quipu-Substring-Index: {v}\r\n"))
+            .unwrap_or_default();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2143,7 +2184,7 @@ mod tests {
                 let mut stream = reader.into_inner();
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    "HTTP/1.1 200 OK\r\n{contract_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                     reply.len()
                 );
             }
@@ -2332,6 +2373,78 @@ mod tests {
         assert_eq!(e.kind, ErrorKind::Config);
     }
 
+    #[test]
+    fn full_search_contract_refuses_missing_or_wrong_echo_and_restores_scope() {
+        for echo in [None, Some("wrong")] {
+            let (base, seen) = recording_server_with_contract(echo);
+            let backend =
+                RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
+                    .unwrap();
+            let req = crate::engine::SearchReq {
+                query: "needle".into(),
+                full: true,
+                ..Default::default()
+            };
+            let error = backend.search_page(&req).unwrap_err();
+            assert!(
+                error.message.contains("did not acknowledge readiness"),
+                "{error:?}"
+            );
+            assert!(!backend.require_substring.get());
+            let requests = seen.lock().unwrap();
+            assert_eq!(requests.len(), 2, "health plus cheap readiness only");
+            assert!(requests[1]
+                .1
+                .iter()
+                .any(|(k, v)| k == "x-quipu-require-substring" && v == "v6"));
+            drop(requests);
+            backend
+                .post("/query", "application/json", r#"{"query":"ASK {}"}"#, false)
+                .unwrap();
+            assert!(!seen
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .any(|(k, _)| k == "x-quipu-require-substring"));
+        }
+    }
+
+    #[test]
+    fn full_search_contract_accepts_only_current_echo() {
+        let (base, _) = recording_server_with_contract(Some("v6"));
+        let backend =
+            RemoteBackend::connect(&base, "https://example.org/project", None, None, &[]).unwrap();
+        backend.require_substring.set(true);
+        assert!(backend
+            .post("/query", "application/json", r#"{"query":"ASK {}"}"#, false)
+            .is_ok());
+    }
+
+    #[test]
+    fn full_search_contract_refuses_unindexable_terms_before_any_query() {
+        for term in ["a", "ab", "  ab  ", "éé", "😃😃", "needle\0"] {
+            let (base, seen) = recording_server_with_contract(Some("v6"));
+            let backend =
+                RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
+                    .unwrap();
+            let req = crate::engine::SearchReq {
+                query: term.into(),
+                full: true,
+                ..Default::default()
+            };
+            assert!(backend
+                .search_page(&req)
+                .unwrap_err()
+                .message
+                .contains("unindexed scan"));
+            assert!(!backend.require_substring.get());
+            assert_eq!(seen.lock().unwrap().len(), 1, "health only for {term:?}");
+        }
+    }
+
     /// A quipu-server of our own on a free loopback port, killed on drop.
     pub(super) struct Server {
         child: std::process::Child,
@@ -2365,6 +2478,18 @@ mod tests {
                 .local_addr()
                 .unwrap()
                 .port();
+            if let Ok(prepare) = std::env::var("SEEDS_TEST_QUIPU_INDEX_PREPARER") {
+                let status = std::process::Command::new(prepare)
+                    .args([dir.join("q.db").to_str().unwrap(), "--provision"])
+                    .current_dir(&dir)
+                    .env("HOME", &dir)
+                    .status()
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "explicit owned-fixture index preparation failed"
+                );
+            }
             let child = std::process::Command::new(&bin)
                 .args(["--db", dir.join("q.db").to_str().unwrap()])
                 .args(["--bind", &format!("127.0.0.1:{port}")])

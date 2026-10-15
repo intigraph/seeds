@@ -20,6 +20,7 @@
   - [list](verbs/list.md)
   - [ready](verbs/ready.md)
   - [search](verbs/search.md)
+  - [Remote full-field search](full-field-search.md)
   - [stale](verbs/stale.md)
   - [stats](verbs/stats.md)
   - [q, status, and verbs that live elsewhere](verbs/q.md)

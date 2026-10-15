@@ -1547,6 +1547,10 @@ pub struct HistoryEntry {
 
 /// The seed's revision as of `tx`, or 0 if it did not exist yet.
 fn revision_at(b: &dyn Backend, id: &str, tx: u64) -> Result<u64> {
+    let Some(tx) = b.history_transaction_at_or_after(tx)? else {
+        // An empty bounded feed brackets the search; never fabricate a version.
+        return Ok(u64::MAX);
+    };
     Ok(b.snapshot_seed_at(id, Some(tx))?
         .seeds
         .get(id)
@@ -1555,8 +1559,8 @@ fn revision_at(b: &dyn Backend, id: &str, tx: u64) -> Result<u64> {
 
 /// The first transaction from `lo` at which the seed's revision exceeds
 /// `after` (revisions only grow). Galloping, then binary search, over `--at`
-/// reads: it needs no head transaction, which a quipu server does not report,
-/// because a read as of a tx past the head is the current state.
+/// reads. Remote probes resolve the next committed transaction first, so gaps
+/// and probes beyond the head never issue an invalid historical read.
 fn first_tx_after(b: &dyn Backend, id: &str, after: u64, mut lo: u64) -> Result<u64> {
     let mut hi = lo.max(1);
     while revision_at(b, id, hi)? <= after {
@@ -1573,7 +1577,11 @@ fn first_tx_after(b: &dyn Backend, id: &str, after: u64, mut lo: u64) -> Result<
             lo = mid + 1;
         }
     }
-    Ok(lo)
+    b.history_transaction_at_or_after(lo)?.ok_or_else(|| {
+        SdError::failed(format!(
+            "{id}: no committed transaction covers the next version"
+        ))
+    })
 }
 
 /// `sd history <id>`: every version of one seed, oldest first, with the

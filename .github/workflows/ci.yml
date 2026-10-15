@@ -105,8 +105,6 @@ jobs:
     runs-on: ubuntu-latest
     # Keep the older supported release and the current production release:
     # numeric term preservation differs, so native reads must agree with our decoder.
-    # The older lane retains full storage modes. Current-release history has a
-    # separate compatibility gap: galloping past the committed head now refuses.
     strategy:
       fail-fast: false
       matrix:
@@ -131,7 +129,6 @@ jobs:
           tar xzf "$a.tar.gz"
           echo "SEEDS_TEST_QUIPU_SERVER=$PWD/$a/quipu-server" >> "$GITHUB_ENV"
       - name: Storage modes against the server
-        if: matrix.tag == 'quipu-ai-v0.11.0'
         run: |
           set -euo pipefail
           cargo test --test modes -- --nocapture 2>&1 | tee modes.log
@@ -143,10 +140,8 @@ jobs:
         run: |
           set -euo pipefail
           if grep -q SKIPPED remote-lib.log; then echo "remote tests skipped" >&2; exit 1; fi
-          if [ "${QUIPU_TAG}" = quipu-ai-v0.11.0 ]; then
-            if grep -q SKIPPED modes.log; then echo "mode tests skipped" >&2; exit 1; fi
-            grep -q 'test remote_mode_reads_and_writes_a_quipu_server ... ok' modes.log
-          fi
+          if grep -q SKIPPED modes.log; then echo "mode tests skipped" >&2; exit 1; fi
+          grep -q 'test remote_mode_reads_and_writes_a_quipu_server ... ok' modes.log
           grep -q 'test native::remote::tests::the_batched_graph_read_equals_the_whole_graph_scan ... ok' remote-lib.log
           grep -q 'test native::remote::scoped_tests::scoped_reads_print_exactly_what_a_whole_snapshot_prints ... ok' remote-lib.log
           grep -q 'test native::remote::scoped_tests::ready_refuses_a_seed_stored_under_a_non_canonical_iri ... ok' remote-lib.log

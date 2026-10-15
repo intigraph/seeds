@@ -4359,3 +4359,168 @@ fn due_backfill_is_exact_revision_checked_and_atomic() {
         .due_at
         .is_none());
 }
+
+#[test]
+fn reactivation_clears_stale_deferral_in_the_status_transaction() {
+    for status in ["open", "hooked", "in_progress", "blocked", "closed"] {
+        for date in ["2026-01-01", "2027-01-01"] {
+            let mut b = backend();
+            let id = mk(&mut b, "resume", 1);
+            let notes =
+                "Evidence λ stays.\nReSuMe_WHEN: date:2026-01-01\nresume when = closed:sd-other";
+            engine::update(
+                &mut b,
+                &ctx(2),
+                std::slice::from_ref(&id),
+                &UpdateReq {
+                    status: Some("deferred".into()),
+                    defer: Some(date.into()),
+                    notes: Some(notes.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let (rows, tx) = engine::update(
+                &mut b,
+                &ctx(3),
+                std::slice::from_ref(&id),
+                &UpdateReq {
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(rows[0].status, status);
+            assert_eq!(rows[0].defer_until, None);
+            assert_eq!(rows[0].notes.as_deref(), Some("Evidence λ stays.\nhistorical resume condition: date:2026-01-01\nhistorical resume condition: closed:sd-other"));
+            let before = b.snapshot(Some(tx - 1)).unwrap();
+            assert_eq!(before.get(&id).unwrap().status, "deferred");
+            assert_eq!(before.get(&id).unwrap().defer_until.as_deref(), Some(date));
+            assert_eq!(before.get(&id).unwrap().notes.as_deref(), Some(notes));
+        }
+    }
+}
+
+#[test]
+fn reactivation_preserves_explicit_new_deferral_and_metadata_only_holds() {
+    let mut b = backend();
+    let id = mk(&mut b, "parked", 1);
+    let notes = "resume_when: date:2027-01-01";
+    engine::update(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            defer: Some("2027-01-01".into()),
+            notes: Some(notes.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (rows, _) = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            priority: Some("0".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].defer_until.as_deref(), Some("2027-01-01"));
+    assert_eq!(rows[0].notes.as_deref(), Some(notes));
+    // Explicitly resuming an already-active seed repairs stale metadata too.
+    let (rows, _) = engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            defer: Some(String::new()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].defer_until, None);
+    assert_eq!(
+        rows[0].notes.as_deref(),
+        Some("historical resume condition: date:2027-01-01")
+    );
+}
+
+#[test]
+fn reactivation_notes_guard_and_undefer_are_atomic() {
+    let mut b = backend();
+    let id = mk(&mut b, "resume", 1);
+    engine::update(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("deferred".into()),
+            defer: Some("2027-01-01".into()),
+            notes: Some("resume-when: date:2027-01-01\nEvidence stays.".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = b.snapshot(None).unwrap();
+    let err = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            notes: Some("discarded evidence".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Refused);
+    let after = b.snapshot(None).unwrap();
+    assert_eq!(after.tx, before.tx);
+    assert_eq!(after.get(&id).unwrap(), before.get(&id).unwrap());
+    let (rows, _, tx) = engine::undefer(&mut b, &ctx(4), std::slice::from_ref(&id)).unwrap();
+    assert_eq!(rows[0].seed.defer_until, None);
+    assert_eq!(
+        rows[0].seed.notes.as_deref(),
+        Some("historical resume condition: date:2027-01-01\nEvidence stays.")
+    );
+    assert_eq!(
+        b.snapshot(Some(tx - 1)).unwrap().get(&id).unwrap(),
+        before.get(&id).unwrap()
+    );
+}
+
+#[test]
+fn reactivation_claim_retires_markers_without_changing_other_text() {
+    let mut b = backend();
+    let id = mk(&mut b, "claim", 1);
+    let notes = "Unicode λ resumeWHEN\t= date:2027-01-01\nresume_whenish: retain\nresume--when: retain\nresume when = date:2027-01-01";
+    engine::update(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            defer: Some("2027-01-01".into()),
+            notes: Some(notes.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (rows, _) = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            claim: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].status, "in_progress");
+    assert_eq!(rows[0].assignee.as_deref(), Some("tester"));
+    assert_eq!(rows[0].defer_until, None);
+    assert_eq!(rows[0].notes.as_deref(), Some("Unicode λ historical resume condition: date:2027-01-01\nresume_whenish: retain\nresume--when: retain\nhistorical resume condition: date:2027-01-01"));
+}

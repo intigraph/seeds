@@ -330,6 +330,14 @@ pub trait Backend {
         self.snapshot_items(ids)
     }
 
+    /// Resolve a history search probe to its next committed source transaction.
+    /// `None` is a proven upper bound, not a current-state snapshot. Legacy/local
+    /// backends support arbitrary historical bounds; remote backends must resolve
+    /// a real committed ID without scanning the transaction log or whole board.
+    fn history_transaction_at_or_after(&self, probe: u64) -> Result<Option<u64>> {
+        Ok(Some(probe))
+    }
+
     /// One exact seed as of `at`, without comments or unrelated seeds.
     /// Local backends may retain their inexpensive complete snapshot. Remote
     /// implementations must scope every historical read as well as the current

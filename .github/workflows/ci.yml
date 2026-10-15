@@ -101,15 +101,21 @@ jobs:
   # Without SEEDS_TEST_QUIPU_SERVER those tests skip (and say so), so this job
   # is the only place they are proven.
   remote:
-    name: Remote (quipu-server)
+    name: Remote (${{ matrix.tag }})
     runs-on: ubuntu-latest
-    # The newest published release, 0.11.0: the version the production server
-    # reports. Its build is 0.11.0 plus later main commits not yet released
-    # (among them /update reporting counts), so tests must not depend on
-    # what /update answers; they verify by reading back.
+    # Keep the older supported release and the current production release:
+    # numeric term preservation differs, so native reads must agree with our decoder.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tag: quipu-ai-v0.11.0
+            sha256: 328eacceb9f9c0e8fcb03c0ef2a4af53ca390b65bc02ca25550fce72f98806c7
+          - tag: quipu-ai-v0.14.0
+            sha256: d643e8df4f5e0c28f757ba2b301bfdb048c73602a4493536c8c359a8226798e6
     env:
-      QUIPU_TAG: quipu-ai-v0.11.0
-      QUIPU_SHA256: 328eacceb9f9c0e8fcb03c0ef2a4af53ca390b65bc02ca25550fce72f98806c7
+      QUIPU_TAG: ${{ matrix.tag }}
+      QUIPU_SHA256: ${{ matrix.sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -133,7 +139,8 @@ jobs:
       - name: Prove the remote tests ran rather than skipped
         run: |
           set -euo pipefail
-          if grep -q SKIPPED modes.log remote-lib.log; then echo "remote tests skipped" >&2; exit 1; fi
+          if grep -q SKIPPED remote-lib.log; then echo "remote tests skipped" >&2; exit 1; fi
+          if grep -q SKIPPED modes.log; then echo "mode tests skipped" >&2; exit 1; fi
           grep -q 'test remote_mode_reads_and_writes_a_quipu_server ... ok' modes.log
           grep -q 'test native::remote::tests::the_batched_graph_read_equals_the_whole_graph_scan ... ok' remote-lib.log
           grep -q 'test native::remote::scoped_tests::scoped_reads_print_exactly_what_a_whole_snapshot_prints ... ok' remote-lib.log

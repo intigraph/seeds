@@ -1169,6 +1169,65 @@ impl Backend for RemoteBackend {
         Ok((seeds, comments, tx))
     }
 
+    fn history_transaction_at_or_after(&self, probe: u64) -> Result<Option<u64>> {
+        use std::io::Read as _;
+        let since = probe.saturating_sub(1);
+        if probe == 0 || probe > i64::MAX as u64 {
+            return Err(SdError::failed("invalid history transaction probe"));
+        }
+        let path = format!("/transactions?since={since}&limit=1");
+        let response = quipu_read_request(
+            self.agent.get(&format!("{}{path}", self.base)),
+            "transactions",
+        )
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Transport(t) => transport(&self.base, &t),
+            ureq::Error::Status(code, r) => status_error(
+                "history transaction lookup",
+                code,
+                &r.into_string().unwrap_or_default(),
+            ),
+        })?;
+        // One metadata row only. Never accept an ignored limit or a truncated
+        // body as an empty feed, and never hydrate source transaction payloads.
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(65537)
+            .read_to_end(&mut body)
+            .map_err(|e| SdError::failed(format!("reading history transaction lookup: {e}")))?;
+        if body.len() > 65536 {
+            return Err(SdError::failed(
+                "history transaction metadata byte cap exceeded",
+            ));
+        }
+        let value: Json = serde_json::from_slice(&body)
+            .map_err(|_| SdError::failed("invalid history transaction metadata"))?;
+        let rows = value["transactions"]
+            .as_array()
+            .ok_or_else(|| SdError::failed("missing history transaction metadata"))?;
+        if rows.len() > 1
+            || value["count"].as_u64() != Some(rows.len() as u64)
+            || value.get("error").is_some()
+            || value
+                .get("truncated")
+                .is_some_and(|v| v != &Json::Bool(false))
+        {
+            return Err(SdError::failed(
+                "incomplete or unbounded history transaction metadata",
+            ));
+        }
+        rows.first()
+            .map(|row| {
+                row["id"]
+                    .as_u64()
+                    .filter(|tx| *tx >= probe && *tx <= i64::MAX as u64)
+                    .ok_or_else(|| SdError::failed("invalid committed history transaction ID"))
+            })
+            .transpose()
+    }
+
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot> {
         let mut snap = Snapshot::from_graphs(&self.facts(at)?, &self.ephemeral_facts(at)?);
         snap.tx = at.unwrap_or(0);

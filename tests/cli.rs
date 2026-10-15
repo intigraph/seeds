@@ -2717,6 +2717,7 @@ impl SlowSearchServer {
         let health = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (seen, halt) = (health.clone(), stop.clone());
+        let delayed_queries = Arc::new(AtomicUsize::new(0));
         let thread = std::thread::spawn(move || {
             while !halt.load(Ordering::SeqCst) {
                 let (mut stream, _) = match listener.accept() {
@@ -2728,6 +2729,7 @@ impl SlowSearchServer {
                     Err(e) => panic!("mock search listener: {e}"),
                 };
                 let seen = seen.clone();
+                let delayed_queries = delayed_queries.clone();
                 std::thread::spawn(move || {
                     stream
                         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -2761,12 +2763,15 @@ impl SlowSearchServer {
                     } else {
                         let request: Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
                         let query = request["query"].as_str().unwrap();
-                        if query.contains("https://seeds.local/ontology/revision") {
-                            // Two such reads per search: each is below the
-                            // transport timeout, together longer than admission.
+                        if delayed_queries.fetch_add(1, Ordering::SeqCst) < 4 {
+                            // Keep the initial peers admitted across the 30s
+                            // fence, independent of the number of vocabulary
+                            // probes. Each request stays below transport timeout.
                             std::thread::sleep(std::time::Duration::from_secs(19));
                         }
-                        if query.starts_with("ASK") {
+                        if query.starts_with("SELECT ?probe WHERE") {
+                            serde_json::json!({"results":{"bindings":[{"probe":{"type":"literal","value":"complete"}}]}})
+                        } else if query.starts_with("ASK") {
                             serde_json::json!({"boolean":false})
                         } else if query.contains("COUNT") {
                             serde_json::json!({"results":{"bindings":[{"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"0"}}]}})

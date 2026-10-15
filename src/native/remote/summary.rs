@@ -60,11 +60,26 @@ impl RemoteBackend {
             guard
         };
         let mut subjects = BTreeSet::new();
-        for graph in self.both_graphs() {
-            let pattern = self
-                .search_branches(&needle, &visible, false, req.full, &graph)
+        if req.full {
+            let branches = self
+                .both_graphs()
+                .into_iter()
+                .map(|graph| {
+                    let pattern = self
+                        .search_branches(&needle, &visible, false, true, &graph)
+                        .join(" UNION ");
+                    format!("{{ GRAPH <{graph}> {{ {pattern} }} }}")
+                })
+                .collect::<Vec<_>>()
                 .join(" UNION ");
-            subjects.extend(self.subjects_where(&graph, &pattern, None)?);
+            subjects.extend(self.subjects_scoped(&branches, "full-search graphs", None)?);
+        } else {
+            for graph in self.both_graphs() {
+                let pattern = self
+                    .search_branches(&needle, &visible, false, false, &graph)
+                    .join(" UNION ");
+                subjects.extend(self.subjects_where(&graph, &pattern, None)?);
+            }
         }
         let hidden_closed = if hidden {
             let fields = if req.filter == Filter::default() {
@@ -153,14 +168,25 @@ impl RemoteBackend {
         };
         let mut branches = predicates.into_iter().map(|p| {
             let fallback = if p == vocab::RDFS_LABEL { format!("FILTER NOT EXISTS {{ ?s <{}> ?name FILTER(isLiteral(?name) && sameTerm(?name, STR(?name))) }}",term::name()) } else { String::new() };
-            format!("{{ {{ ?s <{p}> ?text ; a <{}> . {fields} {valid_id} FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} {guard} {fallback} {shadow} }}",term::work_item())
+            if full {
+                // Project matching subjects before joining their metadata. Keeping
+                // the text binding out of those joins avoids retaining every
+                // description through type/status/shadow evaluation.
+                format!("{{ {{ SELECT ?s WHERE {{ ?s <{p}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} {valid_id} FILTER EXISTS {{ ?s a <{}> . {fields} {guard} {fallback} {shadow} }} }}", term::work_item())
+            } else {
+                format!("{{ {{ ?s <{p}> ?text ; a <{}> . {fields} {valid_id} FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} {guard} {fallback} {shadow} }}",term::work_item())
+            }
         }).collect::<Vec<_>>();
         if full {
             // Snapshot retains project comments when an ephemeral seed replaces
             // its fields, and also accepts ephemeral comments on project seeds.
             let parent = format!("?s a <{}> . {valid_id} {fields} {guard}", term::work_item());
             let effective_parent = format!("{{ GRAPH <{}> {{ {parent} }} FILTER NOT EXISTS {{ GRAPH <{eph}> {{ ?shadow a <{}> ; <{}> ?id }} }} }} UNION {{ GRAPH <{eph}> {{ {parent} }} }}",self.graph,term::work_item(),term::identifier());
-            branches.push(format!("{{ ?comment a <{}> ; <{}> ?text ; <{}> ?s ; <{}> ?index . FILTER(isIRI(?s) && STRSTARTS(STR(?s), {}) && {} && isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) {{ {effective_parent} }} }}",term::comment(),term::text(),term::comment_on(),term::comment_index(),literal(&format!("{}item/",vocab::SEEDS_BASE)), nonnegative_integer_guard("?index")));
+            // Public hits and hidden counts are identity sets. Validate each
+            // comment, then collapse repeated parent identities before checking
+            // item status and shadowing for every matching comment again.
+            let identifier = term::identifier();
+            branches.push(format!("{{ {{ SELECT DISTINCT ?s ?id WHERE {{ {{ SELECT ?comment WHERE {{ ?comment <{}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} ?comment <{}> ?s . {{ {{ GRAPH <{}> {{ ?s <{identifier}> ?id }} }} UNION {{ GRAPH <{eph}> {{ ?s <{identifier}> ?id }} }} }} FILTER(isLiteral(?id) && sameTerm(?id, STR(?id))) FILTER(isIRI(?s) && STRSTARTS(STR(?s), {})) FILTER EXISTS {{ ?comment a <{}> ; <{}> ?index . FILTER({}) }} }} }} FILTER EXISTS {{ {effective_parent} }} }}",term::text(),term::comment_on(),self.graph,literal(&format!("{}item/",vocab::SEEDS_BASE)),term::comment(),term::comment_index(),nonnegative_integer_guard("?index")));
         }
 
         branches

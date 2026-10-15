@@ -369,7 +369,7 @@ fn load(base: &str, graph: &str, snap: &Snapshot) -> RemoteBackend {
 }
 
 /// Everything a read command prints, both ways.
-fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String]) -> Vec<String> {
+fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bool) -> Vec<String> {
     let mut out = Vec::new();
     out.push(format!("ledger counts {:?}", b.ledger_counts()));
     for req in [
@@ -404,6 +404,9 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String]) -> Vec<Stri
             (true, false, 0, false, "priority"),
             (true, true, 3, true, "title"),
         ] {
+            if full && !indexed {
+                continue;
+            } // old-server refusal is tested separately
             let req = engine::SearchReq {
                 query: term.into(),
                 full,
@@ -686,6 +689,10 @@ fn scoped_reads_print_exactly_what_a_whole_snapshot_prints() {
         eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
         return;
     };
+    let indexed = std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_some();
+    if !indexed {
+        eprintln!("Full-field positive parity requires SEEDS_TEST_QUIPU_INDEX_PREPARER; legacy missing-echo refusal has separate controls");
+    }
     let (snap, n) = corpus();
     let mut a = load(&server.base, "https://seeds.local/project/scoped-a", &snap);
     let mut b = load(&server.base, "https://seeds.local/project/scoped-b", &snap);
@@ -706,8 +713,8 @@ fn scoped_reads_print_exactly_what_a_whole_snapshot_prints() {
     }
 
     // Reads, one graph, both ways.
-    let scoped = reads(&a, &c, &n, &all_ids);
-    let whole = reads(&Whole(&mut a), &c, &n, &all_ids);
+    let scoped = reads(&a, &c, &n, &all_ids, indexed);
+    let whole = reads(&Whole(&mut a), &c, &n, &all_ids, indexed);
     assert_eq!(scoped.len(), whole.len());
     for (s, w) in scoped.iter().zip(&whole) {
         assert_eq!(s, w, "a scoped read printed something else");
@@ -757,8 +764,8 @@ fn scoped_reads_print_exactly_what_a_whole_snapshot_prints() {
         );
     }
     // And the reads still agree on the graph the writes left.
-    let scoped = reads(&a, &c, &n, &all_ids);
-    let whole = reads(&Whole(&mut b), &c, &n, &all_ids);
+    let scoped = reads(&a, &c, &n, &all_ids, indexed);
+    let whole = reads(&Whole(&mut b), &c, &n, &all_ids, indexed);
     for (s, w) in scoped.iter().zip(&whole) {
         assert_eq!(
             s, w,
@@ -876,6 +883,15 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
             limit: Some(0),
             ..Default::default()
         };
+        if full && std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_none() {
+            let error = engine::search(r, &req, None).unwrap_err();
+            assert!(
+                error.message.contains("acknowledge readiness")
+                    || error.message.contains("substring index is not ready"),
+                "{error:?}"
+            );
+            return;
+        }
         let actual = engine::search(r, &req, None).unwrap();
         let old = engine::search(&Whole(r), &req, None).unwrap();
         assert_eq!(output::search_json(&actual), output::search_json(&old));

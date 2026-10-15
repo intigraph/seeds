@@ -40,6 +40,9 @@ name comes from the counting board: a *quipucamayoc* moved seeds across a
 The full case, and exactly what it is and is not:
 [Introduction](docs/book/src/introduction.md).
 
+Explicit remote `search --full` uses a prepared optional substring index; see
+[full-field search](docs/book/src/full-field-search.md) for its refusal contract.
+
 ## Install
 
 The command is `sd`; the project and crate are **seeds** / `seeds-ai`.

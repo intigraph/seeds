@@ -2755,6 +2755,12 @@ impl SlowSearchServer {
                         })
                         .unwrap_or(0);
                     let health_request = header.starts_with("GET /health ");
+                    let substring_contract = header.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(name, value)| {
+                            name.eq_ignore_ascii_case("x-quipu-require-substring")
+                                && value.trim() == "v6"
+                        })
+                    });
                     bytes.resize(header_end + size, 0);
                     stream.read_exact(&mut bytes[header_end..]).unwrap();
                     let response = if health_request {
@@ -2771,6 +2777,8 @@ impl SlowSearchServer {
                         }
                         if query.starts_with("SELECT ?probe WHERE") {
                             serde_json::json!({"results":{"bindings":[{"probe":{"type":"literal","value":"complete"}}]}})
+                        } else if substring_contract && query.trim() == "ASK {}" {
+                            serde_json::json!({"boolean":true})
                         } else if query.starts_with("ASK") {
                             serde_json::json!({"boolean":false})
                         } else if query.contains("COUNT") {
@@ -2780,7 +2788,14 @@ impl SlowSearchServer {
                         }
                     };
                     let body = response.to_string();
-                    let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
+                    // This fixture models a prepared empty index; advertise it
+                    // only when the caller requires that exact protocol.
+                    let index_header = if substring_contract {
+                        "X-Quipu-Substring-Index: v6\r\n"
+                    } else {
+                        ""
+                    };
+                    let reply = format!("HTTP/1.1 200 OK\r\n{index_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
                     let _ = stream.write_all(reply.as_bytes());
                 });
             }

@@ -1,0 +1,8 @@
+Script started on 2026-10-14 23:22:44-04:00 [COMMAND="python3 docs/design/assets/combined-preflight-demo.py" <not executed on terminal>]
+BEFORE: clean ledger=True; vocabulary requests=2
+AFTER: clean ledger=True; preflight requests=1; tags=['complete']
+LATER: new ephemeral data observed; tags=['complete', 'eph_present']
+Private HTTP query-contract demo only; Rust native controls separately verify cache and refusal semantics.
+remote.rs SHA256=d6f31886846a03088c58f65d7e31ce43045503a51c9056042132e736d28e031d
+
+Script done on 2026-10-14 23:22:44-04:00 [COMMAND_EXIT_CODE="0"]

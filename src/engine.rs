@@ -2424,6 +2424,16 @@ pub fn update(
         if let Some(st) = &status {
             set_status(&mut s, st, &ctx.now, None);
         }
+        // Explicit status/claim is a lifecycle decision. Clear the previous
+        // parking metadata in this same revision-checked write, unless this
+        // request deliberately supplies a new deadline. Metadata-only edits
+        // leave both legacy field-based and status-based holds intact.
+        if (status.is_some() || req.claim)
+            && s.status != "deferred"
+            && req.defer.as_deref().is_none_or(|d| d.trim().is_empty())
+        {
+            clear_deferral(&mut s);
+        }
         if s == *before {
             continue;
         }
@@ -2770,7 +2780,7 @@ pub fn undefer_with(
         |s| (s.status != "deferred").then(|| format!("not deferred (status: {})", s.status)),
         |s| {
             s.status = "open".into();
-            s.defer_until = None;
+            clear_deferral(s);
         },
         comment,
     )
@@ -3258,6 +3268,47 @@ fn claim(snap: &Snapshot, s: &mut Seed, actor: &str) -> Result<()> {
     s.assignee = Some(actor.to_string());
     s.status = "in_progress".into();
     Ok(())
+}
+
+/// Retire a resume marker without discarding its evidence or condition.
+/// This runs on the transaction snapshot, never on a separate caller read.
+fn clear_deferral(s: &mut Seed) {
+    s.defer_until = None;
+    let Some(notes) = &s.notes else { return };
+    let mut out = String::with_capacity(notes.len());
+    let mut copied = 0;
+    for (start, _) in notes.char_indices() {
+        if start < copied {
+            continue;
+        }
+        let rest = &notes[start..];
+        if !rest
+            .get(..6)
+            .is_some_and(|p| p.eq_ignore_ascii_case("resume"))
+        {
+            continue;
+        }
+        let tail = &rest[6..];
+        let tail = tail.strip_prefix(['_', ' ', '-']).unwrap_or(tail);
+        if !tail
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("when"))
+        {
+            continue;
+        }
+        let tail = tail[4..].trim_start();
+        if !tail.starts_with([':', '=']) {
+            continue;
+        }
+        let end = notes.len() - tail.len() + 1;
+        out.push_str(&notes[copied..start]);
+        out.push_str("historical resume condition:");
+        copied = end;
+    }
+    if copied != 0 {
+        out.push_str(&notes[copied..]);
+        s.notes = Some(out);
+    }
 }
 
 fn set_status(s: &mut Seed, status: &str, now: &str, reason: Option<&str>) {

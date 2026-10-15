@@ -8,7 +8,10 @@ bound, preserving the maximum valid integer and the existing type, sign and
 term-identity checks. Both comment counts and full-field search use this guard;
 priority summaries retain their narrower 0–255 bound.
 
-CI tests remote behavior against checksum-pinned Quipu 0.11 and 0.14 releases.
+CI tests native remote reads against checksum-pinned Quipu 0.11 and 0.14
+releases; the complete storage-mode suite remains on 0.11. Current-release
+history is not certified: its future-transaction probes are rejected by 0.14,
+a separate compatibility gap from comment-index eligibility.
 The existing decoder-parity fixture covers valid maximum and subtype values,
 oversized integers, fractional and negative values, strings, language tags,
 IRIs, and project/ephemeral shadowing. An unchanged expected count of four

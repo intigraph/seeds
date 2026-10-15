@@ -1,0 +1,9 @@
+[package]
+name = "seeds-acquisition-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+quipu = { package = "quipu-ai", git = "https://github.com/scbrown/quipu", rev = "0f23ef3be3cc6ed32d62dacd4cf7c0986fc803bb", default-features = false }
+serde_json = "1"

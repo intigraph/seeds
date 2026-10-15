@@ -165,6 +165,11 @@ pub enum Command {
         #[command(subcommand)]
         command: DepCommand,
     },
+    /// Reconcile external prerequisites and read or acknowledge unlock intents
+    Blockers {
+        #[command(subcommand)]
+        command: BlockersCommand,
+    },
     /// Manage comments
     Comments {
         #[command(subcommand)]
@@ -1138,7 +1143,20 @@ pub enum DepCommand {
         /// The dependent seed
         issue: String,
         /// The seed it depends on
-        depends_on: String,
+        #[arg(required_unless_present = "blocker", conflicts_with = "blocker")]
+        depends_on: Option<String>,
+        /// Exact Quipu IRI or unambiguous label
+        #[arg(long)]
+        blocker: Option<String>,
+        /// Named graph containing the blocker (absent means ROOT)
+        #[arg(long, requires = "blocker")]
+        blocker_graph: Option<String>,
+        /// Completion profile: closed, merged, published, exists or decided
+        #[arg(long, requires = "blocker", conflicts_with = "ask")]
+        done_when: Option<String>,
+        /// Explicit read-only SPARQL ASK completion condition
+        #[arg(long, requires = "blocker")]
+        ask: Option<String>,
         /// blocks (default), related, parent-child or discovered-from
         #[arg(short = 't', long = "type", default_value = "blocks")]
         dep_type: String,
@@ -1148,7 +1166,11 @@ pub enum DepCommand {
         /// The dependent seed
         issue: String,
         /// The seed it depended on
-        depends_on: String,
+        #[arg(required_unless_present = "blocker", conflicts_with = "blocker")]
+        depends_on: Option<String>,
+        /// Exact external target IRI
+        #[arg(long)]
+        blocker: Option<String>,
         /// blocks (default), related, parent-child or discovered-from
         #[arg(short = 't', long = "type", default_value = "blocks")]
         dep_type: String,
@@ -1163,6 +1185,41 @@ pub enum DepCommand {
         /// Only edges of this type (blocks, related, parent-child, discovered-from)
         #[arg(short = 't', long = "type")]
         dep_type: Option<String>,
+    },
+}
+
+/// The persistent unlock reader and receipt contract.
+#[derive(Debug, Subcommand)]
+pub enum BlockersCommand {
+    /// Read one retained event and receipt, independent of readiness
+    Receipt {
+        /// Seed owning the event
+        issue: String,
+        /// Stable event identity
+        event_id: String,
+    },
+    /// Plan migration of exact active resume_when closed markers (one batch)
+    Migrate {
+        /// Explicitly read the plan without writing (the default)
+        #[arg(long, conflicts_with = "execute")]
+        dry_run: bool,
+        /// Commit the validated plan in one revision-checked transaction
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Observe conditions once; unchanged observations make no write
+    Reconcile {},
+    /// Persistent pending events for the shared notifier
+    Events {},
+    /// Acknowledge an event using its retained delivery receipt
+    Ack {
+        /// Seed owning the event
+        issue: String,
+        /// Stable event identity returned by events
+        event_id: String,
+        /// Retained receipt from the shared delivery consumer
+        #[arg(long)]
+        receipt: String,
     },
 }
 
@@ -1280,6 +1337,12 @@ impl Command {
             | Command::Defer(_)
             | Command::Undefer(_) => true,
             Command::Dep { command } => !matches!(command, DepCommand::List { .. }),
+            Command::Blockers { command } => matches!(
+                command,
+                BlockersCommand::Ack { .. }
+                    | BlockersCommand::Reconcile { .. }
+                    | BlockersCommand::Migrate { execute: true, .. }
+            ),
             Command::Epic { command } => {
                 matches!(command, EpicCommand::CloseEligible { dry_run: false, .. })
             }
@@ -1365,6 +1428,13 @@ impl Command {
                 DepCommand::Add { .. } => "dep add",
                 DepCommand::Remove { .. } => "dep remove",
                 DepCommand::List { .. } => "dep list",
+            },
+            Command::Blockers { command } => match command {
+                BlockersCommand::Receipt { .. } => "blockers receipt",
+                BlockersCommand::Migrate { .. } => "blockers migrate",
+                BlockersCommand::Reconcile { .. } => "blockers reconcile",
+                BlockersCommand::Events { .. } => "blockers events",
+                BlockersCommand::Ack { .. } => "blockers ack",
             },
             Command::Comments { command } => match command {
                 CommentsCommand::Add { .. } => "comments add",

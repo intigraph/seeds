@@ -24,8 +24,12 @@ use crate::output;
 use crate::pendant;
 use crate::quipu_backend::QuipuBackend;
 use crate::sync;
-use cli::{Cli, Command, CommentsCommand, ConfigCommand, DepCommand, EpicCommand, LabelCommand};
+use cli::{
+    BlockersCommand, Cli, Command, CommentsCommand, ConfigCommand, DepCommand, EpicCommand,
+    LabelCommand,
+};
 use config::{Location, Resolved};
+use serde_json::json;
 
 /// What a run produced: the exit code and the two streams.
 #[derive(Debug, Default)]
@@ -2337,12 +2341,18 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         }
         Command::Show(a) => {
             let views = engine::show(b, &a.ids, at)?;
-            let text = views
+            let mut text = views
                 .iter()
                 .map(output::view_text)
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            Ok(ok(json, output::show_json(&views), text, vec![]))
+            let mut value = output::show_json(&views);
+            for (view, row) in views.iter().zip(value.as_array_mut().into_iter().flatten()) {
+                let external = crate::blockers::display(b, &view.seed, at);
+                if crate::blockers::has_metadata(&view.seed) { text.push_str(&format!("\nexternal blockers: {external}")); }
+                row["external_blockers"] = external;
+            }
+            Ok(ok(json, value, text, vec![]))
         }
         Command::List(a) => {
             let req = engine::ListReq {
@@ -2489,7 +2499,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             };
             let node = |n: &engine::GraphNode| {
                 serde_json::json!({"id": n.seed.id, "title": n.seed.title, "status": n.seed.status,
-                                   "priority": n.seed.priority, "depth": n.depth})
+                                   "priority": n.seed.priority, "depth": n.depth,
+                                   "external_blockers":crate::blockers::display(b, &n.seed, at)})
             };
             let one = |g: &engine::Graph| {
                 serde_json::json!({"nodes": g.nodes.iter().map(node).collect::<Vec<_>>(),
@@ -2521,6 +2532,15 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                             format!("{}\n{} [P{}]", n.seed.id, n.seed.title, n.seed.priority)
                         ));
                     }
+                    for n in &g.nodes {
+                        if let Ok(ledger) = crate::blockers::load(&n.seed) {
+                            for blocker in ledger.blockers.values() {
+                                let state = crate::blockers::condition::observe(b, blocker, at);
+                                lines.push(format!("    {:?} [shape=ellipse,label={:?}];", blocker.iri, format!("{} {:?}", blocker.iri, state)));
+                                lines.push(format!("    {:?} -> {:?};", n.seed.id, blocker.iri));
+                            }
+                        }
+                    }
                     for (f, t) in &g.edges {
                         lines.push(format!("    {f:?} -> {t:?};"));
                     }
@@ -2530,7 +2550,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             }
             let mut lines = Vec::new();
             for g in &graphs {
-                if !a.all && g.nodes.len() <= 1 {
+                if !a.all && g.nodes.len() <= 1 && !g.nodes.iter().any(|n| crate::blockers::has_metadata(&n.seed)) {
                     let what = if a.dependencies { "dependencies" } else { "dependents" };
                     lines.push(format!("no {what} for {}", g.roots[0]));
                     continue;
@@ -2541,6 +2561,9 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                     } else {
                         format!("{}{}", "  ".repeat(n.depth), output::seed_line(&n.seed))
                     });
+                    if crate::blockers::has_metadata(&n.seed) {
+                        lines.push(format!("  external blockers: {}", crate::blockers::display(b, &n.seed, at)));
+                    }
                 }
                 if a.all {
                     lines.push(String::new());
@@ -3073,13 +3096,53 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 Ok(ok(json, value, lines.join("\n"), vec![]))
             }
         },
+        Command::Blockers { command } => {
+            if at.is_some() { return Err(SdError::usage("blocker operations require current state; omit --at")); }
+            let value = match command {
+                BlockersCommand::Receipt { issue, event_id } => json!({"event":crate::blockers::engine::receipt(b, issue, event_id)?}),
+                BlockersCommand::Migrate { execute, .. } => crate::blockers::migration::migrate(b, ctx, *execute)?,
+                BlockersCommand::Events {} => {
+                    let events = crate::blockers::engine::events(b)?;
+                    json!({"events": events})
+                }
+                BlockersCommand::Ack { issue, event_id, receipt } => {
+                    json!({"tx": crate::blockers::engine::ack(b, ctx, issue, event_id, receipt)?})
+                }
+                BlockersCommand::Reconcile {} => {
+                    let snap = b.blocker_snapshot(None)?;
+                    let mut changed = Vec::new();
+                    for id in snap.seeds.keys() {
+                        if let Some(tx) = crate::blockers::engine::reconcile(b, ctx, id)? {
+                            changed.push(json!({"issue_id": id, "tx": tx}));
+                        }
+                    }
+                    json!({"changed": changed})
+                }
+            };
+            Ok(ok(json, value.clone(), value.to_string(), vec![]))
+        }
         Command::Dep { command } => match command {
             DepCommand::Add {
                 issue,
                 depends_on,
                 dep_type,
+                blocker, blocker_graph, done_when, ask,
             } => {
-                let d = engine::dep_add(b, ctx, issue, depends_on, dep_type)?;
+                if let Some(name) = blocker {
+                    if dep_type != "blocks" { return Err(SdError::usage("external blockers support only --type blocks")); }
+                    if let Some(graph) = blocker_graph { crate::blockers::condition::validate_iri(graph)?; }
+                    let iri = crate::blockers::condition::resolve_name(b, name, blocker_graph.as_deref())?;
+                    let graph = match blocker_graph { Some(graph) => Some(graph.clone()), None => crate::blockers::condition::discover_graph(b, &iri)? };
+                    let kind = match done_when { Some(kind) => kind.clone(), None if ask.is_some() => "ask".into(), None => crate::blockers::condition::default_kind(b, &iri, graph.as_deref())? };
+                    let query = match ask { Some(query) => query.clone(), None => crate::blockers::condition::ask_for(&iri, &kind)? };
+                    let tx = crate::blockers::engine::add(b, ctx, issue, crate::blockers::Blocker {
+                        iri: iri.clone(), graph, ask: query, condition: kind,
+                        state: crate::blockers::State::Unknown, observed_at: None, actor: ctx.actor.clone(), created_at: ctx.now.clone(),
+                    })?;
+                    return Ok(ok(json, json!({"issue_id": issue, "blocker": iri, "tx": tx}), format!("{issue} blocks on {iri}{}", tx_note(tx)), vec![]));
+                }
+                let target = depends_on.as_deref().ok_or_else(|| SdError::usage("dependency target required"))?;
+                let d = engine::dep_add(b, ctx, issue, target, dep_type)?;
                 let text = format!(
                     "{} {} depends on {} ({}){}",
                     d.action,
@@ -3094,8 +3157,15 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 issue,
                 depends_on,
                 dep_type,
+                blocker,
             } => {
-                let d = engine::dep_remove(b, ctx, issue, depends_on, dep_type)?;
+                if let Some(iri) = blocker {
+                    if dep_type != "blocks" { return Err(SdError::usage("external blockers support only --type blocks")); }
+                    let tx = crate::blockers::engine::remove(b, ctx, issue, iri)?;
+                    return Ok(ok(json, json!({"issue_id":issue,"blocker":iri,"tx":tx}), format!("removed external blocker {iri}; reconciliation observes readiness"), vec![]));
+                }
+                let target = depends_on.as_deref().ok_or_else(|| SdError::usage("dependency target required"))?;
+                let d = engine::dep_remove(b, ctx, issue, target, dep_type)?;
                 let text = format!(
                     "removed: {} no longer depends on {} ({}){}",
                     d.issue_id,

@@ -37,6 +37,7 @@
   - [lint](verbs/lint.md)
   - [orphans](verbs/orphans.md)
   - [dep](verbs/dep.md)
+  - [External prerequisites and unlock events](external-blockers.md)
   - [comments](verbs/comments.md)
   - [export, import, sync](verbs/sync.md)
   - [version, where, info](verbs/about.md)

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-10-15
+
+### Added
+
+- *(blockers)* Reconcile external prerequisites and retain unlock receipts (#139) ([b244b83](https://github.com/scbrown/seeds/commit/b244b83f9c82b20f4026cfe8e6f16df6409982f7))
+
+### Documentation
+
+- *(key)* Link the end-to-end agent identity guide (#135) ([ff46437](https://github.com/scbrown/seeds/commit/ff464372c8d92cfdcfb954e234bdd1f7c52a845e))
+- Synchronize the stack overview (#137) ([3003e77](https://github.com/scbrown/seeds/commit/3003e779bf9c86beaf561868551dc620d75ac551))
+- Describe the stack around Quipu shared knowledge (#140) ([aeee504](https://github.com/scbrown/seeds/commit/aeee5044e35665f99914ac5245900e471d67a6e9))
+
+### Fixed
+
+- Retire stale deferral metadata on reactivation (#142) ([b90e2e8](https://github.com/scbrown/seeds/commit/b90e2e8af0595921e3068738b629c81a1542186b))
+
+### Testing
+
+- Prove bounded qualified acquisition controls (#144) ([fb945e9](https://github.com/scbrown/seeds/commit/fb945e9da3b7899d163705e9ca3fe78f0ccf74ae))
+
+### Perf
+
+- Combine remote vocabulary and presence preflight (#143) ([14e150a](https://github.com/scbrown/seeds/commit/14e150a0116b0d4a0e171b7f6192a83efb74b578))
+
 ## [0.3.0] - 2026-10-14
 
 ### Fixed

@@ -911,11 +911,14 @@ impl RemoteBackend {
     /// The server's registered graph IRIs, or `None` if it would not say (an
     /// older server, or any failure): then every graph is created, as before.
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
-        let text = quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
-            .call()
-            .ok()?
-            .into_string()
-            .ok()?;
+        let text = retry_read(|| {
+            quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+                .call()
+                .map_err(Box::new)
+        })
+        .ok()?
+        .into_string()
+        .ok()?;
         let v: Json = serde_json::from_str(&text).ok()?;
         Some(
             v["graphs"]
@@ -1268,12 +1271,15 @@ impl Backend for RemoteBackend {
             return Err(SdError::failed("invalid history transaction probe"));
         }
         let path = format!("/transactions?since={since}&limit=1");
-        let response = quipu_read_request(
-            self.agent.get(&format!("{}{path}", self.base)),
-            "transactions",
-        )
-        .call()
-        .map_err(|e| match e {
+        let response = retry_read(|| {
+            quipu_read_request(
+                self.agent.get(&format!("{}{path}", self.base)),
+                "transactions",
+            )
+            .call()
+            .map_err(Box::new)
+        })
+        .map_err(|e| match *e {
             ureq::Error::Transport(t) => transport(&self.base, &t),
             ureq::Error::Status(code, r) => status_error(
                 "history transaction lookup",

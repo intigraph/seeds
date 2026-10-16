@@ -159,3 +159,26 @@ fn invalid_label_aggregate_refuses_without_a_snapshot_fallback() {
         assert!(!requests[1].contains("ORDER BY"));
     }
 }
+
+#[test]
+fn gateway_graph_and_history_reads_recover_with_metadata_validation_intact() {
+    let (base, worker) = server(vec![
+        (200, "ok"),
+        (503, "restart"),
+        (200, r#"{"graphs":[{"iri":"urn:test"}]}"#),
+        (502, "restart"),
+        (200, r#"{"transactions":[{"id":19}],"count":1}"#),
+    ]);
+    let backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
+    assert!(backend.graph_iris().unwrap().contains("urn:test"));
+    assert_eq!(
+        backend.history_transaction_at_or_after(17).unwrap(),
+        Some(19)
+    );
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[1], requests[2]);
+    assert_eq!(requests[3], requests[4]);
+    assert!(requests[1].starts_with("GET /graphs "));
+    assert!(requests[3].starts_with("GET /transactions?since=16&limit=1 "));
+}

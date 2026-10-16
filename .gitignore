@@ -4,3 +4,7 @@
 docs/book/book/
 __pycache__/
 *.pyc
+
+# Deliberate, checked-in acquisition API demo recordings.
+!/docs/demos/acquisition-api/output.log
+!/docs/demos/acquisition-api/timing.log

@@ -2,15 +2,15 @@
 
 use clap::{Args, Parser, Subcommand};
 
-/// `sd`: beads-shaped work items as facts in a quipu graph.
+/// `sd`: seed work items as facts in a quipu graph.
 #[derive(Debug, Parser)]
 #[command(
     name = "sd",
     // "(seeds)": chmln/sd also answers `sd --version` with "sd <ver>", so
     // tools that must tell the two apart look for it (aegis-1i5h1j).
     version = concat!(env!("CARGO_PKG_VERSION"), " (seeds)"),
-    about = "Beads-compatible work items as facts in a quipu graph",
-    long_about = "seeds is the beads-compatible tracker for the quipu stack, with \
+    about = "Seed work items as facts in a quipu graph",
+    long_about = "seeds is the work-item tracker for the quipu stack, with \
                   fact-level versioning of work items. Each work item is a set of facts in a quipu knowledge \
                   graph; every write is one quipu transaction, and --at <tx> reads any \
                   seed as it stood at that transaction.\n\n\
@@ -265,7 +265,7 @@ pub enum Command {
     /// Write the ledger as a pendant (quipu's share files) to a directory
     Export(ExportArgs),
 
-    /// Lossless beads JSONL import, export, verification and three-way cutover sync
+    /// Lossless legacy JSONL import, export, verification and three-way cutover sync
     Cutover(CutoverArgs),
     /// Read a pendant into the configured store; conflicts are reported, never
     /// resolved silently

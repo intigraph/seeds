@@ -368,24 +368,22 @@ impl VerifiedAcquisition {
             .parent()
             .ok_or_else(|| invalid("artifact parent missing"))?;
         let scratch = Scratch::create(parent)?;
-        let mut file = scratch.file("artifact.json")?;
+        let mut file = scratch.file("artifact.acq")?;
         let receipt = serde_json::to_vec(&json!({
             "schema":"seeds-acquisition-artifact/v1",
+            "request_bytes":self.request.len(), "wire_bytes":self.wire.len(),
             "wire_sha256":sha256(&self.wire), "request_sha256":sha256(&self.request),
             "version_sha256":self.version_sha256, "verifier":self.manifest
         }))
         .map_err(|_| invalid("local receipt encoding"))?;
-        file.write_all(b"{\"artifact_receipt\":")
-            .and_then(|_| file.write_all(&receipt))
-            .and_then(|_| file.write_all(b",\"request\":"))
+        file.write_all(&receipt)
+            .and_then(|_| file.write_all(b"\n"))
             .and_then(|_| file.write_all(&self.request))
-            .and_then(|_| file.write_all(b",\"source_payload\":"))
             .and_then(|_| file.write_all(&self.wire))
-            .and_then(|_| file.write_all(b"}\n"))
             .and_then(|_| file.sync_all())
             .map_err(|_| invalid("artifact staging failed"))?;
         remaining(deadline)?;
-        fs::hard_link(scratch.0.join("artifact.json"), destination)
+        fs::hard_link(scratch.0.join("artifact.acq"), destination)
             .map_err(|_| invalid("artifact publish refused; destination must not exist"))?;
         // From this point a durability error is indeterminate, never safe to replay.
         File::open(parent).and_then(|f| f.sync_all()).map_err(|_| {
@@ -480,7 +478,7 @@ mod tests {
         // Local persistence unit control, not an acquisition/producer trial.
         let parent = Scratch::create(&std::env::temp_dir()).unwrap();
         let wire =
-            b"{ \"source_receipt\" : {\"identity\": \"untouched\"}, \"graphs\":{} }".to_vec();
+            b" \n{ \"source_receipt\" : {\"identity\": \"untouched\"}, \"graphs\":{} }\t".to_vec();
         let a = VerifiedAcquisition {
             request: serde_json::to_vec(&request()).unwrap(),
             wire: wire.clone(),
@@ -496,7 +494,7 @@ mod tests {
                 producer_source: "unit-control".into(),
             },
         };
-        let destination = parent.0.join("artifact.json");
+        let destination = parent.0.join("artifact.acq");
         a.persist(&destination, Duration::from_secs(2)).unwrap();
         let before = fs::read(&destination).unwrap();
         #[cfg(unix)]
@@ -507,12 +505,16 @@ mod tests {
                 0o600
             );
         }
-        #[derive(Deserialize)]
-        struct Artifact {
-            source_payload: Box<serde_json::value::RawValue>,
-        }
-        let decoded: Artifact = serde_json::from_slice(&before).unwrap();
-        assert_eq!(decoded.source_payload.get().as_bytes(), wire);
+        let header_end = before.iter().position(|b| *b == b'\n').unwrap();
+        let receipt: Value = serde_json::from_slice(&before[..header_end]).unwrap();
+        assert_eq!(receipt["schema"], "seeds-acquisition-artifact/v1");
+        assert_eq!(receipt["wire_sha256"], sha256(&wire));
+        assert_eq!(receipt["request_sha256"], sha256(&a.request));
+        assert_eq!(receipt["request_bytes"], a.request.len());
+        assert_eq!(receipt["wire_bytes"], wire.len());
+        let body = &before[header_end + 1..];
+        assert_eq!(&body[..a.request.len()], a.request);
+        assert_eq!(&body[a.request.len()..], wire);
         assert!(a.persist(&destination, Duration::from_secs(2)).is_err());
         assert_eq!(fs::read(&destination).unwrap(), before);
         assert_eq!(fs::read_dir(&parent.0).unwrap().count(), 1);

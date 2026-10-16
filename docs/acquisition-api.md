@@ -29,9 +29,11 @@ it is not hostile-producer authentication or production permission.
 
 ## Artifact persistence
 
-Only a verified result has `persist`. The artifact is one JSON file containing
-the original source payload bytes (including the untouched source receipt),
-the original request, and a separate local artifact receipt. There is no
+Only a verified result has `persist`. The artifact is one length-framed file: a JSON local-receipt header followed
+by a newline, the exact request bytes, and the exact source payload bytes
+(including the untouched source receipt and outer whitespace). The header
+records both byte lengths and SHA-256 digests; readers split by these lengths
+rather than parsing and re-encoding the payload. There is no
 substitution of a local transaction or store ID for source authority.
 
 Staging is exclusive and private. A same-filesystem hard link publishes the

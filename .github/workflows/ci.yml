@@ -160,6 +160,19 @@ jobs:
       - run: cargo clippy --locked --manifest-path tests/fixtures/acquisition-producer/Cargo.toml -- -D warnings
       - run: bash tests/run-acquisition-fixture.sh
 
+  acquisition-verifier:
+    name: Isolated acquisition verifier (compile only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --manifest-path tools/acquisition-verifier/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path tools/acquisition-verifier/Cargo.toml -- -D warnings
+
   book:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,16 @@
+[package]
+name = "seeds-acquisition-verifier"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Separate resolution is intentional: never downgrade the SDK's dependency
+# graph to fit the reference producer's oxsdatatypes version.
+[workspace]
+
+[dependencies]
+quipu = { package = "quipu-ai", git = "https://github.com/scbrown/quipu", rev = "0f23ef3be3cc6ed32d62dacd4cf7c0986fc803bb", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+libc = "0.2"

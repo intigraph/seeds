@@ -43,6 +43,7 @@ use crate::model::{Fact, Obj, Snapshot};
 use crate::validate::{self, escape_literal};
 use crate::vocab::{self, term};
 
+pub mod acquisition;
 mod summary;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few

@@ -1103,7 +1103,7 @@ fn owner_ready_discovery_errors_never_become_an_empty_ready_set() {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             // Health once, then exhaust the bounded transient-read retries.
-            let requests = if status.starts_with("503") { 7 } else { 2 };
+            let requests = if status.starts_with("503") { 6 } else { 2 };
             for number in 0..requests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());

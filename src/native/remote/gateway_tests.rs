@@ -78,13 +78,13 @@ fn gateway_does_not_retry_408_or_refusals() {
 }
 
 #[test]
-fn gateway_outage_stops_after_six_attempts() {
-    let (base, worker) = server(vec![(503, "still restarting"); 6]);
+fn gateway_outage_stops_after_five_attempts() {
+    let (base, worker) = server(vec![(503, "still restarting"); 5]);
     let error = RemoteBackend::connect(&base, "urn:test", None, None, &[])
         .err()
         .expect("an exhausted outage is not healthy");
     assert!(error.message.contains("HTTP 503"));
-    assert_eq!(worker.join().unwrap().len(), 6);
+    assert_eq!(worker.join().unwrap().len(), 5);
 }
 
 #[test]

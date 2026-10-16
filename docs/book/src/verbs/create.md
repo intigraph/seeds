@@ -85,7 +85,7 @@ Bulk creation reads only referenced seeds and candidate IDs, then commits
 one revision-checked batch. A concurrent ID collision refuses atomically;
 it does not overwrite another writer. Gateway 502/503 responses to health
 and standard board read requests (query, graph discovery and historical
-transaction lookup) retry at 1, 2, 4, 8 and 16 seconds (six attempts maximum).
+transaction lookup) retry at 1, 2, 4 and 8 seconds (five attempts maximum).
 Experimental acquisition keeps its separate whole-operation deadline.
 Writes are never automatically replayed: an uncertain write is reconciled
 by exact read-back, preserving the existing UNKNOWN/conflict contract.

@@ -236,7 +236,7 @@ fn attestation_verdict(code: u16, body: &str) -> Option<String> {
 fn retry_read(
     mut request: impl FnMut() -> std::result::Result<ureq::Response, Box<ureq::Error>>,
 ) -> std::result::Result<ureq::Response, Box<ureq::Error>> {
-    let delays = [1, 2, 4, 8, 16];
+    let delays = [1, 2, 4, 8];
     let mut attempt = 0;
     loop {
         let result = request();

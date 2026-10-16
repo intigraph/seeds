@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.2] - 2026-10-16
+
+### Added
+
+- Add an unwired verified acquisition library API (#150) ([096260f](https://github.com/scbrown/seeds/commit/096260ffecab501184564728b550df92d50faff4))
+
+### Fixed
+
+- Allow checked-in acquisition demo recordings (#151) ([0739b82](https://github.com/scbrown/seeds/commit/0739b8222522d785720397c1030feea1986db195))
+
+### Perf
+
+- Push full-field search through the substring readiness contract (#148) ([01dc869](https://github.com/scbrown/seeds/commit/01dc869b0ad4c21e7483ec0966d43e3082e91fb2))
+
 ## [0.4.1] - 2026-10-15
 
 ### Documentation

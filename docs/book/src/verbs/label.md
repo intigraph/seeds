@@ -23,3 +23,9 @@ sd label list-all                       # every label, with counts
 **`--json`**: `add`/`remove` print `[{status, issue_id, label, tx}]`;
 `list` prints an array of strings; `list-all` prints `[{label, count}]`;
 `rename` prints `{old_name, new_name, affected_issues, tx}`.
+
+Remote `list` and `list-all` use grouped label counts over the effective
+project and ephemeral graphs, rather than sorting and loading every fact
+on the board. An incomplete or malformed aggregate refuses explicitly;
+it never falls back to a full-board read. Named-item `list` reads only
+that item's facts, including for `--at`.

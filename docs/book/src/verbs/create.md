@@ -40,7 +40,7 @@ short and unique. No randomness is involved.
 
 **`-f, --file FILE`** creates every item of a markdown file in **one
 transaction** (br's bulk import). Each `## Title` starts a seed; under it,
-`### Priority`, `### Type`, `### Labels`, `### Assignee`, `### Dependencies`,
+`### Priority`, `### Type`, `### Labels`, `### Assignee`, `### Parent`, `### Dependencies`,
 `### Description`, `### Notes`, `### Design` and `### Acceptance Criteria` set
 its fields, and the text between the
 title and its first `###` is the description. Anything before the first `##`
@@ -57,3 +57,33 @@ writes nothing.
 
 **Exit codes**: 0; 2 for a bad flag value; 3 when `--parent` or a `--deps`
 target does not exist; 5 when the shapes refuse the write.
+
+A file can create an epic and its children together. `@N` in Parent or
+Dependencies names the Nth item in that file (one-based); forward references
+are supported. Ordinary IDs still refer to existing seeds. Cyclic Parent
+references and invalid references refuse the whole file.
+
+```markdown
+## Release epic
+### Type
+epic
+## Implementation
+### Parent
+@1
+### Assignee
+owner
+### Labels
+release,implementation
+## Verification
+### Parent
+@1
+### Dependencies
+@2
+```
+
+Bulk creation reads only referenced seeds and candidate IDs, then commits
+one revision-checked batch. A concurrent ID collision refuses atomically;
+it does not overwrite another writer. Gateway 502/503 responses to health
+and read requests retry at 1, 2, 4, 8 and 16 seconds (six attempts maximum).
+Writes are never automatically replayed: an uncertain write is reconciled
+by exact read-back, preserving the existing UNKNOWN/conflict contract.

@@ -44,6 +44,8 @@ use crate::validate::{self, escape_literal};
 use crate::vocab::{self, term};
 
 pub mod acquisition;
+#[cfg(test)]
+mod gateway_tests;
 mod summary;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
@@ -56,7 +58,7 @@ const SUBJECTS_PER_READ: usize = 100;
 // id-only discovery queries, which can still use 100 bound branches.
 const FACT_SUBJECTS_PER_READ: usize = 10;
 
-/// Subjects per page of a subject listing: under quipu's 10,000-row cap, so a
+/// Subjects per range of a subject listing: under quipu's 10,000-row cap, so a
 /// full page is never also a truncated one.
 const SUBJECT_PAGE: usize = 5000;
 
@@ -229,6 +231,25 @@ fn attestation_verdict(code: u16, body: &str) -> Option<String> {
     (v["reason"] == "attestation_refused").then(|| v["verdict"].as_str().unwrap_or("?").to_string())
 }
 
+/// Retry only explicit transient gateway responses to idempotent reads.
+/// Never replay a write or a transport/408 failure with an unknown cause.
+fn retry_read(
+    mut request: impl FnMut() -> std::result::Result<ureq::Response, Box<ureq::Error>>,
+) -> std::result::Result<ureq::Response, Box<ureq::Error>> {
+    let delays = [1, 2, 4, 8, 16];
+    let mut attempt = 0;
+    loop {
+        let result = request();
+        match result.as_ref().map_err(|error| error.as_ref()) {
+            Err(ureq::Error::Status(502 | 503, _)) if attempt < delays.len() => {
+                std::thread::sleep(Duration::from_secs(delays[attempt]));
+                attempt += 1;
+            }
+            _ => return result,
+        }
+    }
+}
+
 impl RemoteBackend {
     /// Connect to the quipu server at `base` (checked with `GET /health`).
     /// `plain_http_ok` is the user's `allow_plain_http_hosts`: hosts a token
@@ -268,7 +289,13 @@ impl RemoteBackend {
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
         };
-        match quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health").call() {
+        match retry_read(|| {
+            quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
+                .call()
+                .map_err(Box::new)
+        })
+        .map_err(|error| *error)
+        {
             Ok(_) => Ok(b),
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
@@ -345,7 +372,12 @@ impl RemoteBackend {
                 }
             }
         }
-        match req.send_string(body) {
+        let response = if path == "/query" && !auth {
+            retry_read(|| req.clone().send_string(body).map_err(Box::new)).map_err(|error| *error)
+        } else {
+            req.send_string(body)
+        };
+        match response {
             Ok(r) if require_substring && r.header("X-Quipu-Substring-Index") != Some("v6") => Err((false,
                 SdError::refused("remote full-field search requires the supported complete substring index; server did not acknowledge readiness, refusing a snapshot fallback"))),
             Ok(r) => r.into_string().map_err(|e| {
@@ -647,76 +679,66 @@ impl RemoteBackend {
         Ok(())
     }
 
-    /// The IRI subjects matching `pattern` (over `?s`, inside `graph`), as
-    /// of `at`, in code-point order.
-    ///
-    /// Paged by key (`STR(?s) > last`), never by `OFFSET`: each page is
-    /// bounded and starts where the last ended, and no page can be cut short
-    /// by quipu's row cap without saying so (a truncated page is refused).
-    /// Ordered by `STR(?s)`, the key the filter compares: quipu orders bare
-    /// IRIs by its own term ids, not by their text, and paging by one order
-    /// while filtering by another skips subjects (the order is checked, and
-    /// a page out of order is refused).
+    /// List matching subjects without a board-wide server-side sort.
+    /// Full unordered pages split into disjoint ranges around an observed
+    /// pivot. The pivot is retained once; both open ranges are read, so no
+    /// ordering of the returned page is assumed. Only a short complete page
+    /// proves a range exhausted. Duplicate-heavy pages still make progress
+    /// because their pivot is excluded from both child ranges.
     fn subjects_where(&self, graph: &str, pattern: &str, at: Option<u64>) -> Result<Vec<String>> {
         self.subjects_scoped(&format!("GRAPH <{graph}> {{ {pattern} }}"), graph, at)
     }
 
     fn subjects_scoped(&self, pattern: &str, graph: &str, at: Option<u64>) -> Result<Vec<String>> {
-        let mut out: Vec<String> = Vec::new();
-        loop {
-            let after = out.last().map_or_else(String::new, |last| {
-                format!("FILTER(STR(?s) > \"{}\") ", escape_literal(last))
-            });
+        let mut out = BTreeSet::new();
+        let mut ranges: Vec<(Option<String>, Option<String>)> = vec![(None, None)];
+        while let Some((lower, upper)) = ranges.pop() {
+            let mut bounds = String::new();
+            if let Some(lower) = &lower {
+                bounds += &format!("FILTER(STR(?s) > \"{}\") ", escape_literal(lower));
+            }
+            if let Some(upper) = &upper {
+                bounds += &format!("FILTER(STR(?s) < \"{}\") ", escape_literal(upper));
+            }
             let (rows, truncated) = self.select_marked(
                 &format!(
-                    "SELECT ?s WHERE {{ {pattern} \
-                     FILTER(isIRI(?s)) {after}}} \
-                     ORDER BY STR(?s) LIMIT {}",
-                    self.subject_page
+                    "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bounds}}} LIMIT {}",
+                    self.subject_page,
                 ),
                 at,
             )?;
-            if truncated {
+            if truncated || rows.len() > self.subject_page {
                 return Err(SdError::failed(format!(
-                    "quipu truncated a page of {} subjects of {graph}; refusing a partial \
-                     snapshot",
-                    self.subject_page
+                    "quipu truncated a subject range of {graph}; refusing a partial snapshot"
                 )));
             }
-            let n = rows.len();
-            let before = out.len();
-            for mut r in rows {
-                let Some(Obj::Iri(s)) = r.remove("s") else {
-                    continue;
+            let full = rows.len() == self.subject_page;
+            let mut observed = BTreeSet::new();
+            for row in rows {
+                let Some(Obj::Iri(subject)) = row.get("s") else {
+                    return Err(SdError::failed("quipu returned an invalid subject binding"));
                 };
-                // No DISTINCT (it made a page ~80x slower on a 28k-seed
-                // board): a subject matching more than once arrives as a run
-                // of equal rows, kept once.
-                if out.last().is_some_and(|last| *last == s) {
-                    continue;
+                if lower.as_ref().is_some_and(|bound| subject <= bound)
+                    || upper.as_ref().is_some_and(|bound| subject >= bound)
+                {
+                    return Err(SdError::failed("quipu returned a subject outside its requested range; refusing a non-progressing snapshot"));
                 }
-                // The next page starts after the last subject, so the pages
-                // must come in the order the key compares; anything else
-                // could skip a subject without a sign.
-                if out.last().is_some_and(|last| s.as_str() < last.as_str()) {
-                    return Err(SdError::failed(format!(
-                        "quipu listed the subjects of {graph} out of order ({s} after {}); \
-                         refusing a snapshot that could skip one",
-                        out.last().map_or("", String::as_str)
-                    )));
-                }
-                out.push(s);
+                observed.insert(subject.clone());
             }
-            if n < self.subject_page {
-                return Ok(out);
-            }
-            if out.len() == before {
-                return Err(SdError::failed(format!(
-                    "quipu answered a full page of subjects of {graph} with no new one; \
-                     refusing a snapshot that cannot page past it"
-                )));
+            if full {
+                let pivot = observed
+                    .iter()
+                    .nth(observed.len() / 2)
+                    .ok_or_else(|| SdError::failed("full subject page has no pivot"))?
+                    .clone();
+                out.insert(pivot.clone());
+                ranges.push((Some(pivot.clone()), upper));
+                ranges.push((lower, Some(pivot)));
+            } else {
+                out.extend(observed);
             }
         }
+        Ok(out.into_iter().collect())
     }
 
     /// One graph's facts, grouped by subject, as of `at`: exactly the facts
@@ -725,7 +747,7 @@ impl RemoteBackend {
     /// A whole-graph `ORDER BY ?s ?p ?o LIMIT/OFFSET` scan re-sorted every
     /// triple for every page (726k triples on a 28k-seed board: ~363 pages of
     /// ~5.4 s). Instead the subjects are listed by the classes seeds writes
-    /// ([`listed_classes`], bound patterns, keyset-paged) and their facts read
+    /// ([`listed_classes`], bound patterns, range-partitioned) and their facts read
     /// in [`SUBJECTS_PER_READ`] batches. The graph's triple count is the
     /// check: facts left over belong to subjects of no listed class (written
     /// by something other than seeds), and only then are those listed, with
@@ -1304,6 +1326,44 @@ impl Backend for RemoteBackend {
         Ok(snap)
     }
 
+    fn indexed_label_counts(&self, at: Option<u64>) -> Result<Option<Vec<(String, usize)>>> {
+        let eph = vocab::ephemeral_graph(&self.graph);
+        let fields = format!("?s a <{}> ; <{}> ?id ; <{}> ?label . FILTER(isLiteral(?id) && sameTerm(?id, STR(?id)))", term::work_item(), term::identifier(), term::label());
+        // Snapshot::from_subjects retains the lexically last subject for
+        // duplicate IDs. Match that rule before aggregating labels.
+        let winner = |graph: &str| {
+            format!("FILTER NOT EXISTS {{ GRAPH <{graph}> {{ ?later a <{}> ; <{}> ?id }} FILTER(STR(?later) > STR(?s)) }}", term::work_item(), term::identifier())
+        };
+        let main_winner = winner(&self.graph);
+        let eph_winner = winner(&eph);
+        let pattern = format!("{{ GRAPH <{}> {{ {fields} }} {main_winner} FILTER NOT EXISTS {{ GRAPH <{eph}> {{ ?shadow a <{}> ; <{}> ?id }} }} }} UNION {{ GRAPH <{eph}> {{ {fields} }} {eph_winner} }}", self.graph, term::work_item(), term::identifier());
+        // Group before returning: no board-wide triple sort or hydration.
+        let query = format!("SELECT ?label (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {{ {pattern} }} FILTER(isLiteral(?label) && sameTerm(?label, STR(?label))) }} GROUP BY ?label LIMIT {ROW_CAP}");
+        let (rows, truncated) = self.select_marked(&query, at)?;
+        if truncated || rows.len() >= ROW_CAP {
+            return Err(SdError::failed(
+                "quipu truncated label counts; refusing a partial label list",
+            ));
+        }
+        let mut counts = BTreeMap::new();
+        for row in rows {
+            let Some(Obj::Str(label)) = row.get("label") else {
+                return Err(SdError::failed("quipu returned an invalid label"));
+            };
+            let count = match row.get("n") {
+                Some(Obj::Int(n)) => usize::try_from(*n).ok(),
+                Some(Obj::Str(n)) => n.parse().ok(),
+                _ => None,
+            }
+            .filter(|n| *n > 0)
+            .ok_or_else(|| SdError::failed("quipu returned an invalid label count"))?;
+            if counts.insert(label.clone(), count).is_some() {
+                return Err(SdError::failed("quipu returned duplicate label groups"));
+            }
+        }
+        Ok(Some(counts.into_iter().collect()))
+    }
+
     fn scoped_reads(&self) -> bool {
         true
     }
@@ -1339,7 +1399,7 @@ impl Backend for RemoteBackend {
         self.snapshot_of(&ids.iter().map(|id| vocab::item_iri(id)).collect())
     }
 
-    /// The seeds [`vocab::seed_query_pattern`] lists, keyset-paged in each
+    /// The seeds [`vocab::seed_query_pattern`] lists, range-partitioned in each
     /// graph, then read by subject. An unconstrained query is a whole
     /// snapshot.
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {

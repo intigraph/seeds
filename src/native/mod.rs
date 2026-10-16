@@ -3224,17 +3224,11 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                     })?;
                     return Ok(ok(json, json!({"issue_id": issue, "blocker": iri, "tx": tx}), format!("{issue} blocks on {iri}{}", tx_note(tx)), vec![]));
                 }
-                let target = depends_on.as_deref().ok_or_else(|| SdError::usage("dependency target required"))?;
-                let d = engine::dep_add(b, ctx, issue, target, dep_type)?;
-                let text = format!(
-                    "{} {} depends on {} ({}){}",
-                    d.action,
-                    d.issue_id,
-                    d.depends_on_id,
-                    d.dep_type,
-                    tx_note(d.tx)
-                );
-                Ok(ok(json, output::dep_change_json(&d), text, vec![]))
+                let changes = engine::dep_add_many(b, ctx, issue, depends_on, dep_type)?;
+                let text = changes.iter().map(|d| format!("{} {} depends on {} ({}){}", d.action, d.issue_id, d.depends_on_id, d.dep_type, tx_note(d.tx))).collect::<Vec<_>>().join("\n");
+                let value = if changes.len() == 1 { output::dep_change_json(&changes[0]) }
+                    else { serde_json::Value::Array(changes.iter().map(output::dep_change_json).collect()) };
+                Ok(ok(json, value, text, vec![]))
             }
             DepCommand::Remove {
                 issue,

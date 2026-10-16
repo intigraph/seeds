@@ -3156,3 +3156,43 @@ fn rescope_cli_replaces_lints_and_acknowledges_exact_generation() {
         item["description"]
     );
 }
+
+#[test]
+fn bulk_epic_children_and_multi_id_edits_need_one_call_each() {
+    let sb = Sandbox::new("bulk-epic-children");
+    let mut markdown = String::from("## Epic\n### Type\nepic\n");
+    for index in 1..=9 {
+        markdown.push_str(&format!(
+            "## Task {index}\n### Parent\n@1\n### Assignee\nowner\n### Labels\nrelease\n"
+        ));
+    }
+    let file = sb.work().join("tasks.md");
+    std::fs::write(&file, markdown).unwrap();
+    let seeds = sb.json(&["create", "-f", file.to_str().unwrap()]);
+    let seeds = seeds.as_array().unwrap();
+    assert_eq!(seeds.len(), 10);
+    let epic = seeds[0]["id"].as_str().unwrap();
+    for child in &seeds[1..] {
+        assert_eq!(child["parent"], epic);
+        assert_eq!(child["assignee"], "owner");
+        assert_eq!(child["labels"], serde_json::json!(["release"]));
+    }
+    let a = seeds[1]["id"].as_str().unwrap();
+    let b = seeds[2]["id"].as_str().unwrap();
+    let c = seeds[3]["id"].as_str().unwrap();
+    let changes = sb.json(&["dep", "add", a, b, c]);
+    assert_eq!(changes.as_array().unwrap().len(), 2);
+    assert_eq!(changes[0]["tx"], changes[1]["tx"]);
+    sb.ok(&["label", "add", a, b, c, "shared"]);
+    for id in [a, b, c] {
+        assert!(sb
+            .json(&["label", "list", id])
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|label| label == "shared"));
+    }
+    let help = sb.ok(&["create", "--help"]);
+    assert!(help.starts_with("Common:"));
+    assert!(help.lines().take(5).any(|line| line.contains("--parent")));
+}

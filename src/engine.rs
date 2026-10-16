@@ -206,22 +206,128 @@ pub fn create_many(
     items: &[BulkItem],
     dry_run: bool,
 ) -> Result<(Vec<Seed>, u64)> {
-    let snap = b.snapshot(None)?;
-    let mut minted: BTreeSet<String> = BTreeSet::new();
-    let mut seeds = Vec::new();
+    // Resolve only named edges and candidate IDs, never hydrate the board.
+    // @N refers to the Nth item of this file (one-based).
+    let local = |value: &str| -> Result<Option<usize>> {
+        let Some(n) = value.strip_prefix('@') else {
+            return Ok(None);
+        };
+        let index = n
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0 && *n <= items.len())
+            .ok_or_else(|| {
+                SdError::usage(format!(
+                    "invalid bulk reference {value}; use @1 through @{}",
+                    items.len()
+                ))
+            })?;
+        Ok(Some(index - 1))
+    };
+    let mut referenced = Vec::new();
     for item in items {
-        let title = item.req.title.trim();
-        if title.is_empty() {
-            return Err(SdError::usage("a seed needs a non-empty title"));
+        if let Some(parent) = &item.req.parent {
+            if local(parent)?.is_none() {
+                referenced.push(parent.clone());
+            }
         }
-        let id = ids::mint(&ctx.prefix, title, &ctx.now, |c| {
-            snap.seeds.contains_key(c) || minted.contains(c)
-        });
-        minted.insert(id.clone());
-        let mut seed = new_seed(&snap, ctx, &item.req, id, title, None)?;
+        for dep in &item.req.deps {
+            let (_, target) = parse_dep_spec(dep)?;
+            if local(&target)?.is_none() {
+                referenced.push(target);
+            }
+        }
+    }
+    let mut snap = b.snapshot_items(&referenced)?;
+    let mut ids: Vec<Option<String>> = vec![None; items.len()];
+    let mut minted = BTreeSet::new();
+    while ids.iter().any(Option::is_none) {
+        let mut progress = false;
+        for (index, item) in items.iter().enumerate() {
+            if ids[index].is_some() {
+                continue;
+            }
+            let title = item.req.title.trim();
+            if title.is_empty() {
+                return Err(SdError::usage("a seed needs a non-empty title"));
+            }
+            let parent = match item.req.parent.as_deref() {
+                Some(value) => match local(value)? {
+                    Some(i) => match &ids[i] {
+                        Some(id) => Some(id.clone()),
+                        None => continue,
+                    },
+                    None => {
+                        snap.get(value)?;
+                        Some(value.to_string())
+                    }
+                },
+                None => None,
+            };
+            let id = loop {
+                let occupied = |c: &str| snap.seeds.contains_key(c) || minted.contains(c);
+                let candidate = match &parent {
+                    Some(p) => ids::child(p, occupied),
+                    None => ids::mint(&ctx.prefix, title, &ctx.now, occupied),
+                };
+                let existing = b.snapshot_items(std::slice::from_ref(&candidate))?;
+                if !existing.seeds.contains_key(&candidate) {
+                    break candidate;
+                }
+                snap.seeds.extend(existing.seeds);
+            };
+            minted.insert(id.clone());
+            ids[index] = Some(id);
+            progress = true;
+        }
+        if !progress {
+            return Err(SdError::usage(
+                "cyclic bulk Parent references; nothing was written",
+            ));
+        }
+    }
+    let ids: Vec<String> = ids.into_iter().map(Option::unwrap).collect();
+    // Make all batch IDs visible while validating forward dependencies.
+    for id in &ids {
+        snap.seeds.insert(
+            id.clone(),
+            Seed {
+                id: id.clone(),
+                ..Seed::default()
+            },
+        );
+    }
+    let resolve = |value: &str| -> Result<String> {
+        Ok(local(value)?.map_or_else(|| value.to_string(), |i| ids[i].clone()))
+    };
+    let mut seeds = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let mut req = item.req.clone();
+        req.parent = req.parent.as_deref().map(&resolve).transpose()?;
+        req.deps = req
+            .deps
+            .iter()
+            .map(|dep| {
+                let (kind, target) = parse_dep_spec(dep)?;
+                Ok(format!("{kind}:{}", resolve(&target)?))
+            })
+            .collect::<Result<_>>()?;
+        let mut seed = new_seed(&snap, ctx, &req, ids[index].clone(), req.title.trim(), None)?;
         seed.notes = non_empty(item.notes.as_deref());
         seed.design = non_empty(item.design.as_deref());
         seeds.push(seed);
+    }
+    for seed in &seeds {
+        snap.seeds.insert(seed.id.clone(), seed.clone());
+    }
+    for seed in &seeds {
+        for target in &seed.blocked_on {
+            if seed.id == *target || blocks_path(&snap, target, &seed.id).is_some() {
+                return Err(SdError::refused(
+                    "bulk dependency cycle; nothing was written",
+                ));
+            }
+        }
     }
     if dry_run || seeds.is_empty() {
         return Ok((seeds, 0));
@@ -245,13 +351,13 @@ pub fn create_many(
 
 /// Parse br's bulk-create markdown (`br create --file`): each `## Title`
 /// starts a seed; `### Priority`, `### Type`, `### Labels`, `### Assignee`,
-/// `### Dependencies`, `### Description` and `### Notes` set its fields; the
+/// `### Parent`, `### Dependencies`, `### Description` and `### Notes` set its fields; the
 /// text between the title and its first `###` is the description. Headings
 /// inside fenced code blocks are text. Anything before the first `##` is
 /// ignored, as br does.
 ///
-/// Unlike br, nothing is dropped silently: a section seeds cannot store
-/// (`Design`, `Acceptance Criteria`) or does not know is refused by name, as
+/// Unlike br, nothing is dropped silently: a section seeds does not know
+/// is refused by name, as
 /// is an item with both a body and a `### Description`. br keeps only the
 /// first paragraph of a body; seeds keeps all of it.
 pub fn parse_bulk_markdown(text: &str) -> Result<Vec<BulkItem>> {
@@ -316,13 +422,14 @@ pub fn parse_bulk_markdown(text: &str) -> Result<Vec<BulkItem>> {
                 "priority" => item.req.priority = Some(one),
                 "type" => item.req.issue_type = Some(one),
                 "assignee" => item.req.assignee = Some(one),
+                "parent" => item.req.parent = Some(one),
                 "labels" => item.req.labels = list(&value),
                 "dependencies" | "deps" => item.req.deps = list(&value),
                 _ => {
                     return Err(SdError::usage(format!(
                         "item {:?}: unknown section `### {name}`; nothing was written. Known: \
                          Description, Notes, Design, Acceptance Criteria, Priority, Type, \
-                         Assignee, Labels, Dependencies",
+                         Assignee, Labels, Parent, Dependencies",
                         raw.title
                     )))
                 }
@@ -2587,7 +2694,15 @@ pub fn label_rename(b: &mut dyn Backend, ctx: &Ctx, old: &str, new: &str) -> Res
 /// `sd label list [id]`: one seed's labels, or every label in use (closed
 /// seeds included, as br does), sorted.
 pub fn labels(b: &dyn Backend, id: Option<&str>, at: Option<u64>) -> Result<Vec<String>> {
-    let snap = b.snapshot(at)?;
+    if id.is_none() {
+        if let Some(counts) = b.indexed_label_counts(at)? {
+            return Ok(counts.into_iter().map(|(label, _)| label).collect());
+        }
+    }
+    let snap = match id {
+        Some(id) => b.snapshot_seed_at(id, at)?,
+        None => b.snapshot(at)?,
+    };
     Ok(match id {
         Some(id) => snap.get(id)?.labels.iter().cloned().collect(),
         None => snap
@@ -2602,6 +2717,9 @@ pub fn labels(b: &dyn Backend, id: Option<&str>, at: Option<u64>) -> Result<Vec<
 
 /// `sd label list-all`: every label in use with the number of seeds carrying it.
 pub fn label_counts(b: &dyn Backend, at: Option<u64>) -> Result<Vec<(String, usize)>> {
+    if let Some(counts) = b.indexed_label_counts(at)? {
+        return Ok(counts);
+    }
     let snap = b.snapshot(at)?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for l in snap.seeds.values().flat_map(|s| s.labels.iter()) {
@@ -3534,76 +3652,99 @@ pub fn dep_add(
     depends_on: &str,
     dep_type: &str,
 ) -> Result<DepChange> {
+    dep_add_many(b, ctx, issue, &[depends_on.to_string()], dep_type)
+        .map(|mut changes| changes.remove(0))
+}
+
+/// Add several dependencies to one item atomically; one revision and one commit.
+pub fn dep_add_many(
+    b: &mut dyn Backend,
+    ctx: &Ctx,
+    issue: &str,
+    targets: &[String],
+    dep_type: &str,
+) -> Result<Vec<DepChange>> {
     let dep_type = model::parse_dep_type(dep_type)?;
-    if issue == depends_on {
+    if targets.is_empty() {
+        return Err(SdError::usage("dependency target required"));
+    }
+    let targets: BTreeSet<String> = targets.iter().cloned().collect();
+    if targets.contains(issue) {
         return Err(SdError::refused(format!("{issue} cannot depend on itself")));
     }
-    let snap = if dep_type == "parent-child" {
-        parent_snapshot(b, &[issue.into(), depends_on.into()])?
-    } else if dep_type == "blocks" {
-        blocking_snapshot(b, &[issue.into(), depends_on.into()], true)?
-    } else {
-        b.snapshot_items(&[issue.into(), depends_on.into()])?
+    if dep_type == "parent-child" && targets.len() > 1 {
+        return Err(SdError::usage(
+            "an item has one parent; use create --parent for epic children",
+        ));
+    }
+    let ids: Vec<String> = std::iter::once(issue.to_string())
+        .chain(targets.iter().cloned())
+        .collect();
+    let snap = match dep_type.as_str() {
+        "parent-child" => parent_snapshot(b, &ids)?,
+        "blocks" => blocking_snapshot(b, &ids, true)?,
+        _ => b.snapshot_items(&ids)?,
     };
     let before = snap.get(issue)?;
-    let target = snap.get(depends_on)?;
-    for s in [before, target] {
-        if s.is_tombstone() {
-            return Err(SdError::refused(format!(
-                "{} is deleted; a deleted seed cannot gain a dependency",
-                s.id
-            )));
+    let mut seed = before.clone();
+    let mut changes = Vec::new();
+    let mut changed = false;
+    for target_id in targets {
+        let target = snap.get(&target_id)?;
+        if before.is_tombstone() || target.is_tombstone() {
+            return Err(SdError::refused("a deleted seed cannot gain a dependency"));
         }
-    }
-    if before.has_dep(depends_on, &dep_type) {
-        return Ok(DepChange {
+        let action = if before.has_dep(&target_id, &dep_type) {
+            "unchanged"
+        } else {
+            if dep_type == "blocks" {
+                if let Some(path) = blocks_path(&snap, &target_id, issue) {
+                    return Err(SdError::refused(format!(
+                        "{issue} -> {target_id} would make a cycle ({}); nothing was written",
+                        path.join(" -> ")
+                    )));
+                }
+            }
+            if dep_type == "parent-child" {
+                reparent(&snap, issue, &target_id)?;
+                if let Some(parent) = &before.parent {
+                    return Err(SdError::refused(format!(
+                        "{issue} already has parent {parent}; remove that dependency first"
+                    )));
+                }
+            }
+            seed.add_dep(&target_id, &dep_type);
+            seed.set_dependency_origin(&target_id, &dep_type, &ctx.now, &ctx.actor)?;
+            changed = true;
+            "added"
+        };
+        changes.push(DepChange {
             issue_id: issue.into(),
-            depends_on_id: depends_on.into(),
-            dep_type,
-            action: "unchanged",
+            depends_on_id: target_id,
+            dep_type: dep_type.clone(),
+            action,
             tx: snap.tx,
         });
     }
-    if dep_type == "blocks" {
-        if let Some(path) = blocks_path(&snap, depends_on, issue) {
-            return Err(SdError::refused(format!(
-                "{issue} -> {depends_on} would make a cycle ({}); nothing was written",
-                path.join(" -> ")
-            )));
+    if changed {
+        seed.updated_at = ctx.now.clone();
+        seed.revision = before.revision + 1;
+        let tx = b.commit(
+            &WriteBatch {
+                seeds: vec![SeedWrite {
+                    seed,
+                    expected_revision: Some(before.revision),
+                }],
+                source: "seeds:dep-add".into(),
+                ..WriteBatch::default()
+            },
+            ctx,
+        )?;
+        for change in &mut changes {
+            change.tx = tx;
         }
     }
-    if dep_type == "parent-child" {
-        reparent(&snap, issue, depends_on)?;
-        if let Some(p) = &before.parent {
-            return Err(SdError::refused(format!(
-                "{issue} already has parent {p}; remove that dependency first"
-            )));
-        }
-    }
-    let mut s = before.clone();
-    s.add_dep(depends_on, &dep_type);
-    s.set_dependency_origin(depends_on, &dep_type, &ctx.now, &ctx.actor)?;
-    s.updated_at = ctx.now.clone();
-    s.revision = before.revision + 1;
-    let tx = b.commit(
-        &WriteBatch {
-            seeds: vec![SeedWrite {
-                seed: s,
-                expected_revision: Some(before.revision),
-            }],
-            comments: vec![],
-            source: "seeds:dep-add".into(),
-            ..WriteBatch::default()
-        },
-        ctx,
-    )?;
-    Ok(DepChange {
-        issue_id: issue.into(),
-        depends_on_id: depends_on.into(),
-        dep_type,
-        action: "added",
-        tx,
-    })
+    Ok(changes)
 }
 
 /// Exact seed reads of the reachable parent chain, with revision consistency.

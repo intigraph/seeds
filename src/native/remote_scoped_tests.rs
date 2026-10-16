@@ -1102,7 +1102,9 @@ fn owner_ready_discovery_errors_never_become_an_empty_ready_set() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
-            for number in 0..2 {
+            // Health once, then exhaust the bounded transient-read retries.
+            let requests = if status.starts_with("503") { 7 } else { 2 };
+            for number in 0..requests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -1255,4 +1257,41 @@ fn dep_list_and_remove_never_read_the_whole_board() {
         "the remove is visible on re-list"
     );
     assert!(engine::dep_list(&n, &b, true, None).unwrap().is_empty());
+}
+
+#[test]
+fn label_aggregate_matches_whole_snapshot_with_ephemeral_shadowing() {
+    let Some(server) = quipu_server() else {
+        eprintln!("SKIP: set SEEDS_TEST_QUIPU_SERVER for actual label aggregate control");
+        return;
+    };
+    let (snapshot, _) = corpus();
+    let mut remote = load(&server.base, "urn:label-aggregate-control", &snapshot);
+    let label = term::label();
+    let action = term::work_item();
+    let identifier = term::identifier();
+    let eph = vocab::ephemeral_graph("urn:label-aggregate-control");
+    remote.register_graph(true).unwrap();
+    let id = snapshot.seeds.keys().next().unwrap();
+    let subject = vocab::item_iri(id);
+    let query = format!("INSERT DATA {{ GRAPH <{eph}> {{ <{subject}> a <{action}> ; <{identifier}> \"{id}\" ; <{label}> \"ephemeral-only\" . }} GRAPH <urn:label-aggregate-control> {{ <urn:alias> a <{action}> ; <{identifier}> \"{id}\" ; <{label}> \"shadowed-alias\" . }} }}");
+    remote
+        .post(
+            "/update",
+            "application/x-www-form-urlencoded",
+            &format!("update={}", super::form_encode(&query)),
+            true,
+        )
+        .unwrap();
+    let expected = engine::label_counts(&Whole(&mut remote), None).unwrap();
+    let actual = engine::label_counts(&remote, None).unwrap();
+    assert!(
+        !actual.is_empty(),
+        "positive labelled seeds must be covered"
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(
+        engine::labels(&remote, None, None).unwrap(),
+        expected.into_iter().map(|(l, _)| l).collect::<Vec<_>>()
+    );
 }

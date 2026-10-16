@@ -9,6 +9,11 @@ sd dep list sd-b7c --direction up     # what depends on sd-b7c
 ```
 
 `dep add <issue> <depends-on>` records that *issue* depends on *depends-on*.
+Several targets are accepted: `sd dep add sd-a3f sd-b7c sd-c8d` adds both
+blockers in one transaction. All targets validate before anything is written.
+Use `sd create --parent EPIC` for epic children: parentage is different from
+waiting for a blocker. An item can have only one parent.
+
 Types (`-t, --type`):
 
 | type | meaning | blocks `ready`? |
@@ -25,6 +30,7 @@ Types (`-t, --type`):
 - `dep remove` of an edge that is not there is exit 3.
 
 **`--json`**: `dep add` and `dep remove` print `{status, issue_id,
-depends_on_id, type, action, tx}`; `dep list` prints an array of
+depends_on_id, type, action, tx}` for one target, or an array of those objects
+for several targets; `dep list` prints an array of
 `{issue_id, depends_on_id, type, title, status, priority}`, where the title,
 status and priority are the other end's.

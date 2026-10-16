@@ -44,6 +44,8 @@ wasm-test:
 check:
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
+    cargo fmt --manifest-path tools/acquisition-verifier/Cargo.toml --check
+    cargo clippy --locked --manifest-path tools/acquisition-verifier/Cargo.toml -- -D warnings
     cargo test
     cargo test --no-default-features
     bash scripts/ci/crates-publish-guard.sh --selftest

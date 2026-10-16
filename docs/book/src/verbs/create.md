@@ -38,6 +38,10 @@ title, the creation instant and an attempt counter. A collision tries the next
 attempt, and the hash grows by one character every four collisions, so ids stay
 short and unique. No randomness is involved.
 
+For one title and a body file, use `sd create "Title" --description-file body.md`.
+Combining a title with `--file` is refused with that corrected command;
+`--file` keeps its batch-import meaning.
+
 **`-f, --file FILE`** creates every item of a markdown file in **one
 transaction** (br's bulk import). Each `## Title` starts a seed; under it,
 `### Priority`, `### Type`, `### Labels`, `### Assignee`, `### Parent`, `### Dependencies`,

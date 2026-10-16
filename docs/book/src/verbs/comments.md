@@ -17,3 +17,7 @@ snapshot semantics. A missing item or an unavailable read remains an error.
 
 **`--json`**: one comment (add) or an array (list), each `{id, issue_id,
 author, text, created_at}`; `add` also carries `tx`.
+
+Use the plural subcommand: `sd comments add ID -m "Text"`. The legacy guess
+`sd comment ID -m "Text"` prints the corrected command. Empty text is refused
+with the message/file forms, and adds no comment.

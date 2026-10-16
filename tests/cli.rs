@@ -259,6 +259,8 @@ fn key_init_without_user_names_the_session_workaround() {
         .unwrap();
     assert_eq!(code(&o), 2);
     assert!(String::from_utf8_lossy(&o.stderr).contains("pass --session"));
+    assert!(String::from_utf8_lossy(&o.stderr)
+        .contains("sd key init --session <SESSION> --introducer <LEAD>"));
     assert!(!s.root.join("home/.config/seeds/keys").exists());
 }
 
@@ -3195,4 +3197,52 @@ fn bulk_epic_children_and_multi_id_edits_need_one_call_each() {
     let help = sb.ok(&["create", "--help"]);
     assert!(help.starts_with("Common:"));
     assert!(help.lines().take(5).any(|line| line.contains("--parent")));
+}
+
+#[test]
+fn desire_path_usage_traps_name_commands_that_actually_work() {
+    let sb = Sandbox::new("desire-usage");
+    let body = sb.root.join("body.md");
+    std::fs::write(&body, "Body from file.\n").unwrap();
+    let path = body.to_str().unwrap();
+    for args in [
+        vec!["create", "Named title", "--file", path],
+        vec!["create", "--title", "Named title", "--file", path],
+    ] {
+        let refused = sb.run(&args);
+        assert_eq!(code(&refused), 2);
+        assert!(String::from_utf8_lossy(&refused.stderr)
+            .contains("sd create <TITLE> --description-file <FILE>"));
+        assert!(!sb.work().join(".seeds/seeds.db").exists());
+    }
+    let seed = sb.json(&["create", "Named title", "--description-file", path]);
+    assert_eq!(seed["description"], "Body from file.\n");
+    let id = seed["id"].as_str().unwrap();
+    let guessed = sb.run(&["comment", id, "-m", "Message control"]);
+    assert_eq!(code(&guessed), 2);
+    assert!(
+        String::from_utf8_lossy(&guessed.stderr).contains("sd comments add <ID> --message <TEXT>")
+    );
+    assert!(sb
+        .json(&["comments", "list", id])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    sb.ok(&["comments", "add", id, "-m", "Message control"]);
+    sb.ok(&["update", id, "-a", "owner"]);
+    assert_eq!(sb.json(&["show", id])[0]["assignee"], "owner");
+    std::fs::write(&body, "  \n").unwrap();
+    for args in [
+        vec!["comments", "add", id],
+        vec!["comments", "add", id, "-m", ""],
+        vec!["comments", "add", id, "--file", path],
+    ] {
+        let refused = sb.run(&args);
+        assert_eq!(code(&refused), 2);
+        assert!(String::from_utf8_lossy(&refused.stderr)
+            .contains("sd comments add <ID> --message <TEXT>"));
+    }
+    let comments = sb.json(&["comments", "list", id]);
+    assert_eq!(comments.as_array().unwrap().len(), 1);
+    assert_eq!(comments[0]["text"], "Message control");
 }

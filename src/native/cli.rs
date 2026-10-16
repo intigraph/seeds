@@ -1049,7 +1049,7 @@ pub struct UpdateArgs {
     #[arg(short, long)]
     pub priority: Option<String>,
     /// New assignee ("" clears it)
-    #[arg(long)]
+    #[arg(short, long)]
     pub assignee: Option<String>,
     /// Atomically claim: set assignee to the actor and status to in_progress,
     /// only if the seed is open, unclaimed and unblocked (exit 4 otherwise)
@@ -1531,6 +1531,20 @@ impl Command {
             Command::Sync(_) => "sync",
             Command::MergeDriver(_) => "merge-driver",
         }
+    }
+}
+
+/// Actionable replacements for common legacy command-line guesses.
+pub fn usage_hint(error: &clap::Error) -> Option<&'static str> {
+    let rendered = error.to_string();
+    match error.kind() {
+        clap::error::ErrorKind::ArgumentConflict if rendered.contains("--file") => Some(
+            "--file imports a batch. For one title plus a body file, use: sd create <TITLE> --description-file <FILE>",
+        ),
+        clap::error::ErrorKind::InvalidSubcommand if rendered.contains("'comment'") => Some(
+            "To add comment text, use: sd comments add <ID> --message <TEXT> (or --file <PATH>)",
+        ),
+        _ => None,
     }
 }
 

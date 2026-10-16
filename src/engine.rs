@@ -303,7 +303,7 @@ pub fn create_many(
     let mut seeds = Vec::new();
     for (index, item) in items.iter().enumerate() {
         let mut req = item.req.clone();
-        req.parent = req.parent.as_deref().map(&resolve).transpose()?;
+        req.parent = req.parent.as_deref().map(resolve).transpose()?;
         req.deps = req
             .deps
             .iter()

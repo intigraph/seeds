@@ -47,6 +47,8 @@ check:
     cargo fmt --manifest-path tools/acquisition-verifier/Cargo.toml --check
     cargo clippy --locked --manifest-path tools/acquisition-verifier/Cargo.toml -- -D warnings
     cargo test
+    cargo build --locked --bin sd
+    HISTORY_SD="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/sd")')" python3 tests/history_wire.py
     cargo test --no-default-features
     bash scripts/ci/crates-publish-guard.sh --selftest
     mdbook build docs/book

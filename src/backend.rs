@@ -319,6 +319,12 @@ pub trait Backend {
         Ok(None)
     }
 
+    /// Optional indexed label counts over effective seeds, including closed items.
+    /// None preserves the local snapshot implementation; errors never fall back.
+    fn indexed_label_counts(&self, _at: Option<u64>) -> Result<Option<Vec<(String, usize)>>> {
+        Ok(None)
+    }
+
     /// Current named items and their comments, for edits that need no graph-wide
     /// context. Backends without an indexed read retain the full-snapshot path.
     /// Graph-aware edits must load their complete validation context separately;

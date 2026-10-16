@@ -259,6 +259,8 @@ fn key_init_without_user_names_the_session_workaround() {
         .unwrap();
     assert_eq!(code(&o), 2);
     assert!(String::from_utf8_lossy(&o.stderr).contains("pass --session"));
+    assert!(String::from_utf8_lossy(&o.stderr)
+        .contains("sd key init --session <SESSION> --introducer <LEAD>"));
     assert!(!s.root.join("home/.config/seeds/keys").exists());
 }
 
@@ -3155,4 +3157,92 @@ fn rescope_cli_replaces_lints_and_acknowledges_exact_generation() {
         again.as_array().unwrap()[0]["description"],
         item["description"]
     );
+}
+
+#[test]
+fn bulk_epic_children_and_multi_id_edits_need_one_call_each() {
+    let sb = Sandbox::new("bulk-epic-children");
+    let mut markdown = String::from("## Epic\n### Type\nepic\n");
+    for index in 1..=9 {
+        markdown.push_str(&format!(
+            "## Task {index}\n### Parent\n@1\n### Assignee\nowner\n### Labels\nrelease\n"
+        ));
+    }
+    let file = sb.work().join("tasks.md");
+    std::fs::write(&file, markdown).unwrap();
+    let seeds = sb.json(&["create", "-f", file.to_str().unwrap()]);
+    let seeds = seeds.as_array().unwrap();
+    assert_eq!(seeds.len(), 10);
+    let epic = seeds[0]["id"].as_str().unwrap();
+    for child in &seeds[1..] {
+        assert_eq!(child["parent"], epic);
+        assert_eq!(child["assignee"], "owner");
+        assert_eq!(child["labels"], serde_json::json!(["release"]));
+    }
+    let a = seeds[1]["id"].as_str().unwrap();
+    let b = seeds[2]["id"].as_str().unwrap();
+    let c = seeds[3]["id"].as_str().unwrap();
+    let changes = sb.json(&["dep", "add", a, b, c]);
+    assert_eq!(changes.as_array().unwrap().len(), 2);
+    assert_eq!(changes[0]["tx"], changes[1]["tx"]);
+    sb.ok(&["label", "add", a, b, c, "shared"]);
+    for id in [a, b, c] {
+        assert!(sb
+            .json(&["label", "list", id])
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|label| label == "shared"));
+    }
+    let help = sb.ok(&["create", "--help"]);
+    assert!(help.starts_with("Common:"));
+    assert!(help.lines().take(5).any(|line| line.contains("--parent")));
+}
+
+#[test]
+fn desire_path_usage_traps_name_commands_that_actually_work() {
+    let sb = Sandbox::new("desire-usage");
+    let body = sb.root.join("body.md");
+    std::fs::write(&body, "Body from file.\n").unwrap();
+    let path = body.to_str().unwrap();
+    for args in [
+        vec!["create", "Named title", "--file", path],
+        vec!["create", "--title", "Named title", "--file", path],
+    ] {
+        let refused = sb.run(&args);
+        assert_eq!(code(&refused), 2);
+        assert!(String::from_utf8_lossy(&refused.stderr)
+            .contains("sd create <TITLE> --description-file <FILE>"));
+        assert!(!sb.work().join(".seeds/seeds.db").exists());
+    }
+    let seed = sb.json(&["create", "Named title", "--description-file", path]);
+    assert_eq!(seed["description"], "Body from file.\n");
+    let id = seed["id"].as_str().unwrap();
+    let guessed = sb.run(&["comment", id, "-m", "Message control"]);
+    assert_eq!(code(&guessed), 2);
+    assert!(
+        String::from_utf8_lossy(&guessed.stderr).contains("sd comments add <ID> --message <TEXT>")
+    );
+    assert!(sb
+        .json(&["comments", "list", id])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    sb.ok(&["comments", "add", id, "-m", "Message control"]);
+    sb.ok(&["update", id, "-a", "owner"]);
+    assert_eq!(sb.json(&["show", id])[0]["assignee"], "owner");
+    std::fs::write(&body, "  \n").unwrap();
+    for args in [
+        vec!["comments", "add", id],
+        vec!["comments", "add", id, "-m", ""],
+        vec!["comments", "add", id, "--file", path],
+    ] {
+        let refused = sb.run(&args);
+        assert_eq!(code(&refused), 2);
+        assert!(String::from_utf8_lossy(&refused.stderr)
+            .contains("sd comments add <ID> --message <TEXT>"));
+    }
+    let comments = sb.json(&["comments", "list", id]);
+    assert_eq!(comments.as_array().unwrap().len(), 1);
+    assert_eq!(comments[0]["text"], "Message control");
 }

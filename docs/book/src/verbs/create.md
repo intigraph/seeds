@@ -38,9 +38,13 @@ title, the creation instant and an attempt counter. A collision tries the next
 attempt, and the hash grows by one character every four collisions, so ids stay
 short and unique. No randomness is involved.
 
+For one title and a body file, use `sd create "Title" --description-file body.md`.
+Combining a title with `--file` is refused with that corrected command;
+`--file` keeps its batch-import meaning.
+
 **`-f, --file FILE`** creates every item of a markdown file in **one
 transaction** (br's bulk import). Each `## Title` starts a seed; under it,
-`### Priority`, `### Type`, `### Labels`, `### Assignee`, `### Dependencies`,
+`### Priority`, `### Type`, `### Labels`, `### Assignee`, `### Parent`, `### Dependencies`,
 `### Description`, `### Notes`, `### Design` and `### Acceptance Criteria` set
 its fields, and the text between the
 title and its first `###` is the description. Anything before the first `##`
@@ -57,3 +61,35 @@ writes nothing.
 
 **Exit codes**: 0; 2 for a bad flag value; 3 when `--parent` or a `--deps`
 target does not exist; 5 when the shapes refuse the write.
+
+A file can create an epic and its children together. `@N` in Parent or
+Dependencies names the Nth item in that file (one-based); forward references
+are supported. Ordinary IDs still refer to existing seeds. Cyclic Parent
+references and invalid references refuse the whole file.
+
+```markdown
+## Release epic
+### Type
+epic
+## Implementation
+### Parent
+@1
+### Assignee
+owner
+### Labels
+release,implementation
+## Verification
+### Parent
+@1
+### Dependencies
+@2
+```
+
+Bulk creation reads only referenced seeds and candidate IDs, then commits
+one revision-checked batch. A concurrent ID collision refuses atomically;
+it does not overwrite another writer. Gateway 502/503 responses to health
+and standard board read requests (query, graph discovery and historical
+transaction lookup) retry at 1, 2, 4 and 8 seconds (five attempts maximum).
+Experimental acquisition keeps its separate whole-operation deadline.
+Writes are never automatically replayed: an uncertain write is reconciled
+by exact read-back, preserving the existing UNKNOWN/conflict contract.

@@ -61,3 +61,5 @@ shared update path, so a local store and a quipu server refuse alike.
 **Exit codes**: 0; 2 for a bad value or `--claim` combined with `--assignee`
 or `--status`; 3 for an unknown id; 4 for a lost claim or a concurrent change;
 5 for replacing existing text without `--force`.
+
+`sd update ID -a owner` is the short form of `--assignee owner`.

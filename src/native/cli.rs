@@ -76,6 +76,9 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Create a seed
+    #[command(
+        before_help = "Common: sd create 'Title' -a OWNER -l LABEL --parent EPIC --deps BLOCKER\nBulk: sd create -f tasks.md (one transaction; Parent/Dependencies may use @1, @2, ...)\nUse --parent for epic children; --deps means this item waits for the named blocker."
+    )]
     Create(CreateArgs),
     /// Atomically replace a consolidated spec and record its quote/provenance
     Rescope {
@@ -484,7 +487,7 @@ pub struct SyncArgs {
 pub struct CreateArgs {
     /// Create every `## Title` item of a markdown file, in one transaction
     /// (br's bulk import; sections: Description, Notes, Design, Acceptance
-    /// Criteria, Priority, Type, Assignee, Labels, Dependencies). br's --file
+    /// Criteria, Priority, Type, Assignee, Labels, Parent, Dependencies). br's --file
     #[arg(short = 'f', long = "file", value_name = "FILE", conflicts_with_all = [
         "title", "title_flag", "issue_type", "priority", "description", "status", "defer",
         "description_file", "assignee", "owner", "labels", "parent", "deps", "workflow_run",
@@ -1046,7 +1049,7 @@ pub struct UpdateArgs {
     #[arg(short, long)]
     pub priority: Option<String>,
     /// New assignee ("" clears it)
-    #[arg(long)]
+    #[arg(short, long)]
     pub assignee: Option<String>,
     /// Atomically claim: set assignee to the actor and status to in_progress,
     /// only if the seed is open, unclaimed and unblocked (exit 4 otherwise)
@@ -1179,13 +1182,13 @@ pub enum EpicCommand {
 /// `sd dep ...`.
 #[derive(Debug, Subcommand)]
 pub enum DepCommand {
-    /// Add a dependency: <issue> depends on <depends-on>
+    /// Add a dependency: <issue> waits for <depends-on>; for epic children use create --parent
     Add {
         /// The dependent seed
         issue: String,
         /// The seed it depends on
         #[arg(required_unless_present = "blocker", conflicts_with = "blocker")]
-        depends_on: Option<String>,
+        depends_on: Vec<String>,
         /// Exact Quipu IRI or unambiguous label
         #[arg(long)]
         blocker: Option<String>,
@@ -1528,6 +1531,20 @@ impl Command {
             Command::Sync(_) => "sync",
             Command::MergeDriver(_) => "merge-driver",
         }
+    }
+}
+
+/// Actionable replacements for common legacy command-line guesses.
+pub fn usage_hint(error: &clap::Error) -> Option<&'static str> {
+    let rendered = error.to_string();
+    match error.kind() {
+        clap::error::ErrorKind::ArgumentConflict if rendered.contains("--file") => Some(
+            "--file imports a batch. For one title plus a body file, use: sd create <TITLE> --description-file <FILE>",
+        ),
+        clap::error::ErrorKind::InvalidSubcommand if rendered.contains("'comment'") => Some(
+            "To add comment text, use: sd comments add <ID> --message <TEXT> (or --file <PATH>)",
+        ),
+        _ => None,
     }
 }
 

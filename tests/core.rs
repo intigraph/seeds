@@ -4874,3 +4874,85 @@ fn rescope_owner_reactivation_marks_start_and_clears_deferral_atomically() {
         before.get(&seed.id).unwrap()
     );
 }
+
+#[test]
+fn bulk_uses_scoped_reads_and_resolves_forward_file_references() {
+    let mut b = CommentReads {
+        inner: backend(),
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    let md = "## Child\n### Parent\n@2\n### Assignee\nowner\n### Labels\nalpha,beta\n### Dependencies\n@3\n## Epic\n### Type\nepic\n## Other\n";
+    let items = engine::parse_bulk_markdown(md).unwrap();
+    let (seeds, tx) = engine::create_many(&mut b, &ctx(2), &items, false).unwrap();
+    assert!(tx > 0);
+    assert!(b.snapshots.borrow().is_empty(), "no whole-board snapshot");
+    assert_eq!(seeds[0].parent.as_deref(), Some(seeds[1].id.as_str()));
+    assert!(seeds[0].id.starts_with(&format!("{}.", seeds[1].id)));
+    assert!(seeds[0].blocked_on.contains(&seeds[2].id));
+    assert_eq!(seeds[0].assignee.as_deref(), Some("owner"));
+    assert_eq!(seeds[0].labels.len(), 2);
+    let before = b.inner.snapshot(None).unwrap().seeds.len();
+    for bad in [
+        "## Bad\n### Parent\n@1",
+        "## Bad\n### Parent\n@0",
+        "## A\n### Dependencies\n@2\n## B\n### Dependencies\n@1",
+        "## Fine\n## Bad\n### Dependencies\nmissing",
+    ] {
+        let items = engine::parse_bulk_markdown(bad).unwrap();
+        assert!(engine::create_many(&mut b, &ctx(3), &items, false).is_err());
+        assert_eq!(b.inner.snapshot(None).unwrap().seeds.len(), before);
+    }
+    // Repeating the same titles/instant collides with committed IDs; probe and mint safely.
+    let items = engine::parse_bulk_markdown(md).unwrap();
+    let (second, _) = engine::create_many(&mut b, &ctx(2), &items, false).unwrap();
+    assert_ne!(seeds[1].id, second[1].id);
+    assert_eq!(b.inner.snapshot(None).unwrap().seeds.len(), before + 3);
+    assert!(b.snapshots.borrow().is_empty());
+}
+
+#[test]
+fn dep_add_many_is_atomic_and_keeps_single_revision_and_cycle_guards() {
+    let mut b = backend();
+    let a = mk(&mut b, "dependent", 1);
+    let x = mk(&mut b, "blocker one", 2);
+    let y = mk(&mut b, "blocker two", 3);
+    let original = b.snapshot(None).unwrap().get(&a).unwrap().revision;
+    let changes =
+        engine::dep_add_many(&mut b, &ctx(4), &a, &[x.clone(), y.clone()], "blocks").unwrap();
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0].tx, changes[1].tx);
+    let snapshot = b.snapshot(None).unwrap();
+    let seed = snapshot.get(&a).unwrap();
+    assert_eq!(seed.revision, original + 1);
+    assert!(seed.blocked_on.contains(&x) && seed.blocked_on.contains(&y));
+    let revision = seed.revision;
+    assert!(engine::dep_add_many(&mut b, &ctx(5), &x, &[y.clone(), a.clone()], "blocks").is_err());
+    assert!(b
+        .snapshot(None)
+        .unwrap()
+        .get(&x)
+        .unwrap()
+        .blocked_on
+        .is_empty());
+    assert!(engine::dep_add_many(
+        &mut b,
+        &ctx(5),
+        &a,
+        &[x.clone(), "missing".into()],
+        "related"
+    )
+    .is_err());
+    assert_eq!(
+        b.snapshot(None).unwrap().get(&a).unwrap().revision,
+        revision
+    );
+    let repeat = engine::dep_add_many(&mut b, &ctx(6), &a, &[x, y], "blocks").unwrap();
+    assert!(repeat.iter().all(|change| change.action == "unchanged"));
+    assert_eq!(
+        b.snapshot(None).unwrap().get(&a).unwrap().revision,
+        revision
+    );
+}

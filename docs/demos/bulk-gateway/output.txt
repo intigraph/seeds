@@ -1,0 +1,11 @@
+Script started on 2026-10-16 10:10:05-04:00 [COMMAND="python3 reproduce.py" <not executed on terminal>]
+BEFORE: sd 0.4.1 (seeds); actual CLI, private empty graph
+$ sd create -f tasks.md --json  # epic + nine children
+exit=1; elapsed=0.003s; injected=['/health']; update_requests=0
+Observed: gateway refusal, zero batch writes.
+AFTER: sd 0.4.2 (seeds); actual CLI, private empty graph
+$ sd create -f tasks.md --json  # epic + nine children
+exit=0; elapsed=2.387s; injected=['/health', '/query']; update_requests=1
+Observed: both transient failures recovered; 10 items, 9 parent links, assignees/labels intact; ONE batch update.
+
+Script done on 2026-10-16 10:10:08-04:00 [COMMAND_EXIT_CODE="0"]

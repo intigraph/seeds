@@ -53,3 +53,5 @@
 - [What is built, and what is not](status.md)
 - [The stack](stack.md)
 - [Docs map](docs-map.md)
+
+- [Specification replacement and acknowledgement](rescope.md)

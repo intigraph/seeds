@@ -1,0 +1,20 @@
+{
+  "action": "load",
+  "name": "seed_spec_awareness",
+  "description": "Exact-item current spec, recorded owner start generation/session, and explicit current-owner ACK. Missing start is UNKNOWN; a delivery receipt is never evidence of awareness. At most two rows expose conflicting values. Historical pins use Quipu bitemporal query context.",
+  "template": "SELECT ?id ?current_spec ?started_spec ?started_by ?started_at ?started_session ?acknowledged_spec ?ack_by ?ack_at ?acked_current WHERE {\n  GRAPH <{graph}> {\n    <{entity}> <https://schema.org/identifier> ?id .\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specVersion> ?current }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specStartVersion> ?started }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specStartActor> ?started_by }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specStartAt> ?started_at }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specStartSession> ?started_session }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specAckVersion> ?acked }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specAckActor> ?ack_by }\n    OPTIONAL { <{entity}> <https://seeds.local/ontology/specAckAt> ?ack_at }\n    OPTIONAL { <{entity}> <https://schema.org/agent> ?assignee }\n  }\n  BIND(COALESCE(STR(?current), \"UNKNOWN\") AS ?current_spec)\n  BIND(COALESCE(STR(?started), \"UNKNOWN\") AS ?started_spec)\n  BIND(COALESCE(STR(?acked), \"UNKNOWN\") AS ?acknowledged_spec)\n  BIND(IF(BOUND(?current) && BOUND(?acked) && BOUND(?ack_by) && BOUND(?assignee),\n          (?current = ?acked && ?ack_by = ?assignee), false) AS ?acked_current)\n} LIMIT 2",
+  "params": [
+    {
+      "name": "graph",
+      "type": "iri",
+      "required": true,
+      "description": "Exact selected project or ephemeral graph IRI."
+    },
+    {
+      "name": "entity",
+      "type": "iri",
+      "required": true,
+      "description": "Exact canonical work-item IRI, never fuzzy retrieval."
+    }
+  ]
+}

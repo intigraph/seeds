@@ -887,6 +887,19 @@ fn capabilities(command_path: Option<&str>) -> Result<Json> {
         // Parse the verb with a placeholder for each required positional to
         // learn its write class and whether it is a pointer elsewhere.
         let placeholder = |a: &clap::Arg| {
+            let kind = a.get_value_parser().type_id();
+            if [
+                std::any::TypeId::of::<u64>(),
+                std::any::TypeId::of::<u32>(),
+                std::any::TypeId::of::<usize>(),
+                std::any::TypeId::of::<i64>(),
+                std::any::TypeId::of::<i32>(),
+            ]
+            .iter()
+            .any(|id| kind == *id)
+            {
+                return "1".to_string();
+            }
             a.get_possible_values()
                 .first()
                 .map_or_else(|| "x".to_string(), |v| v.get_name().to_string())
@@ -921,7 +934,8 @@ fn capabilities(command_path: Option<&str>) -> Result<Json> {
             "summary": sub.get_about().map(|s| s.to_string()),
             "aliases": sub.get_visible_aliases().collect::<Vec<_>>(),
             "operation": operation,
-            "pins_with_at": operation == "read",
+            "pins_with_at": operation == "read" && !matches!(parsed.as_ref().map(|c| &c.command),
+                Some(Command::SpecEvents | Command::SpecChanges | Command::SpecReceipt { .. } | Command::SpecQueryDefinition)),
             "flags": sub.get_arguments()
                 .filter(|a| !a.is_global_set() && a.get_long().is_some())
                 .map(|a| format!("--{}", a.get_long().unwrap_or_default()))
@@ -1985,7 +1999,11 @@ fn split_csv(s: &Option<String>) -> Vec<String> {
 /// simply unused by reads.
 fn claims(cli: &Cli) -> Result<crate::backend::Claims> {
     let flags = [&cli.agent_name, &cli.harness, &cli.model, &cli.session];
-    if !cli.command.writes() && flags.iter().any(|f| f.is_some()) {
+    let planned_session = matches!(&cli.command, Command::Rescope { dry_run: true, .. })
+        && [&cli.agent_name, &cli.harness, &cli.model]
+            .iter()
+            .all(|f| f.is_none());
+    if !cli.command.writes() && flags.iter().any(|f| f.is_some()) && !planned_session {
         return Err(SdError::usage(
             "--agent-name/--harness/--model/--session attribute a write; this verb writes nothing",
         ));
@@ -2214,7 +2232,72 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         refuse_old_vocabulary(&ledger_label(cfg), b)?;
     }
     let at = cli.at;
+    if at.is_some()
+        && matches!(
+            &cli.command,
+            Command::SpecEvents
+                | Command::SpecChanges
+                | Command::SpecReceipt { .. }
+                | Command::SpecQueryDefinition
+        )
+    {
+        return Err(SdError::usage("this spec command reads current delivery state; use show --at for historical item facts"));
+    }
     match &cli.command {
+        Command::Rescope { id, spec_file, quote, requester, summary, urgent, dry_run } => {
+            use std::io::Read;
+            let file = std::fs::File::open(spec_file).map_err(|e| SdError::usage(format!("cannot read spec file: {e}")))?;
+            if !file.metadata().map_err(|e| SdError::usage(e.to_string()))?.is_file() {
+                return Err(SdError::usage("spec file must be a regular file"));
+            }
+            let mut bytes = Vec::new();
+            file.take(cfg.spec_byte_cap as u64 + 1).read_to_end(&mut bytes)
+                .map_err(|e| SdError::usage(format!("cannot read spec file: {e}")))?;
+            if bytes.len() > cfg.spec_byte_cap { return Err(SdError::usage("spec exceeds configured byte cap")); }
+            let body = String::from_utf8(bytes).map_err(|_| SdError::usage("spec must be UTF-8"))?;
+            let req = crate::spec::RescopeReq {
+                spec: &body, quote, requester: requester.as_deref().unwrap_or(&ctx.actor),
+                summary, urgent: *urgent, dry_run: *dry_run, byte_cap: cfg.spec_byte_cap,
+            };
+            let (seed, tx) = crate::spec::rescope(b, ctx, id, &req)?;
+            let version = crate::spec::version(&seed)?;
+            Ok(ok(json, serde_json::json!({"id":id,"version":version,"tx":(!dry_run).then_some(tx),"unacked":true}),
+                format!("{id} replaced with SPEC v{version}{}", tx_note(tx)), vec![]))
+        }
+        Command::Ack { id, version } => {
+            let (seed, tx) = crate::spec::ack(b, ctx, id, *version)?;
+            Ok(ok(json, serde_json::json!({"id":id,"version":version,"tx":tx,"unacked":crate::spec::unacked(&seed)?}),
+                format!("{id} SPEC v{version} acknowledged"), vec![]))
+        }
+        Command::SpecQueryDefinition => {
+            let value: Json = serde_json::from_str(crate::spec::AWARENESS_DEFINITION)
+                .map_err(|e| SdError::failed(format!("invalid compiled spec query definition: {e}")))?;
+            Ok(ok(json, value, crate::spec::AWARENESS_DEFINITION.to_string(), vec![]))
+        }
+        Command::SpecState { id } => {
+            let snap = if at.is_some() { b.snapshot(at)? } else { b.snapshot_items(std::slice::from_ref(id))? };
+            let seed = snap.get(id)?;
+            let version = crate::spec::version(seed)?;
+            let value = serde_json::json!({"id":id,"version":version,"unacked":crate::spec::unacked(seed)?});
+            Ok(ok(json, value.clone(), value.to_string(), vec![]))
+        }
+        Command::SpecChanges => {
+            let value = serde_json::json!({"events":crate::spec::changes(b)?});
+            Ok(ok(json, value.clone(), value.to_string(), vec![]))
+        }
+        Command::SpecEvents => {
+            let events = crate::spec::events(b)?;
+            let value = serde_json::json!({"events":events});
+            Ok(ok(json, value.clone(), value.to_string(), vec![]))
+        }
+        Command::SpecReceipt { id, version } => {
+            let value = serde_json::json!({"event":crate::spec::receipt(b, id, *version)?});
+            Ok(ok(json, value.clone(), value.to_string(), vec![]))
+        }
+        Command::SpecReceiptAck { id, version, receipt } => {
+            let tx = crate::spec::receipt_ack(b, ctx, id, *version, receipt)?;
+            Ok(ok(json, serde_json::json!({"tx":tx}), format!("{id} spec delivery receipt confirmed"), vec![]))
+        }
         Command::DueBackfill { plan_output, apply_plan } => {
             let days = cfg.due_priority_days.ok_or_else(|| SdError::usage("due-backfill requires configured [due_dates] priority_days"))?;
             let graph = cfg.graph.clone().ok_or_else(|| SdError::usage("due-backfill requires a resolved graph"))?;

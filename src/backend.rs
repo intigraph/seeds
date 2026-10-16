@@ -229,6 +229,21 @@ impl WriteBatch {
 
 /// Storage for one project.
 pub trait Backend {
+    /// IDs carrying governed rescope metadata. Remote readers must override
+    /// this with a bounded indexed read; an incomplete answer is an error.
+    fn spec_change_ids(&self) -> Result<Vec<String>> {
+        let snap = self.snapshot(None)?;
+        Ok(snap
+            .seeds
+            .values()
+            .filter(|seed| {
+                seed.extra
+                    .iter()
+                    .any(|(p, _)| p == &crate::vocab::seeds("specVersion"))
+            })
+            .map(|seed| seed.id.clone())
+            .collect())
+    }
     /// Explicit project dataset for declarations that refer to local seed IDs.
     fn project_graph(&self) -> Option<&str> {
         None

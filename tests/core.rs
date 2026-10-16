@@ -4361,6 +4361,285 @@ fn due_backfill_is_exact_revision_checked_and_atomic() {
 }
 
 #[test]
+fn rescope_atomic_replacement_history_and_owner_ack() {
+    use seeds::spec::{self, RescopeReq};
+    let mut b = backend();
+    let mut actor = ctx(1);
+    actor.claims.session = Some("session-fixture".into());
+    let (seed, created) = engine::create(
+        &mut b,
+        &actor,
+        &CreateReq {
+            title: "scoped work".into(),
+            description: Some("original spec".into()),
+            assignee: Some("owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let req = RescopeReq {
+        spec: "SPEC v99\nOne consolidated requirement.",
+        quote: "replace the scope",
+        requester: "requester",
+        summary: "consolidated requirement",
+        urgent: false,
+        dry_run: false,
+        byte_cap: 4096,
+    };
+    let (changed, tx) = spec::rescope(&mut b, &actor, &seed.id, &req).unwrap();
+    assert_eq!(
+        changed.description.as_deref(),
+        Some("SPEC v1\nOne consolidated requirement.")
+    );
+    assert_eq!(changed.revision, seed.revision + 1);
+    assert!(spec::unacked(&changed).unwrap());
+    assert_eq!(
+        b.snapshot(Some(created))
+            .unwrap()
+            .get(&seed.id)
+            .unwrap()
+            .description,
+        seed.description
+    );
+    let snap = b.snapshot(Some(tx)).unwrap();
+    assert_eq!(snap.comments_on(&seed.id).len(), 1);
+    let comment = snap.comments_on(&seed.id)[0];
+    assert!(comment.text.ends_with("replace the scope"));
+    assert!(comment.text.contains("Session: session-fixture"));
+    assert!(spec::ack(&mut b, &actor, &seed.id, 1).is_err());
+    actor.actor = "owner".into();
+    assert!(spec::ack(&mut b, &actor, &seed.id, 2).is_err());
+    let (acked, first) = spec::ack(&mut b, &actor, &seed.id, 1).unwrap();
+    assert!(first.is_some());
+    assert!(!spec::unacked(&acked).unwrap());
+    assert!(spec::ack(&mut b, &actor, &seed.id, 1).unwrap().1.is_none());
+    engine::update(
+        &mut b,
+        &actor,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            assignee: Some("new-owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(spec::unacked(
+        b.snapshot_items(std::slice::from_ref(&seed.id))
+            .unwrap()
+            .get(&seed.id)
+            .unwrap()
+    )
+    .unwrap());
+}
+
+#[test]
+fn rescope_lint_and_provenance_refuse_without_any_write() {
+    use seeds::spec::{self, RescopeReq};
+    let mut b = backend();
+    let mut actor = ctx(1);
+    let (seed, _) = engine::create(
+        &mut b,
+        &actor,
+        &CreateReq {
+            title: "scoped work".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    actor.claims.session = Some("fixture-session".into());
+    let baseline = b.snapshot(None).unwrap().tx;
+    let req = |text| RescopeReq {
+        spec: text,
+        quote: "verbatim",
+        requester: "requester",
+        summary: "summary",
+        urgent: false,
+        dry_run: false,
+        byte_cap: 64,
+    };
+    for text in [
+        "",
+        "ADDITION: layered",
+        "supersedes the above",
+        "SCOPE EXPANSION",
+        "SPEC v1",
+    ] {
+        assert!(spec::rescope(&mut b, &actor, &seed.id, &req(text)).is_err());
+        assert_eq!(b.snapshot(None).unwrap().tx, baseline);
+    }
+    let oversized = "x".repeat(65);
+    assert!(spec::rescope(&mut b, &actor, &seed.id, &req(&oversized)).is_err());
+    let mut missing_quote = req("new spec");
+    missing_quote.quote = "";
+    assert!(spec::rescope(&mut b, &actor, &seed.id, &missing_quote).is_err());
+    let mut urgent = req("new spec");
+    urgent.urgent = true;
+    assert!(spec::rescope(&mut b, &actor, &seed.id, &urgent).is_err());
+    actor.claims.session = None;
+    assert!(spec::rescope(&mut b, &actor, &seed.id, &req("new spec")).is_err());
+    assert_eq!(b.snapshot(None).unwrap().tx, baseline);
+}
+
+#[test]
+fn rescope_pending_intent_receipt_replay_and_new_generation() {
+    use seeds::spec::{self, RescopeReq};
+    let mut b = backend();
+    let mut actor = ctx(1);
+    actor.claims.session = Some("fixture-session".into());
+    let (seed, _) = engine::create(
+        &mut b,
+        &actor,
+        &CreateReq {
+            title: "scoped work".into(),
+            assignee: Some("owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let req = RescopeReq {
+        spec: "consolidated spec",
+        quote: "change scope",
+        requester: "requester",
+        summary: "new scope",
+        urgent: false,
+        dry_run: false,
+        byte_cap: 4096,
+    };
+    spec::rescope(&mut b, &actor, &seed.id, &req).unwrap();
+    for _ in 0..2 {
+        let events = spec::events(&b).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].episode, "1");
+        assert_eq!(events[0].recipient.as_deref(), Some("owner"));
+    }
+    assert!(spec::receipt(&b, &seed.id, 1).unwrap().receipt.is_none());
+    assert!(
+        spec::receipt_ack(&mut b, &actor, &seed.id, 1, "receipt-one")
+            .unwrap()
+            .is_some()
+    );
+    assert!(spec::events(&b).unwrap().is_empty());
+    assert_eq!(
+        spec::receipt(&b, &seed.id, 1).unwrap().receipt.as_deref(),
+        Some("receipt-one")
+    );
+    assert!(
+        spec::receipt_ack(&mut b, &actor, &seed.id, 1, "receipt-one")
+            .unwrap()
+            .is_none()
+    );
+    assert!(spec::receipt_ack(&mut b, &actor, &seed.id, 1, "foreign-receipt").is_err());
+    assert!(spec::unacked(
+        b.snapshot_items(std::slice::from_ref(&seed.id))
+            .unwrap()
+            .get(&seed.id)
+            .unwrap()
+    )
+    .unwrap());
+    spec::rescope(&mut b, &actor, &seed.id, &req).unwrap();
+    assert!(spec::receipt(&b, &seed.id, 1).is_err());
+    let events = spec::events(&b).unwrap();
+    assert_eq!(events[0].episode, "2");
+    assert_eq!(events[0].previous_version, 1);
+    assert!(events[0].receipt.is_none());
+}
+
+#[test]
+fn rescope_owner_start_is_a_fact_not_an_inference_from_receipt() {
+    use seeds::spec::{self, RescopeReq};
+    let mut b = backend();
+    let mut actor = ctx(1);
+    actor.claims.session = Some("actor-session".into());
+    let (seed, _) = engine::create(
+        &mut b,
+        &actor,
+        &CreateReq {
+            title: "scoped work".into(),
+            assignee: Some("owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let req = RescopeReq {
+        spec: "consolidated spec",
+        quote: "scope",
+        requester: "requester",
+        summary: "new scope",
+        urgent: false,
+        dry_run: false,
+        byte_cap: 4096,
+    };
+    spec::rescope(&mut b, &actor, &seed.id, &req).unwrap();
+    assert!(engine::update(
+        &mut b,
+        &actor,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            description: Some("unversioned replacement".into()),
+            force: true,
+            ..Default::default()
+        }
+    )
+    .is_err());
+    actor.actor = "owner".into();
+    actor.claims.session = Some("owner-session".into());
+    engine::update(
+        &mut b,
+        &actor,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    spec::rescope(&mut b, &actor, &seed.id, &req).unwrap();
+    let (acked, _) = spec::ack(&mut b, &actor, &seed.id, 2).unwrap();
+    assert!(acked.extra.contains(&(
+        seeds::vocab::seeds("specStartVersion"),
+        seeds::model::Obj::Int(1)
+    )));
+    assert!(acked.extra.contains(&(
+        seeds::vocab::seeds("specAckVersion"),
+        seeds::model::Obj::Int(2)
+    )));
+    assert!(acked.extra.contains(&(
+        seeds::vocab::seeds("specStartSession"),
+        seeds::model::Obj::Str("owner-session".into())
+    )));
+    engine::update(
+        &mut b,
+        &actor,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let again = b.snapshot_items(std::slice::from_ref(&seed.id)).unwrap();
+    assert!(again.get(&seed.id).unwrap().extra.contains(&(
+        seeds::vocab::seeds("specStartVersion"),
+        seeds::model::Obj::Int(1)
+    )));
+    let mut definition: serde_json::Value =
+        serde_json::from_str(spec::AWARENESS_DEFINITION).unwrap();
+    definition["timestamp"] = serde_json::json!(actor.now);
+    quipu::mcp::tools::tool_queries(b.store(), &definition).unwrap();
+    let result = quipu::tool_ask(
+        b.store(),
+        &serde_json::json!({"name":"seed_spec_awareness",
+        "params":{"graph":GRAPH,"entity":seeds::vocab::item_iri(&seed.id)}}),
+    )
+    .unwrap();
+    assert_eq!(result["count"], 1);
+    assert_eq!(result["rows"][0]["started_spec"], "1");
+    assert_eq!(result["rows"][0]["current_spec"], "2");
+    assert_eq!(result["rows"][0]["acknowledged_spec"], "2");
+    assert_eq!(result["rows"][0]["acked_current"], true);
+}
+
+#[test]
 fn reactivation_clears_stale_deferral_in_the_status_transaction() {
     for status in ["open", "hooked", "in_progress", "blocked", "closed"] {
         for date in ["2026-01-01", "2027-01-01"] {
@@ -4523,4 +4802,75 @@ fn reactivation_claim_retires_markers_without_changing_other_text() {
     assert_eq!(rows[0].assignee.as_deref(), Some("tester"));
     assert_eq!(rows[0].defer_until, None);
     assert_eq!(rows[0].notes.as_deref(), Some("Unicode λ historical resume condition: date:2027-01-01\nresume_whenish: retain\nresume--when: retain\nhistorical resume condition: date:2027-01-01"));
+}
+
+#[test]
+fn rescope_owner_reactivation_marks_start_and_clears_deferral_atomically() {
+    use seeds::spec::{self, RescopeReq};
+    let mut b = backend();
+    let mut owner = ctx(1);
+    owner.actor = "owner".into();
+    owner.claims.session = Some("owner-session".into());
+    let (seed, _) = engine::create(
+        &mut b,
+        &owner,
+        &CreateReq {
+            title: "resume changed scope".into(),
+            assignee: Some("owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    spec::rescope(
+        &mut b,
+        &owner,
+        &seed.id,
+        &RescopeReq {
+            spec: "consolidated requirement",
+            quote: "change scope",
+            requester: "requester",
+            summary: "new scope",
+            urgent: false,
+            dry_run: false,
+            byte_cap: 4096,
+        },
+    )
+    .unwrap();
+    engine::update(
+        &mut b,
+        &owner,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            status: Some("deferred".into()),
+            defer: Some("2027-01-01".into()),
+            notes: Some("Evidence stays.\nresume_when: date:2027-01-01".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = b.snapshot(None).unwrap();
+    let (rows, tx) = engine::update(
+        &mut b,
+        &owner,
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            status: Some("in_progress".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(rows[0].defer_until, None);
+    assert_eq!(
+        rows[0].notes.as_deref(),
+        Some("Evidence stays.\nhistorical resume condition: date:2027-01-01")
+    );
+    assert!(rows[0].extra.contains(&(
+        seeds::vocab::seeds("specStartVersion"),
+        seeds::model::Obj::Int(1)
+    )));
+    assert!(spec::unacked(&rows[0]).unwrap());
+    assert_eq!(
+        b.snapshot(Some(tx - 1)).unwrap().get(&seed.id).unwrap(),
+        before.get(&seed.id).unwrap()
+    );
 }

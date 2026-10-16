@@ -38,6 +38,7 @@ pub mod output;
 pub mod pendant;
 pub mod quipu_backend;
 pub mod schema;
+pub mod spec;
 pub mod sync;
 pub mod sync_batch;
 pub mod validate;

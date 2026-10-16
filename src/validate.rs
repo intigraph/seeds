@@ -22,7 +22,7 @@ use crate::vocab::{self, term};
 
 /// Predicates a seed holds at most one value of.
 pub fn functional_predicates() -> Vec<String> {
-    vec![
+    let mut fields = vec![
         term::identifier(),
         term::name(),
         vocab::RDFS_LABEL.to_string(),
@@ -55,7 +55,13 @@ pub fn functional_predicates() -> Vec<String> {
         term::comment_index(),
         term::author(),
         term::text(),
-    ]
+    ];
+    fields.extend(
+        crate::spec::PREDICATES
+            .iter()
+            .map(|name| vocab::seeds(name)),
+    );
+    fields
 }
 
 /// Render facts about `subject` as N-Triples.

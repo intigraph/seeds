@@ -73,6 +73,16 @@ pub struct FileConfig {
     /// Configured creation deadlines; absent leaves other projects unchanged.
     #[serde(default)]
     pub due_dates: DueDatesSection,
+    /// Consolidated specification replacement limits.
+    #[serde(default)]
+    pub specs: SpecsSection,
+}
+
+/// `[specs]`: byte cap including the generated version heading.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SpecsSection {
+    pub byte_cap: Option<usize>,
 }
 
 /// `[due_dates]`: calendar days by priority P0 through P4.
@@ -153,6 +163,7 @@ pub enum Location {
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
+    pub spec_byte_cap: usize,
     pub due_priority_days: Option<[u32; 5]>,
     /// Where the graph lives.
     pub location: Location,
@@ -562,7 +573,16 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             "[due_dates] priority_days must contain five positive day counts at most 36500".into(),
         ));
     }
+    let spec_byte_cap = project
+        .as_ref()
+        .and_then(|c| c.specs.byte_cap)
+        .or_else(|| user.as_ref().and_then(|c| c.specs.byte_cap))
+        .unwrap_or(crate::spec::DEFAULT_CAP);
+    if !(1..=65536).contains(&spec_byte_cap) {
+        return Err(config_error("[specs] byte_cap must be 1..65536".into()));
+    }
     Ok(Resolved {
+        spec_byte_cap,
         due_priority_days,
         location,
         location_source,

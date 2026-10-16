@@ -77,6 +77,30 @@ pub struct Cli {
 pub enum Command {
     /// Create a seed
     Create(CreateArgs),
+    /// Atomically replace a consolidated spec and record its quote/provenance
+    Rescope {
+        id: String,
+        #[arg(long)]
+        spec_file: String,
+        #[arg(long)]
+        quote: String,
+        /// Who requested the change (defaults to the acting principal)
+        #[arg(long)]
+        requester: Option<String>,
+        #[arg(long)]
+        summary: String,
+        /// Reserve immediate notification for P0 work
+        #[arg(long)]
+        urgent: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Acknowledge the exact spec generation just observed by its assignee
+    Ack {
+        id: String,
+        #[arg(long)]
+        version: u64,
+    },
     /// Plan a missing-due backfill, or apply a reviewed JSON plan atomically
     DueBackfill {
         /// Write the read-only plan to this file (also prints JSON)
@@ -85,6 +109,23 @@ pub enum Command {
         /// Apply exactly this reviewed plan; changed rows refuse as a batch
         #[arg(long)]
         apply_plan: Option<String>,
+    },
+    /// Read persistent pending spec notification intents
+    SpecEvents,
+    /// All unacknowledged spec changes, including delivered notifications
+    SpecChanges,
+    /// Emit the validated portable stored-query definition for spec awareness
+    SpecQueryDefinition,
+    /// Read current specification generation and owner acknowledgement
+    SpecState { id: String },
+    /// Read an exact spec generation's delivery receipt
+    SpecReceipt { id: String, version: u64 },
+    /// Confirm a verified notification receipt (separate from owner ack)
+    SpecReceiptAck {
+        id: String,
+        version: u64,
+        #[arg(long)]
+        receipt: String,
     },
     /// Show one or more seeds, with dependencies and comments
     Show(ShowArgs),
@@ -1329,6 +1370,8 @@ impl Command {
             Command::Cutover(a) => !a.dry_run && matches!(a.operation.as_str(), "import" | "sync"),
             Command::Q(_) => true,
             Command::DueBackfill { apply_plan, .. } => apply_plan.is_some(),
+            Command::Rescope { dry_run, .. } => !dry_run,
+            Command::Ack { .. } | Command::SpecReceiptAck { .. } => true,
             Command::Create(_)
             | Command::Update(_)
             | Command::Close(_)
@@ -1357,6 +1400,11 @@ impl Command {
                 true
             }
             Command::Orphans { fix, .. } => *fix,
+            Command::SpecEvents
+            | Command::SpecChanges
+            | Command::SpecQueryDefinition
+            | Command::SpecReceipt { .. }
+            | Command::SpecState { .. } => false,
             Command::Export(_)
             | Command::Completions(_)
             | Command::Version(_)
@@ -1393,6 +1441,14 @@ impl Command {
         match self {
             Command::Cutover(_) => "cutover",
             Command::Create(_) => "create",
+            Command::Rescope { .. } => "rescope",
+            Command::Ack { .. } => "ack",
+            Command::SpecEvents => "spec-events",
+            Command::SpecChanges => "spec-changes",
+            Command::SpecQueryDefinition => "spec-query-definition",
+            Command::SpecState { .. } => "spec-state",
+            Command::SpecReceipt { .. } => "spec-receipt",
+            Command::SpecReceiptAck { .. } => "spec-receipt-ack",
             Command::DueBackfill { .. } => "due-backfill",
             Command::Show(_) => "show",
             Command::List(_) => "list",

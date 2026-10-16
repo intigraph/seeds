@@ -62,6 +62,23 @@ quechua:ActionGovernanceShape a sh:NodeShape ;
 
 seeds:SeedShape a sh:NodeShape ;
     sh:targetClass schema:Action ;
+    sh:property [ sh:path seeds:specStartVersion ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
+    sh:property [ sh:path seeds:specStartActor ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path seeds:specStartSession ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specStartAt ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specAckSession ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specVersion ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
+    sh:property [ sh:path seeds:specPreviousVersion ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 0 ] ;
+    sh:property [ sh:path seeds:specUrgent ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 0 ; sh:maxInclusive 1 ] ;
+    sh:property [ sh:path seeds:specAckVersion ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
+    sh:property [ sh:path seeds:specChangedAt ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specChangedSession ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specSummary ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specAckAt ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specNotificationReceipt ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path seeds:specChangedBy ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path seeds:specRequester ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path seeds:specAckActor ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
     sh:property [
         sh:path schema:identifier ;
         sh:minCount 1 ;

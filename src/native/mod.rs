@@ -1452,6 +1452,11 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
             "remote info does not support --at; no historical summary receipt is available",
         ));
     }
+    if matches!(&cli.command, Command::Stats(_)) && cli.at.is_some() {
+        return Err(SdError::refused(
+            "remote stats does not support --at; no historical summary receipt is available",
+        ));
+    }
     // pendant_of currently assembles an unpinned snapshot in a local scratch
     // store. Do not silently turn a historical export into a current one.
     // Refuse before connect, vocabulary probes, or any destination write.

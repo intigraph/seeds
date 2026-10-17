@@ -1,6 +1,6 @@
 //! Indexed summaries: no ledger snapshot, seed body or comment materialization.
 use super::*;
-use crate::engine::{self, Activity, Count, CountReq, Filter, Stats, StatsReq};
+use crate::engine::{self, Count, CountReq, Filter};
 
 fn literal(s: &str) -> String {
     format!("\"{}\"", escape_literal(s))
@@ -25,22 +25,6 @@ fn title_field(field: &str) -> String {
 
 fn string_field(predicate: &str, field: &str, default: &str) -> String {
     format!("OPTIONAL {{ ?s <{predicate}> ?raw_{field} . FILTER(isLiteral(?raw_{field}) && sameTerm(?raw_{field}, STR(?raw_{field}))) }} BIND(COALESCE(?raw_{field}, {}) AS ?{field})", literal(default))
-}
-
-// Inline expressions retain only the two timestamp bindings: BINDing every
-// calendar intermediate would multiply the aggregate's working set.
-fn epoch_expression(variable: &str) -> String {
-    let date = format!("STRDT(STR({variable}), <{}>)", vocab::XSD_DATE_TIME);
-    let month = format!("MONTH({date})");
-    let year = format!("(YEAR({date}) - IF({month} <= 2, 1, 0))");
-    let era = format!("FLOOR({year} / 400.0)");
-    let yoe = format!("({year} - {era} * 400)");
-    let mp = format!("({month} + IF({month} <= 2, 9, -3))");
-    let doy = format!("(FLOOR((153 * {mp} + 2) / 5.0) + DAY({date}) - 1)");
-    let days = format!("((((({era} * 146097 + {yoe} * 365) + FLOOR({yoe} / 4.0)) - FLOOR({yoe} / 100.0)) + {doy}) - 719468)");
-    format!(
-        "({days} * 86400 + HOURS({date}) * 3600 + MINUTES({date}) * 60 + FLOOR(SECONDS({date})))"
-    )
 }
 
 impl RemoteBackend {
@@ -627,138 +611,5 @@ impl RemoteBackend {
             })
             .transpose()?;
         Ok(Count { total, groups })
-    }
-
-    pub(super) fn stats_summary(&self, ctx: &Ctx, req: StatsReq) -> Result<Stats> {
-        let statuses = self.grouped(&self.effective_normalized(&self.status_fields()), "status")?;
-        let count = |status: &str| {
-            statuses
-                .iter()
-                .find(|(key, _)| key == status)
-                .map_or(0, |(_, n)| *n)
-        };
-        let mut stats = Stats {
-            total: statuses
-                .iter()
-                .filter(|(key, _)| key != crate::model::TOMBSTONE)
-                .map(|(_, n)| n)
-                .sum(),
-            open: count("open"),
-            in_progress: count("in_progress"),
-            closed: count("closed"),
-            blocked: count("blocked"),
-            deferred: count("deferred"),
-            tombstones: count(crate::model::TOMBSTONE),
-            ..Stats::default()
-        };
-        let active = self.status_fields() + " FILTER(?status != \"tombstone\")";
-        for (wanted, by) in [
-            (req.by_type, "type"),
-            (req.by_priority, "priority"),
-            (req.by_assignee, "assignee"),
-            (req.by_label, "label"),
-        ] {
-            if wanted {
-                stats.breakdowns.push((
-                    by,
-                    self.grouped(
-                        &self.effective_normalized(&(active.clone() + &Self::group_field(by)?)),
-                        "key",
-                    )?,
-                ));
-            }
-        }
-        // Compute the mean on the server, without transferring closed-seed
-        // facts. Match the core's whole-second Gregorian calendar arithmetic.
-        let duration = format!(
-            "(({}) - ({})) / 3600.0",
-            epoch_expression("?closed"),
-            epoch_expression("?created")
-        );
-        let pattern = format!(
-            "?s <{}> \"closed\" ; a <{}> ; <{}> ?id ; <{}> ?created ; <{}> ?closed .",
-            term::status(),
-            term::work_item(),
-            term::identifier(),
-            term::created_at(),
-            term::closed_at()
-        );
-        let eph = vocab::ephemeral_graph(&self.graph);
-        let graphs = format!("{{ GRAPH <{}> {{ {pattern} }} FILTER NOT EXISTS {{ GRAPH <{eph}> {{ ?shadow a <{}> ; <{}> ?id }} }} }} UNION {{ GRAPH <{eph}> {{ {pattern} }} }}",self.graph,term::work_item(),term::identifier());
-        let (rows, truncated) = self.select_marked(
-            &format!(
-                "SELECT (AVG({duration}) AS ?mean) (COUNT({duration}) AS ?n) WHERE {{ {graphs} }}"
-            ),
-            None,
-        )?;
-        if truncated || rows.len() != 1 {
-            return Err(SdError::failed(
-                "quipu returned an incomplete lead-time aggregate",
-            ));
-        }
-        let n = rows[0]
-            .get("n")
-            .and_then(|v| match v {
-                Obj::Int(n) => usize::try_from(*n).ok(),
-                Obj::Str(n) => n.parse().ok(),
-                _ => None,
-            })
-            .ok_or_else(|| SdError::failed("quipu returned an invalid lead-time count"))?;
-        stats.average_lead_time_hours = if n == 0 {
-            0.0
-        } else {
-            rows[0]
-                .get("mean")
-                .and_then(|v| match v {
-                    Obj::Int(n) => Some(*n as f64),
-                    Obj::Str(s) | Obj::Typed { lexical: s, .. } => s.parse::<f64>().ok(),
-                    _ => None,
-                })
-                .filter(|n| n.is_finite())
-                .ok_or_else(|| SdError::failed("quipu returned an invalid lead-time mean"))?
-        };
-        let mut ready = vocab::ready_query(&self.graph)
-            .replace("SELECT ?id", "SELECT (COUNT(DISTINCT ?id) AS ?n)");
-        let tail = "OPTIONAL { ?item <".to_string()
-            + &term::defer_until()
-            + "> ?defer } FILTER(!BOUND(?defer) || STR(?defer) <= "
-            + &literal(&ctx.now)
-            + ")";
-        let position = ready.rfind("}} ").or_else(|| ready.rfind("}}"));
-        // The public query ends with the GRAPH and WHERE braces on separate lines.
-        let position = position.or_else(|| ready.rfind("} }"));
-        if let Some(position) = position {
-            ready.insert_str(position, &tail);
-        } else {
-            return Err(SdError::failed("cannot construct the ready aggregate"));
-        }
-        stats.ready = self.aggregate_number(&ready)?;
-        let fields = format!("?s <{}> \"epic\" . {active} FILTER(?status != \"closed\") FILTER EXISTS {{ ?child <{}> ?s ; <{}> \"closed\" . ?s a <{}> }} FILTER NOT EXISTS {{ ?child <{}> ?s . FILTER NOT EXISTS {{ ?child <{}> \"closed\" }} FILTER NOT EXISTS {{ ?child <{}> \"tombstone\" }} }}", term::issue_type(), term::child_of(), term::status(), term::work_item(),term::child_of(), term::status(),term::status());
-        stats.epics_eligible_for_closure = self.aggregate_number(&format!(
-            "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
-            self.effective_normalized(&fields)
-        ))?;
-        if let Some(hours) = req.activity_hours {
-            let since = engine::parse_since(&format!("{hours}h"), &ctx.now)?;
-            let time_count = |predicate: String, extra: &str| {
-                let fields = format!(
-                    "?s <{predicate}> ?time . {active} FILTER(STR(?time) >= {}) {extra}",
-                    literal(&since)
-                );
-                self.aggregate_number(&format!(
-                    "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
-                    self.effective_normalized(&fields)
-                ))
-            };
-            let updated_extra = format!("FILTER NOT EXISTS {{ ?s <{}> ?created FILTER(STR(?created) >= {}) }} FILTER NOT EXISTS {{ ?s <{}> ?closed FILTER(STR(?closed) >= {}) }}", term::created_at(), literal(&since), term::closed_at(), literal(&since));
-            stats.activity = Some(Activity {
-                hours,
-                created: time_count(term::created_at(), "")?,
-                closed: time_count(term::closed_at(), "")?,
-                updated: time_count(term::updated_at(), &updated_extra)?,
-                touched: time_count(term::updated_at(), "")?,
-            });
-        }
-        Ok(stats)
     }
 }

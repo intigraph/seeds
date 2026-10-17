@@ -24,6 +24,16 @@ fn probe(body: Value, code: u16, exact: bool, success: bool) -> Value {
     probe_at(body, code, exact, success, None)
 }
 fn probe_at(body: Value, code: u16, exact: bool, success: bool, at: Option<&str>) -> Value {
+    probe_command(body, code, exact, success, at, "info")
+}
+fn probe_command(
+    body: Value,
+    code: u16,
+    exact: bool,
+    success: bool,
+    at: Option<&str>,
+    verb: &str,
+) -> Value {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -106,9 +116,12 @@ fn probe_at(body: Value, code: u16, exact: bool, success: bool, at: Option<&str>
             &url,
             "--graph",
             "urn:example:project",
-            "info",
+            verb,
             "--json",
         ]);
+    if verb == "stats" {
+        command.args(["--by-type", "--by-priority", "--by-assignee", "--by-label"]);
+    }
     if exact {
         command.arg("--exact-comments");
     }
@@ -239,6 +252,65 @@ fn maintained_info_refuses_unavailable_wrong_scope_schema_bounds_and_partial_dat
 fn maintained_info_refuses_historical_pin_before_network_with_live_positive_control() {
     assert_eq!(probe(summary(), 200, false, true)["issue_count"], 1);
     let output = probe_at(summary(), 200, false, false, Some("1"));
+    assert!(output["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no historical summary receipt"));
+}
+
+#[test]
+fn maintained_stats_static_dimensions_and_explicitly_unsupported_dynamics() {
+    let output = probe_command(summary(), 200, false, true, None, "stats");
+    assert_eq!(output["summary"]["total_issues"], 1);
+    assert_eq!(output["summary"]["open_issues"], 1);
+    for field in [
+        "ready_issues",
+        "epics_eligible_for_closure",
+        "average_lead_time_hours",
+    ] {
+        assert!(output["summary"][field].is_null(), "{output}");
+    }
+    for field in [
+        "issues_created",
+        "issues_closed",
+        "issues_updated",
+        "total_changes",
+    ] {
+        assert!(output["recent_activity"][field].is_null(), "{output}");
+    }
+    assert_eq!(output["recent_activity"]["hours_tracked"], 24);
+    assert_eq!(output["summary_metadata"]["generation"], 3);
+    assert_eq!(output["breakdowns"].as_array().unwrap().len(), 4);
+    assert_eq!(output["breakdowns"][1]["counts"][0]["key"], "P2");
+    let mut zero = summary();
+    let counts = &mut zero["summary"]["counts"];
+    counts["total"] = json!(0);
+    counts["tombstones"] = json!(2);
+    for field in [
+        "by_status",
+        "by_kind",
+        "by_priority",
+        "by_assignee",
+        "by_label",
+    ] {
+        counts[field] = json!({});
+    }
+    let output = probe_command(zero, 200, false, true, None, "stats");
+    assert_eq!(output["summary"]["total_issues"], 0);
+    assert_eq!(output["summary"]["tombstone_issues"], 2);
+    assert!(output["summary"]["ready_issues"].is_null());
+}
+#[test]
+fn maintained_stats_refuses_unavailable_and_historical_without_fallback() {
+    probe_command(
+        json!({"error":"unavailable"}),
+        409,
+        false,
+        false,
+        None,
+        "stats",
+    );
+    let output = probe_command(summary(), 200, false, false, Some("1"), "stats");
     assert!(output["error"]["message"]
         .as_str()
         .unwrap()

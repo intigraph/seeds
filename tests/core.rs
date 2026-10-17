@@ -2002,9 +2002,9 @@ fn stats_counts_statuses_ready_lead_time_epics_and_breakdowns() {
         None,
     )
     .unwrap();
-    assert_eq!((st.total, st.open, st.closed, st.ready), (3, 2, 1, 2));
-    assert_eq!(st.epics_eligible_for_closure, 1);
-    assert!((st.average_lead_time_hours - 10.0).abs() < 1e-9);
+    assert_eq!((st.total, st.open, st.closed, st.ready), (3, 2, 1, Some(2)));
+    assert_eq!(st.epics_eligible_for_closure, Some(1));
+    assert!((st.average_lead_time_hours.unwrap() - 10.0).abs() < 1e-9);
     assert_eq!(st.breakdowns[0].0, "type");
     assert_eq!(
         st.breakdowns[0].1,
@@ -3101,7 +3101,7 @@ fn stats_activity_counts_created_closed_updated_in_the_window() {
     let a = st.activity.unwrap();
     assert_eq!(
         (a.hours, a.created, a.closed, a.updated, a.touched),
-        (24, 1, 1, 1, 3)
+        (24, Some(1), Some(1), Some(1), Some(3))
     );
     // Without activity_hours there is no activity section.
     let none = engine::stats(&b, &ctx(0), engine::StatsReq::default(), None).unwrap();
@@ -4955,4 +4955,34 @@ fn dep_add_many_is_atomic_and_keeps_single_revision_and_cycle_guards() {
         b.snapshot(None).unwrap().get(&a).unwrap().revision,
         revision
     );
+}
+
+#[test]
+fn indexed_statistics_historical_pin_refuses_before_snapshot() {
+    struct NoSnapshot;
+    impl Backend for NoSnapshot {
+        fn scoped_reads(&self) -> bool {
+            true
+        }
+        fn snapshot(&self, _: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+            panic!("historical stats must not fall back to a snapshot")
+        }
+        fn ready_ids(&self, _: Option<u64>) -> seeds::error::Result<Vec<String>> {
+            unreachable!()
+        }
+        fn commit(&mut self, _: &WriteBatch, _: &Ctx) -> seeds::error::Result<u64> {
+            unreachable!()
+        }
+        fn claims_of(&self, _: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+            unreachable!()
+        }
+    }
+    let error =
+        engine::stats(&NoSnapshot, &ctx(0), engine::StatsReq::default(), Some(1)).unwrap_err();
+    assert!(error.message.contains("no historical summary receipt"));
+    // A local backend still supports a genuine pinned computation.
+    let local = QuipuBackend::in_memory("urn:stats-pin-positive").unwrap();
+    let result = engine::stats(&local, &ctx(0), engine::StatsReq::default(), Some(0)).unwrap();
+    assert_eq!(result.ready, Some(0));
+    assert!(result.summary_metadata.is_none());
 }

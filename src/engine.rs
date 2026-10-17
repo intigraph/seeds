@@ -1244,6 +1244,7 @@ pub struct StatsReq {
     pub activity_hours: Option<u64>,
 }
 
+/// `None` count fields mean unsupported by the serving producer.
 /// `sd stats` recent activity: what seed timestamps say happened in the
 /// window. sd has no git commits and keeps no reopen record on the seed, so
 /// br's `commit_count` and `issues_reopened` are not tracked (null in JSON).
@@ -1252,16 +1253,17 @@ pub struct Activity {
     /// The window, in hours.
     pub hours: u64,
     /// Seeds created in the window.
-    pub created: usize,
+    pub created: Option<usize>,
     /// Seeds closed in the window.
-    pub closed: usize,
+    pub closed: Option<usize>,
     /// Seeds created before the window, changed in it, and not closed in it.
-    pub updated: usize,
+    pub updated: Option<usize>,
     /// Distinct seeds touched in the window.
-    pub touched: usize,
+    pub touched: Option<usize>,
 }
 
 /// `sd stats`: br's summary counts and optional breakdowns.
+/// Optional dynamic fields are `None` when the producer cannot maintain them.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stats {
     /// Every seed.
@@ -1279,19 +1281,28 @@ pub struct Stats {
     /// Deleted (tombstoned); not counted in `total` or any other count.
     pub tombstones: usize,
     /// What `sd ready` would list now.
-    pub ready: usize,
+    pub ready: Option<usize>,
     /// Open epics whose children are all closed.
-    pub epics_eligible_for_closure: usize,
+    pub epics_eligible_for_closure: Option<usize>,
     /// Mean hours from creation to close, over closed seeds (0 when none).
-    pub average_lead_time_hours: f64,
+    pub average_lead_time_hours: Option<f64>,
     /// (dimension, [(key, count)]) in br's order: type, priority, assignee, label.
     pub breakdowns: Vec<(&'static str, Vec<(String, usize)>)>,
     /// Recent activity, when asked for.
     pub activity: Option<Activity>,
+    /// Maintained summary coverage; absent for an actual local computation.
+    pub summary_metadata: Option<crate::project_summary::Metadata>,
 }
 
 /// `sd stats`, as of `at`. Breakdowns count every seed, closed included (br).
 pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Result<Stats> {
+    // Indexed statistics currently carry current coverage only. Do not bypass
+    // their contract by silently switching a pin to a whole-board snapshot.
+    if b.scoped_reads() && at.is_some() {
+        return Err(SdError::refused(
+            "indexed stats does not support --at; no historical summary receipt is available",
+        ));
+    }
     if scoped(b, at) {
         if let Some(stats) = b.aggregate_stats(ctx, req)? {
             return Ok(stats);
@@ -1362,14 +1373,15 @@ pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Resu
         blocked: count("blocked"),
         deferred: count("deferred"),
         tombstones,
-        ready: ready(b, ctx, &ReadyReq::default(), at)?.total,
-        epics_eligible_for_closure: eligible,
-        average_lead_time_hours: if lead.is_empty() {
+        ready: Some(ready(b, ctx, &ReadyReq::default(), at)?.total),
+        epics_eligible_for_closure: Some(eligible),
+        average_lead_time_hours: Some(if lead.is_empty() {
             0.0
         } else {
             lead.iter().sum::<f64>() / lead.len() as f64
-        },
+        }),
         breakdowns,
+        summary_metadata: None,
         activity: match req.activity_hours {
             None => None,
             Some(h) => {
@@ -1379,16 +1391,22 @@ pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Resu
                 let closed = |s: &&&Seed| at_or_after(s.closed_at.as_deref());
                 Some(Activity {
                     hours: h,
-                    created: seeds.iter().filter(created).count(),
-                    closed: seeds.iter().filter(closed).count(),
-                    updated: seeds
-                        .iter()
-                        .filter(|s| at_or_after(Some(&s.updated_at)) && !created(s) && !closed(s))
-                        .count(),
-                    touched: seeds
-                        .iter()
-                        .filter(|s| at_or_after(Some(&s.updated_at)))
-                        .count(),
+                    created: Some(seeds.iter().filter(created).count()),
+                    closed: Some(seeds.iter().filter(closed).count()),
+                    updated: Some(
+                        seeds
+                            .iter()
+                            .filter(|s| {
+                                at_or_after(Some(&s.updated_at)) && !created(s) && !closed(s)
+                            })
+                            .count(),
+                    ),
+                    touched: Some(
+                        seeds
+                            .iter()
+                            .filter(|s| at_or_after(Some(&s.updated_at)))
+                            .count(),
+                    ),
                 })
             }
         },

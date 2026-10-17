@@ -1,6 +1,7 @@
 //! Bounded maintained-summary transport. Refusals never trigger aggregate or
 //! whole-graph reads; the existing vocabulary preflight remains separate.
 use super::*;
+use crate::engine;
 use crate::project_summary::ProjectSummary;
 use serde::Deserialize;
 use std::io::Read;
@@ -125,5 +126,59 @@ impl RemoteBackend {
             }
         };
         decode(&bytes, &self.graph)
+    }
+}
+
+impl RemoteBackend {
+    pub(super) fn stats_summary(&self, _ctx: &Ctx, req: engine::StatsReq) -> Result<engine::Stats> {
+        let summary = self.maintained_summary()?;
+        let counts = &summary.counts;
+        let checked = |count: u64| {
+            usize::try_from(count)
+                .map_err(|_| SdError::refused("maintained count exceeds this platform's range"))
+        };
+        let status = |key: &str| checked(counts.by_status.get(key).copied().unwrap_or(0));
+        let mut breakdowns = Vec::new();
+        for (wanted, dimension, values) in [
+            (req.by_type, "type", counts.by_kind.clone()),
+            (
+                req.by_priority,
+                "priority",
+                counts
+                    .by_priority
+                    .iter()
+                    .map(|(p, n)| (format!("P{p}"), *n))
+                    .collect(),
+            ),
+            (req.by_assignee, "assignee", counts.by_assignee.clone()),
+            (req.by_label, "label", counts.by_label.clone()),
+        ] {
+            if wanted {
+                let values = values
+                    .into_iter()
+                    .map(|(key, count)| Ok((key, checked(count)?)))
+                    .collect::<Result<Vec<_>>>()?;
+                breakdowns.push((dimension, values));
+            }
+        }
+        Ok(engine::Stats {
+            total: checked(counts.total)?,
+            open: status("open")?,
+            in_progress: status("in_progress")?,
+            closed: status("closed")?,
+            blocked: status("blocked")?,
+            deferred: status("deferred")?,
+            tombstones: checked(counts.tombstones)?,
+            // No scan fallback and no zero substituted for unsupported dynamics.
+            ready: None,
+            epics_eligible_for_closure: None,
+            average_lead_time_hours: None,
+            breakdowns,
+            activity: req.activity_hours.map(|hours| engine::Activity {
+                hours,
+                ..Default::default()
+            }),
+            summary_metadata: Some((&summary).into()),
+        })
     }
 }

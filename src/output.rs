@@ -151,7 +151,7 @@ pub fn stats_json(st: &Stats) -> Json {
         "pinned_issues": 0,
         "epics_eligible_for_closure": st.epics_eligible_for_closure,
         "average_lead_time_hours": st.average_lead_time_hours,
-    }});
+    }, "summary_metadata": st.summary_metadata});
     if !st.breakdowns.is_empty() {
         o["breakdowns"] = st
             .breakdowns
@@ -186,9 +186,17 @@ pub fn stats_text(st: &Stats) -> String {
             "  open {} · in progress {} · blocked {} · deferred {} · closed {}",
             st.open, st.in_progress, st.blocked, st.deferred, st.closed
         ),
-        format!("  ready now {}", st.ready),
-        format!("  epics ready to close {}", st.epics_eligible_for_closure),
-        format!("  average lead time {:.1} h", st.average_lead_time_hours),
+        format!("  ready now {}", available(st.ready)),
+        format!(
+            "  epics ready to close {}",
+            available(st.epics_eligible_for_closure)
+        ),
+        format!(
+            "  average lead time {}",
+            st.average_lead_time_hours
+                .map(|n| format!("{n:.1} h"))
+                .unwrap_or_else(|| "unavailable".into())
+        ),
     ];
     for (dim, counts) in &st.breakdowns {
         lines.push(format!("by {dim}:"));
@@ -198,11 +206,26 @@ pub fn stats_text(st: &Stats) -> String {
         lines.push(format!("recent activity (last {} hours):", a.hours));
         lines.push(format!(
             "  created {} · closed {} · updated {} · seeds touched {}",
-            a.created, a.closed, a.updated, a.touched
+            available(a.created),
+            available(a.closed),
+            available(a.updated),
+            available(a.touched)
         ));
         lines.push("  reopened and commits: not tracked by sd".into());
     }
+    if let Some(metadata) = &st.summary_metadata {
+        lines.push(format!(
+            "as of {} (coverage {})",
+            metadata.evaluated_at, metadata.generation
+        ));
+        lines.push("dynamic statistics: unavailable in this maintained summary".into());
+    }
     lines.join("\n")
+}
+fn available<T: std::fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "unavailable".into())
 }
 
 /// `blocked --json`: the list envelope; each seed also carries br's

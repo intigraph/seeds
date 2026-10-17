@@ -218,9 +218,21 @@ pub fn target(name: &str) -> Option<Json> {
                 "epics_eligible_for_closure",
             ];
             let mut fields: Vec<(&str, Kind)> = ints.iter().map(|n| (*n, Kind::Int)).collect();
-            fields.push(("average_lead_time_hours", Kind::Num));
+            for (name, kind) in &mut fields {
+                if matches!(*name, "ready_issues" | "epics_eligible_for_closure") {
+                    *kind = Kind::OptInt;
+                }
+            }
+            let mut summary = object(&fields, &[]);
+            summary["required"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("average_lead_time_hours"));
+            summary["properties"]["average_lead_time_hours"] = json!({"type":["number","null"]});
+
             json!({"type": "object", "required": ["summary"], "properties": {
-                "summary": object(&fields, &[]),
+                "summary": summary,
+                "summary_metadata": {"type":["object","null"]},
                 "breakdowns": {"type": "array", "items": {"type": "object",
                     "required": ["dimension", "counts"], "properties": {
                         "dimension": {"type": "string", "enum": ["type", "priority", "assignee", "label"]},

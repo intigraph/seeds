@@ -58,3 +58,38 @@ pub struct ProjectSummary {
     /// Static counts, bound by the server to retained decoded subjects.
     pub counts: Counts,
 }
+
+/// Publication identity without duplicating the maintained counts in output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Metadata {
+    /// Registered main graph.
+    pub project_iri: String,
+    /// Registered ephemeral graph.
+    pub ephemeral_iri: String,
+    /// Serving store identity, not a restore epoch.
+    pub store_id: String,
+    /// Static decoder and layout contract.
+    pub schema_id: String,
+    /// Raw source coverage generation.
+    pub generation: i64,
+    /// Evaluation clock.
+    pub evaluated_at: String,
+    /// Producer expiry bound.
+    pub valid_until: Option<String>,
+    /// Explicitly unsupported semantic transaction receipt.
+    pub semantic_transaction: Option<u64>,
+}
+impl From<&ProjectSummary> for Metadata {
+    fn from(summary: &ProjectSummary) -> Self {
+        Self {
+            project_iri: summary.project_iri.clone(),
+            ephemeral_iri: summary.ephemeral_iri.clone(),
+            store_id: summary.coverage.store_id.clone(),
+            schema_id: summary.coverage.schema_id.clone(),
+            generation: summary.coverage.generation,
+            evaluated_at: summary.evaluated_at.clone(),
+            valid_until: summary.valid_until.clone(),
+            semantic_transaction: summary.counts.semantic_transaction,
+        }
+    }
+}

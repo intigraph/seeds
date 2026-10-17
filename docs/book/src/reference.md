@@ -63,6 +63,19 @@ Coverage is an as-of watermark, not a transaction cursor. Local backends keep
 their actual transaction cursor and emit `summary_metadata: null`. This command
 does not register scopes, reconcile counters or maintain a client-side index.
 
+## Remote statistics
+
+Remote `stats` reads the same bounded maintained summary as `info`, including
+coverage metadata. Static totals and requested type, priority, assignee and
+label breakdowns exclude tombstones. It performs no aggregate query or scan
+fallback. Missing or incompatible summaries refuse.
+
+Ready counts, epics eligible for closure, average lead time and recent activity
+are not supported by the static producer. Their JSON values are `null`; text
+prints `unavailable`. Requested activity retains its window with unknown counts.
+Local statistics continue computing these values. Remote `stats --at` refuses
+before connecting because no historical summary receipt is available.
+
 ## Exit codes
 
 Exit codes are a contract. A code is never reused or renumbered.

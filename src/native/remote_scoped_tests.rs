@@ -4,7 +4,9 @@
 //! The same graph is read two ways: through [`RemoteBackend`] (scoped reads)
 //! and through [`Whole`], the same backend with every scoped read turned back
 //! into a whole snapshot (the S1 behaviour). Reads compare on one graph;
-//! writes run on two identical graphs, one each way, and compare their
+//! Unregistered statistics use a refusal/populated-reference control instead
+//! of output parity; dynamic statistics are not maintained yet. Other writes
+//! run on two identical graphs, one each way, and compare their
 //! results and the graphs they leave.
 
 use std::collections::BTreeSet;
@@ -382,13 +384,19 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
             activity_hours: Some(48),
         },
     ] {
-        let stats = engine::stats(b, c, req, None).map(|mut stats| {
-            // Decimal AVG and f64 summation may differ at the last bit.
-            // Compare the mean to one nanohour; all other fields stay exact.
-            stats.average_lead_time_hours = (stats.average_lead_time_hours * 1e9).round() / 1e9;
-            stats
-        });
-        out.push(format!("stats {req:?} {stats:?}"));
+        // This fixture has source facts but no registered/reconciled maintained
+        // scope. Remote statistics must refuse; the whole-snapshot reference is
+        // a positive control, not an authorized fallback. Paired-profile static
+        // parity is covered by the maintained-summary cross-repository fixture.
+        let result = engine::stats(b, c, req, None);
+        if b.scoped_reads() {
+            assert!(result.is_err(), "unregistered statistics must refuse");
+        } else {
+            assert!(result.unwrap().total > 0);
+        }
+        out.push(format!(
+            "stats {req:?}: unregistered maintained scope refuses; whole reference populated"
+        ));
     }
     for term in [
         "seed",

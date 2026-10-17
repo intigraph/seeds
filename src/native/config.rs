@@ -192,6 +192,8 @@ pub struct Resolved {
     pub token: Option<String>,
     /// A file to read the bearer token from, if configured.
     pub token_file: Option<PathBuf>,
+    /// Explicit command-scoped credential selection; ambient tokens cannot override it.
+    pub selected_credential: Option<super::credentials::Selected>,
     /// The signing key file, session and introducer, if configured.
     pub signing: Option<Signing>,
     /// The largest write request to send a quipu server, in bytes
@@ -244,6 +246,8 @@ pub struct Inputs {
     pub env_token: Option<String>,
     /// `SEEDS_QUIPU_TOKEN_FILE`.
     pub env_token_file: Option<String>,
+    pub env_credential_principal: Option<String>,
+    pub env_token_fd: Option<String>,
     /// `SEEDS_MAX_WRITE_BYTES`.
     pub env_max_write_bytes: Option<String>,
     /// `SEEDS_MAX_WRITE_CLAUSES`.
@@ -264,6 +268,9 @@ impl Inputs {
         flag_graph: Option<String>,
     ) -> Result<Self> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let principal = var("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL");
+        let descriptor = var("SEEDS_QUIPU_TOKEN_FD");
+        let selected = principal.is_some() || descriptor.is_some();
         let home = var("HOME").map(PathBuf::from);
         let user_config_dir = var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -279,8 +286,10 @@ impl Inputs {
             env_prefix: var("SEEDS_PREFIX"),
             env_pendant: var("SEEDS_PENDANT_DIR"),
             env_sync_remote: var("SEEDS_SYNC_REMOTE"),
-            env_token: var("SEEDS_QUIPU_TOKEN"),
-            env_token_file: var("SEEDS_QUIPU_TOKEN_FILE"),
+            env_token: (!selected).then(|| var("SEEDS_QUIPU_TOKEN")).flatten(),
+            env_token_file: (!selected).then(|| var("SEEDS_QUIPU_TOKEN_FILE")).flatten(),
+            env_credential_principal: principal,
+            env_token_fd: descriptor,
             env_max_write_bytes: var("SEEDS_MAX_WRITE_BYTES"),
             env_max_write_clauses: var("SEEDS_MAX_WRITE_CLAUSES"),
             flag_store,
@@ -595,6 +604,10 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         allow_plain_http_hosts,
         pendant,
         sync_remote,
+        selected_credential: super::credentials::Selected::parse(
+            inputs.env_credential_principal.as_deref(),
+            inputs.env_token_fd.as_deref(),
+        )?,
         token: inputs.env_token.clone(),
         token_file,
         signing,

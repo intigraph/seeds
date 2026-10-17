@@ -26,7 +26,7 @@ the storage; the core never touches a file or the network, which keeps it
 
 ## The pendant
 
-A **pendant** is quipu's share artifact (formerly called a qpack), used as is.
+A **pendant** is quipu's share artifact, used as is.
 seeds does not have a file format of its own:
 
 | file | what it is |
@@ -160,18 +160,15 @@ back and compares; a mismatch is a conflict (exit 4), never a success. Four
 simultaneous `--claim`s against one server leave exactly one winner
 (`tests/modes.rs`).
 
-Two things found while building this, which anyone running mode 2 should know:
+quipu evaluates `/update` over a slice containing the facts the update can
+match or write when its planner can identify that slice. Unsupported update
+forms use the full-store evaluation path. When its configured fact limit is
+enabled, exceeding that limit refuses the update. Write cost therefore depends
+on the update's scope and evaluation path, not just the size of the project graph.
 
-- **quipu's `/update` evaluates `WHERE` only over registered named graphs.**
-  Against an unregistered graph a precondition matches nothing, so a
-  `FILTER NOT EXISTS` guard passes vacuously and a second create writes a
-  duplicate (reproduced against quipu-server 0.9.1). seeds registers the
-  project graph (`POST /graph/create`) before its first write.
-- **`/update` copies the whole store into memory on every call**, so its cost
-  grows with the server's store. A seeds project on a dedicated quipu server is
-  fine; a large shared knowledge graph makes every write as slow as that graph
-  is big. An expected-value precondition on quipu's cheaper write paths would
-  remove this.
+Named graphs written by `/update` are registered after the transaction commits,
+so subsequent updates include their facts in the evaluation dataset. seeds also
+registers its project graph (`POST /graph/create`) before its first write.
 
 A configured server that cannot be reached is exit 7. seeds never falls back to
 a local store, because two stores would then hold two ledgers.
@@ -183,10 +180,18 @@ succeeds and says the response was lost; if not, it exits **8
 (INDETERMINATE)** and names the ids to check, because the write may still
 land and a retried `create` would mint a second seed.
 
-**Provenance.** quipu records every `/update` as the same anonymous
-"sparql-update", so seeds writes its own record of each write (actor, source,
-time, seeds touched) into a side graph, `<project graph>#seeds-provenance`,
-which exports and snapshots never read.
+**Provenance.** quipu records the caller's declared `actor` and `source` on
+`/update` transactions; these declarations are separate from the authenticated
+principal. An omitted actor is unknown, and an omitted source defaults to
+`sparql-update`.
+
+seeds also writes a `seeds:Write` record into a side graph. It links each item
+version (`id@revision`) produced by the write to the caller's declared agent,
+harness, model and session claims. This per-item version mapping is distinct
+from transaction-level attribution. The side graph is
+`<project graph>#seeds-provenance`, or `<project graph>-seeds-provenance` when the
+project graph already contains `#`. Exports and snapshots read the project
+ledger, not this side graph.
 
 **Tokens.** The bearer goes only where you chose to send it: a token (from
 `SEEDS_QUIPU_TOKEN`, `SEEDS_QUIPU_TOKEN_FILE` or your user config's

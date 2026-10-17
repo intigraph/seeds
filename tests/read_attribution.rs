@@ -136,8 +136,16 @@ fn probe(extra: &[(&str, &str)]) -> Vec<Headers> {
     );
     for headers in &result {
         assert_eq!(headers["x-quipu-client"], "seeds");
-        assert_eq!(headers["x-quipu-source"], "seeds");
-        assert!(["health", "query"].contains(&headers["x-quipu-operation"].as_str()));
+        let expected_source = extra
+            .iter()
+            .find(|(key, _)| *key == "QUIPU_SOURCE")
+            .map_or("sd-show", |(_, value)| *value);
+        assert_eq!(headers["x-quipu-source"], expected_source);
+        if let Some((_, operation)) = extra.iter().find(|(key, _)| *key == "QUIPU_OPERATION") {
+            assert_eq!(headers["x-quipu-operation"], *operation);
+        } else {
+            assert!(["health", "query"].contains(&headers["x-quipu-operation"].as_str()));
+        }
     }
     result
 }
@@ -171,5 +179,14 @@ fn explicit_and_known_harness_context_cross_real_transport() {
     ]) {
         assert_eq!(headers["x-quipu-agent"], "declared-crew");
         assert_eq!(headers["x-quipu-task"], "test-work");
+    }
+}
+
+#[test]
+fn outer_st_command_crosses_all_eight_actual_cli_requests() {
+    for headers in probe(&[("QUIPU_SOURCE", "st-anchor"), ("QUIPU_OPERATION", "show")]) {
+        assert_eq!(headers["x-quipu-source"], "st-anchor");
+        assert_eq!(headers["x-quipu-operation"], "show");
+        assert!(!headers.contains_key("x-quipu-agent"));
     }
 }

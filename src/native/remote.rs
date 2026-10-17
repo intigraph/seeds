@@ -2264,6 +2264,10 @@ mod tests {
     // carries the client label and the appropriate read/write declarations.
     #[test]
     fn every_quipu_request_carries_the_provenance_headers() {
+        use clap::Parser;
+        let cli =
+            super::super::cli::Cli::try_parse_from(["sd", "show", "private-subject"]).unwrap();
+        let _command_scope = super::super::command_context::Scope::new(&cli.command);
         let (base, seen) = recording_server();
         let remote = RemoteBackend::connect(&base, "urn:g", None, None, &[]).unwrap();
         remote.graph_iris().expect("graph listing");

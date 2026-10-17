@@ -9,6 +9,7 @@
 mod agent_context;
 pub mod attest;
 pub mod cli;
+mod command_context;
 pub mod config;
 mod cutover;
 pub mod provenance;
@@ -44,6 +45,7 @@ pub struct Outcome {
 
 /// Run a parsed command against the configuration in the environment.
 pub fn run(cli: &Cli) -> Outcome {
+    let _command_context = command_context::Scope::new(&cli.command);
     if let Some(f) = cli.format.as_deref() {
         if !matches!(f, "text" | "json" | "csv") {
             let e = SdError::usage(format!(

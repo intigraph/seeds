@@ -883,7 +883,7 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
             limit: Some(0),
             ..Default::default()
         };
-        if full && std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_none() {
+        if std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_none() {
             let error = engine::search(r, &req, None).unwrap_err();
             assert!(
                 error.message.contains("acknowledge readiness")
@@ -899,8 +899,10 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
         assert_eq!(actual.hidden_closed, hidden);
     };
     compare(&mut remote, "needle", false, true, 2, 0);
+    compare(&mut remote, "old needle description", false, true, 1, 0);
     update(&remote, format!("INSERT DATA {{ GRAPH <{eph}> {{ <{}> a <{a}> ; <{id}> \"shadow\" ; <{name}> \"replacement unrelated\" ; <{desc}> \"replacement unrelated\" ; <{status}> \"open\" . }} }}",item("shadow")));
     compare(&mut remote, "needle", false, true, 1, 0);
+    compare(&mut remote, "old needle description", false, true, 0, 0);
     compare(&mut remote, "needle", true, true, 1, 0);
     update(
         &remote,

@@ -1,4 +1,4 @@
-//! seeds: beads-shaped work items stored as facts in a quipu knowledge graph.
+//! seeds: seed work items stored as facts in a quipu knowledge graph.
 //!
 //! The crate is two layers:
 //!

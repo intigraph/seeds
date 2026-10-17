@@ -1,0 +1,11 @@
+Script started on 2026-10-16 18:59:48-04:00 [COMMAND="bash docs/probes/pr-demos/seed-language/run-demo.sh" <not executed on terminal>]
+Installed baseline: sd --help (source revision unverified)
+seeds is the beads-compatible tracker for the quipu stack, with fact-level versioning of work items. Each work item is a set of facts in a quipu knowledge graph; every write is one quipu transaction, and --at <tx> reads any seed as it stood at that transaction.
+
+Candidate source: sd --help
+seeds is the work-item tracker for the quipu stack, with fact-level versioning of work items. Each work item is a set of facts in a quipu knowledge graph; every write is one quipu transaction, and --at <tx> reads any seed as it stood at that transaction.
+
+Candidate source: sd cutover --help
+Lossless legacy JSONL import, export, verification and three-way cutover sync
+
+Script done on 2026-10-16 18:59:48-04:00 [COMMAND_EXIT_CODE="0"]

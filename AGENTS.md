@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-seeds is the beads replacement for the quipu stack, and a member of that stack:
+seeds is the work-item tracker for the quipu stack, and a member of that stack:
 work items stored as facts in a [quipu](https://github.com/scbrown/quipu)
 knowledge graph. It answers the `bd`/`br` verbs agents already type, with
 `--json` in the same shape, and versions each fact rather than the whole

@@ -46,6 +46,7 @@ use crate::vocab::{self, term};
 pub mod acquisition;
 #[cfg(test)]
 mod gateway_tests;
+mod maintained;
 mod summary;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
@@ -1240,6 +1241,10 @@ impl Backend for RemoteBackend {
             }
         }
         self.search_summary(req).map(Some)
+    }
+
+    fn project_summary(&self) -> Result<Option<crate::project_summary::ProjectSummary>> {
+        self.maintained_summary().map(Some)
     }
 
     fn ledger_issue_count(&self) -> Result<(usize, u64)> {

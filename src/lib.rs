@@ -36,6 +36,7 @@ pub mod ids;
 pub mod model;
 pub mod output;
 pub mod pendant;
+pub mod project_summary;
 pub mod quipu_backend;
 pub mod schema;
 pub mod spec;

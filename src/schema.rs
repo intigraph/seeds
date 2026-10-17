@@ -195,8 +195,8 @@ pub fn target(name: &str) -> Option<Json> {
         ]),
         "comment" => comment,
         "info" => {
-            json!({"type":"object", "required":["issue_count","comment_count","comment_count_status"],
-            "properties":{"issue_count":{"type":"integer","minimum":0},"comment_count":{"type":["integer","null"],"minimum":0},
+            json!({"type":"object", "required":["issue_count","comment_count","comment_count_status","tx","summary_metadata"],
+            "properties":{"tx":{"type":["integer","null"],"minimum":0},"summary_metadata":{"type":["object","null"]},"issue_count":{"type":"integer","minimum":0},"comment_count":{"type":["integer","null"],"minimum":0},
                 "comment_count_status":{"enum":["not_computed","exact"]}},
             "allOf":[
                 {"if":{"properties":{"comment_count_status":{"const":"not_computed"}}},"then":{"properties":{"comment_count":{"type":"null"}}}},

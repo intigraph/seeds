@@ -803,12 +803,50 @@ fn info_outcome(
     with_schema: bool,
     exact_comments: bool,
 ) -> Result<Outcome> {
-    let (issues, comments, tx) = if exact_comments {
+    let (issues, comments, tx, metadata, stamp) = if let Some(summary) = b.project_summary()? {
+        let issues = summary
+            .counts
+            .total
+            .checked_add(summary.counts.tombstones)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| SdError::failed("project summary item count out of range"))?;
+        let comments = usize::try_from(summary.counts.comments)
+            .map_err(|_| SdError::failed("project summary comment count out of range"))?;
+        let stamp = format!(
+            "as of {} (coverage {})",
+            summary.evaluated_at, summary.coverage.generation
+        );
+        let metadata = serde_json::json!({
+            "project_iri":summary.project_iri,"ephemeral_iri":summary.ephemeral_iri,
+            "store_id":summary.coverage.store_id,"schema_id":summary.coverage.schema_id,
+            "generation":summary.coverage.generation,"evaluated_at":summary.evaluated_at,
+            "valid_until":summary.valid_until,"semantic_transaction":summary.counts.semantic_transaction,
+        });
+        (
+            issues,
+            exact_comments.then_some(comments),
+            summary.counts.semantic_transaction,
+            metadata,
+            stamp,
+        )
+    } else if exact_comments {
         let (issues, comments, tx) = b.ledger_counts()?;
-        (issues, Some(comments), tx)
+        (
+            issues,
+            Some(comments),
+            Some(tx),
+            serde_json::Value::Null,
+            format!("at tx {tx}"),
+        )
     } else {
         let (issues, tx) = b.ledger_issue_count()?;
-        (issues, None, tx)
+        (
+            issues,
+            None,
+            Some(tx),
+            serde_json::Value::Null,
+            format!("at tx {tx}"),
+        )
     };
     let (store, url, mode) = location_parts(cfg);
     let size = store
@@ -818,7 +856,7 @@ fn info_outcome(
     let value = serde_json::json!({
         "database_path": store, "beads_dir": cfg.project_id_file.parent().map(|p| p.display().to_string()),
         "mode": mode, "quipu_url": url, "graph": cfg.graph,
-        "issue_count": issues, "comment_count": comments, "tx": tx,
+        "issue_count": issues, "comment_count": comments, "tx": tx, "summary_metadata":metadata,
         "comment_count_status": if exact_comments { "exact" } else { "not_computed" },
         "config": {"issue_prefix": cfg.prefix}, "db_size": size, "jsonl_path": null,
     });
@@ -827,12 +865,12 @@ fn info_outcome(
         value["schema"] = schema_info();
     }
     let mut text = format!(
-        "{} seeds, {} comments at tx {} ({mode}: {})",
+        "{} seeds, {} comments {} ({mode}: {})",
         issues,
         comments
             .map(|n| n.to_string())
-            .unwrap_or_else(|| "not computed (--exact-comments for admin count)".into()),
-        tx,
+            .unwrap_or_else(|| "not computed (--exact-comments to include)".into()),
+        stamp,
         store.or(url).unwrap_or_default()
     );
     if with_schema {

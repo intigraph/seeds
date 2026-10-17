@@ -2766,6 +2766,7 @@ impl SlowSearchServer {
                         })
                         .unwrap_or(0);
                     let health_request = header.starts_with("GET /health ");
+                    let summary_request = header.starts_with("POST /project/summary ");
                     let substring_contract = header.lines().any(|line| {
                         line.split_once(':').is_some_and(|(name, value)| {
                             name.eq_ignore_ascii_case("x-quipu-require-substring")
@@ -2779,23 +2780,34 @@ impl SlowSearchServer {
                         serde_json::json!({"status":"ok"})
                     } else {
                         let request: Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
-                        let query = request["query"].as_str().unwrap();
                         if delayed_queries.fetch_add(1, Ordering::SeqCst) < 4 {
                             // Keep the initial peers admitted across the 30s
                             // fence, independent of the number of vocabulary
                             // probes. Each request stays below transport timeout.
                             std::thread::sleep(std::time::Duration::from_secs(19));
                         }
-                        if query.starts_with("SELECT ?probe WHERE") {
-                            serde_json::json!({"results":{"bindings":[{"probe":{"type":"literal","value":"complete"}}]}})
-                        } else if substring_contract && query.trim() == "ASK {}" {
-                            serde_json::json!({"boolean":true})
-                        } else if query.starts_with("ASK") {
-                            serde_json::json!({"boolean":false})
-                        } else if query.contains("COUNT") {
-                            serde_json::json!({"results":{"bindings":[{"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"0"}}]}})
+                        if summary_request {
+                            let graph = request["graph"].as_str().unwrap();
+                            serde_json::json!({"contract":"project-summary/v1","graph":graph,"summary":{
+                                "project_iri":graph,"ephemeral_iri":seeds::vocab::ephemeral_graph(graph),
+                                "coverage":{"project":1,"ephemeral":2,"store_id":"urn:example:fixture","schema_id":"project-summary-coverage-v5","generation":0},
+                                "evaluated_at":"2026-10-17T00:00:00.000000000Z","valid_until":null,
+                                "counts":{"maintenance":"reconcile-only-not-write-maintained","total":0,"tombstones":0,"comments":0,
+                                    "by_status":{},"by_kind":{},"by_priority":{},"by_assignee":{},"by_label":{},"dynamic_statistics":null,"semantic_transaction":null}
+                            }})
                         } else {
-                            serde_json::json!({"results":{"bindings":[]}})
+                            let query = request["query"].as_str().unwrap();
+                            if query.starts_with("SELECT ?probe WHERE") {
+                                serde_json::json!({"results":{"bindings":[{"probe":{"type":"literal","value":"complete"}}]}})
+                            } else if substring_contract && query.trim() == "ASK {}" {
+                                serde_json::json!({"boolean":true})
+                            } else if query.starts_with("ASK") {
+                                serde_json::json!({"boolean":false})
+                            } else if query.contains("COUNT") {
+                                serde_json::json!({"results":{"bindings":[{"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"0"}}]}})
+                            } else {
+                                serde_json::json!({"results":{"bindings":[]}})
+                            }
                         }
                     };
                     let body = response.to_string();

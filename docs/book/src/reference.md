@@ -40,6 +40,27 @@ Accepted on every verb.
 
 `create` and `update` also take `--workflow-run <RUN>` ([Formulas](formulas.md)).
 
+## `sd info`
+
+`sd info --json` reports the project location and item count. Add
+`--exact-comments` to include the exact comment count; otherwise `comment_count`
+is `null` and `comment_count_status` is `"not_computed"`.
+
+A remote backend reads one bounded `POST /project/summary` response after the
+existing bounded vocabulary check. The server must have an explicitly registered,
+reconciled summary for the project. Missing, dirty, expired, incompatible or
+oversized summaries refuse; there is no aggregate or whole-graph fallback.
+The item count includes decoded tombstones, as the local ledger count does.
+
+Remote `tx` is `null` while semantic transaction receipts remain unsupported.
+`summary_metadata` carries both registered graph IRIs, store/schema identity, raw coverage generation,
+`evaluated_at`, `valid_until` and the explicitly absent semantic receipt.
+The registered main and ephemeral IRIs must match the configured project and
+its canonical ephemeral graph; a mismatched or absent profile refuses.
+Coverage is an as-of watermark, not a transaction cursor. Local backends keep
+their actual transaction cursor and emit `summary_metadata: null`. This command
+does not register scopes, reconcile counters or maintain a client-side index.
+
 ## Exit codes
 
 Exit codes are a contract. A code is never reused or renumbered.
@@ -80,7 +101,7 @@ omit `X-Quipu-Agent`; the executable is not a crew identity. Inherited
 actors, authentication and signatures retain their existing contract.
 
 Reads separately declare `X-Quipu-Source` (default `seeds`) and
-`X-Quipu-Operation` (finite endpoint name: `health`, `graphs`, `query`). Wrappers
+`X-Quipu-Operation` (finite endpoint name: `health`, `graphs`, `query`, `project_summary`). Wrappers
 may supply `QUIPU_SOURCE` and `QUIPU_OPERATION`, using the same bounded token
 syntax as task ids. These are diagnostic extension headers, not authenticated
 identity or new metric labels. Servers that do not expose them still cannot

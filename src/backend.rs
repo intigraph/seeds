@@ -290,6 +290,12 @@ pub trait Backend {
         Ok(None)
     }
 
+    /// A maintained static summary when the backend owns this read contract.
+    /// Errors refuse; callers must not fall back to a snapshot on failure.
+    fn project_summary(&self) -> Result<Option<crate::project_summary::ProjectSummary>> {
+        Ok(None)
+    }
+
     /// Exact item count without requesting the expensive comment count.
     fn ledger_issue_count(&self) -> Result<(usize, u64)> {
         let snap = self.snapshot(None)?;

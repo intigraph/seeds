@@ -292,6 +292,7 @@ pub fn diff_fields(a: &Seed, b: &Seed, a_name: &str, b_name: &str) -> Vec<String
         format!("{:?}", a.external_ref),
         format!("{:?}", b.external_ref),
     );
+    f("rank", format!("{:?}", a.rank), format!("{:?}", b.rank));
     f(
         "due_at",
         format!("{:?}", a.due_at),
@@ -489,6 +490,15 @@ fn merge_seed(base: Option<&Seed>, l: &Seed, r: &Seed, sides: Sides) -> (Seed, V
             base.map(|b| &b.external_ref),
             &l.external_ref,
             &r.external_ref,
+            &mut c,
+            sides,
+            dbg,
+        ),
+        rank: pick(
+            "rank",
+            base.map(|b| &b.rank),
+            &l.rank,
+            &r.rank,
             &mut c,
             sides,
             dbg,

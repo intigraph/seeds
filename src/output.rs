@@ -598,6 +598,7 @@ pub const CSV_FIELDS: &[&str] = &[
     "updated_at",
     "closed_at",
     "due_at",
+    "rank",
     "defer_until",
     "notes",
     "external_ref",
@@ -651,6 +652,7 @@ pub fn seeds_csv(seeds: &[Seed], fields: &[String]) -> String {
                     "defer_until" => s.defer_until.clone().unwrap_or_default(),
                     "notes" => s.notes.clone().unwrap_or_default(),
                     "external_ref" => s.external_ref.clone().unwrap_or_default(),
+                    "rank" => s.rank.clone().unwrap_or_default(),
                     "due_at" => s.due_at.clone().unwrap_or_default(),
                     _ => String::new(),
                 };

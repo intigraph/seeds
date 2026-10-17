@@ -876,10 +876,35 @@ fn contains(needle: &Option<String>, hay: Option<&String>) -> bool {
 }
 
 /// Sort orders `list --sort` accepts.
-pub const SORTS: &[&str] = &["priority", "created", "updated", "id", "title"];
+pub const SORTS: &[&str] = &[
+    "priority,rank",
+    "priority",
+    "created",
+    "updated",
+    "id",
+    "title",
+];
 
 fn sort_seeds(seeds: &mut [Seed], sort: Option<&str>) -> Result<()> {
     match sort.unwrap_or("priority") {
+        "priority,rank" => {
+            for s in seeds.iter() {
+                if let Some(r) = &s.rank {
+                    crate::rank::parse(r)?;
+                }
+            }
+            seeds.sort_by_key(|s| {
+                (
+                    s.priority,
+                    s.rank.is_none(),
+                    s.rank.as_deref().and_then(|r| crate::rank::parse(r).ok()),
+                    s.rank.is_some() && s.due_at.is_none(),
+                    s.rank.as_ref().and(s.due_at.as_ref()).cloned(),
+                    s.created_at.clone(),
+                    s.id.clone(),
+                )
+            });
+        }
         "priority" => seeds.sort_by(|a, b| {
             (a.priority, &a.created_at, &a.id).cmp(&(b.priority, &b.created_at, &b.id))
         }),
@@ -2032,13 +2057,13 @@ pub struct ReadyReq {
 }
 
 /// The `sd ready --sort` policies (br's).
-pub const READY_SORTS: &[&str] = &["hybrid", "priority", "oldest"];
+pub const READY_SORTS: &[&str] = &["priority,rank", "hybrid", "priority", "oldest"];
 
 /// `sd ready`: open seeds with no open `blocks` dependency and no future defer
 /// date, as of `at`. Unlimited unless `limit` is given; the page says when it
 /// was cut.
 pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Result<Page> {
-    let sort = req.sort.as_deref().unwrap_or("priority");
+    let sort = req.sort.as_deref().unwrap_or("priority,rank");
     if !READY_SORTS.contains(&sort) {
         return Err(SdError::usage(format!(
             "unknown sort {sort:?}; expected one of {}",
@@ -2142,7 +2167,7 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
             (a.priority > 1, &a.created_at, &a.id).cmp(&(b.priority > 1, &b.created_at, &b.id))
         }),
         "oldest" => sort_seeds(&mut seeds, Some("created"))?,
-        _ => sort_seeds(&mut seeds, Some("priority"))?,
+        _ => sort_seeds(&mut seeds, Some(sort))?,
     }
     let limit = req.limit.unwrap_or(0);
     let counts = if scoped {
@@ -2336,6 +2361,14 @@ pub struct UpdateReq {
     pub add_acceptance: Vec<String>,
     /// New due date, br's forms; empty clears it.
     pub due: Option<String>,
+    /// Refuse unless the single target still has this revision.
+    pub if_revision: Option<u64>,
+    /// Exact decimal rank; empty clears it.
+    pub rank: Option<String>,
+    /// Move immediately before this same-priority seed.
+    pub before: Option<String>,
+    /// Move immediately after this same-priority seed.
+    pub after: Option<String>,
     /// New time estimate in minutes.
     pub estimate: Option<String>,
     /// New owner; empty clears it.
@@ -2403,17 +2436,106 @@ pub fn update(
             return Err(SdError::usage("a seed needs a non-empty title"));
         }
     }
-    let snap = if req.parent.is_some() {
+    if req.if_revision.is_some() && ids.len() != 1 {
+        return Err(SdError::usage("--if-revision requires one item"));
+    }
+    let moving = req.before.as_ref().or(req.after.as_ref());
+    if usize::from(req.rank.is_some())
+        + usize::from(req.before.is_some())
+        + usize::from(req.after.is_some())
+        > 1
+    {
+        return Err(SdError::usage(
+            "use only one of --rank, --before or --after",
+        ));
+    }
+    if moving.is_some() && (ids.len() != 1 || req.priority.is_some() || req.claim) {
+        return Err(SdError::usage(
+            "a move needs exactly one item and cannot change priority or claim",
+        ));
+    }
+    let mut snap = if req.parent.is_some() {
         b.snapshot(None)?
     } else if req.claim {
         blocking_snapshot(b, ids, false)?
     } else {
         b.snapshot_items(ids)?
     };
+    let move_rank = if let Some(anchor) = moving {
+        let target = snap.get(&ids[0])?;
+        if anchor == &target.id {
+            return Err(SdError::usage("cannot move an item relative to itself"));
+        }
+        let priority = target.priority;
+        merge_snapshots(&mut snap, b.snapshot_items(std::slice::from_ref(anchor))?);
+        let adjacent = snap.get(anchor)?;
+        if adjacent.priority != priority || adjacent.status == "closed" || adjacent.is_tombstone() {
+            return Err(SdError::usage(
+                "move anchor must be a live item of the same priority",
+            ));
+        }
+        let rank = adjacent
+            .rank
+            .as_deref()
+            .ok_or_else(|| SdError::usage("move anchor is unranked; assign its rank first"))?;
+        let anchor_rank = crate::rank::parse(rank)?;
+        let cohort = b.snapshot_where(&SeedQuery {
+            priority: Some(priority),
+            ..Default::default()
+        })?;
+        let observed_anchor = cohort.get(anchor)?;
+        if observed_anchor.revision != adjacent.revision
+            || observed_anchor.priority != priority
+            || observed_anchor.rank != adjacent.rank
+        {
+            return Err(SdError::conflict(
+                "move anchor changed during read; nothing written",
+            ));
+        }
+        let mut ranks = Vec::new();
+        for seed in cohort.seeds.values().filter(|s| {
+            s.priority == priority && s.id != ids[0] && s.status != "closed" && !s.is_tombstone()
+        }) {
+            if let Some(r) = &seed.rank {
+                ranks.push(crate::rank::parse(r)?);
+            }
+        }
+        ranks.sort_unstable();
+        if ranks.iter().filter(|r| **r == anchor_rank).count() != 1 {
+            return Err(SdError::refused(
+                "move anchor rank is tied or changed; assign distinct ranks first",
+            ));
+        }
+        let pos = ranks
+            .binary_search(&anchor_rank)
+            .map_err(|_| SdError::refused("move anchor changed during read"))?;
+        let (left, right) = if req.before.is_some() {
+            (pos.checked_sub(1).map(|i| ranks[i]), Some(anchor_rank))
+        } else {
+            (Some(anchor_rank), ranks.get(pos + 1).copied())
+        };
+        Some(crate::rank::between(left, right)?)
+    } else {
+        None
+    };
+    let explicit_rank = req
+        .rank
+        .as_deref()
+        .map(|r| {
+            if r.trim().is_empty() {
+                Ok(None)
+            } else {
+                crate::rank::parse(r).map(|n| Some(crate::rank::format(n)))
+            }
+        })
+        .transpose()?;
     let mut writes = Vec::new();
     for id in ids {
         let before = snap.get(id)?;
         let mut s = before.clone();
+        if req.if_revision.is_some_and(|r| r != before.revision) {
+            return Err(SdError::conflict("item revision changed; nothing written"));
+        }
         if req.status.is_some() && crate::blockers::has_metadata(before) {
             let mut ledger = crate::blockers::load(before)?;
             // An explicit status edit takes ownership away from reconciliation.
@@ -2499,6 +2621,12 @@ pub fn update(
                 .is_none_or(|reason| reason.trim().is_empty())
         {
             return Err(SdError::usage(format!("{id}: changing or clearing an existing due date requires --transition-comment with a reason")));
+        }
+        if let Some(rank) = &explicit_rank {
+            s.rank = rank.clone();
+        }
+        if let Some(rank) = &move_rank {
+            s.rank = Some(rank.clone());
         }
         if let Some(m) = &req.estimate {
             s.estimated_minutes = Some(parse_estimate(m)?);

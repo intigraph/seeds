@@ -29,6 +29,7 @@ pub fn functional_predicates() -> Vec<String> {
         term::status(),
         term::action_status(),
         term::priority(),
+        term::rank(),
         term::issue_type(),
         term::created_at(),
         term::updated_at(),

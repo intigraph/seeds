@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-10-17
+
+### Added
+
+- Replace specifications with versioned owner acknowledgements (#141) ([525ab6a](https://github.com/scbrown/seeds/commit/525ab6ad6edffc9eba8af1d12539d2179f728a33))
+- *(provenance)* Attribute remote reads to parsed CLI command (#156) ([5340550](https://github.com/scbrown/seeds/commit/5340550041fcde4338ca375d588bf5a4b1e1e95d))
+
+### Documentation
+
+- Install from the signed apt repository (#155) ([c2871d9](https://github.com/scbrown/seeds/commit/c2871d986f997b03b80bd62af3c77a3099bd9d00))
+
+### Fixed
+
+- Bound remote reads and batch epic creation (#153) ([e7f52ef](https://github.com/scbrown/seeds/commit/e7f52ef591a8c4a8878cee221fcfde59a045ad35))
+- *(cli)* Use seed terminology in instructions and help (#154) ([2635e72](https://github.com/scbrown/seeds/commit/2635e72b6b69a6684a673a0beee5d11d9fa8c294))
+
 ## [0.4.2] - 2026-10-16
 
 ### Added

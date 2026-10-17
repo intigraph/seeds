@@ -11,6 +11,7 @@ pub mod attest;
 pub mod cli;
 mod command_context;
 pub mod config;
+pub mod credentials;
 mod cutover;
 pub mod provenance;
 pub mod remote;
@@ -296,10 +297,14 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
         ),
         (
             "quipu.token",
-            serde_json::json!(match (&cfg.token, &cfg.token_file) {
-                (Some(_), _) => "(set: SEEDS_QUIPU_TOKEN)",
-                (None, Some(_)) => "(set: token_file)",
-                (None, None) => "(unset)",
+            serde_json::json!(if cfg.selected_credential.is_some() {
+                "(set: selected descriptor)"
+            } else {
+                match (&cfg.token, &cfg.token_file) {
+                    (Some(_), _) => "(set: SEEDS_QUIPU_TOKEN)",
+                    (None, Some(_)) => "(set: token_file)",
+                    (None, None) => "(unset)",
+                }
             }),
         ),
         ("quipu.token_file", path(&cfg.token_file)),
@@ -1228,6 +1233,24 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
 /// token is never sent to a server URL that came from a project file unless
 /// the user's own config lists its host in `trusted_hosts`.
 fn token(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<String>> {
+    if let Some(selected) = &cfg.selected_credential {
+        if cfg.signing.is_some() {
+            return Err(SdError::new(
+                ErrorKind::Config,
+                "selected bearer cannot be combined with a signing identity",
+            ));
+        }
+        if !cfg.token_allowed(url, from_project)
+            || (!remote::secure_enough(url)
+                && !remote::plain_http_allowed(url, &cfg.allow_plain_http_hosts))
+        {
+            return Err(SdError::new(
+                ErrorKind::Config,
+                "selected credential destination is not admitted",
+            ));
+        }
+        return selected.read().map(Some);
+    }
     if !cfg.token_allowed(url, from_project) {
         if cfg.token.is_some() || cfg.token_file.is_some() {
             eprintln!(
@@ -3872,5 +3895,68 @@ mod vocabulary_check_tests {
         let (r, calls, _) = run(vec![Ok(false)]);
         assert!(r.is_ok());
         assert_eq!(calls, 1);
+    }
+}
+
+#[cfg(test)]
+mod selected_credential_tests {
+    use super::*;
+
+    fn config() -> Resolved {
+        config::resolve(&config::Inputs {
+            cwd: std::env::temp_dir(),
+            env_credential_principal: Some("test-principal".into()),
+            env_token_fd: Some("2147483647".into()),
+            env_token: Some("foreign-inline-fixture".into()),
+            env_token_file: Some("missing-foreign-file".into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn selected_failure_never_uses_inherited_token_or_file() {
+        let mut cfg = config();
+        let e = token(&cfg, "https://example.org", false).unwrap_err();
+        assert!(e.to_string().contains("selected credential unavailable"));
+        cfg.token = None;
+        assert!(token(&cfg, "https://example.org", false).is_err());
+        cfg.token_file = None;
+        assert!(token(&cfg, "https://example.org", false).is_err());
+        cfg.signing = Some(config::Signing {
+            key_file: "unread-signing-key".into(),
+            session: "fixture".into(),
+            introducer: "fixture".into(),
+        });
+        assert!(token(&cfg, "https://example.org", false)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be combined"));
+        cfg.signing = None;
+        cfg.selected_credential = None;
+        cfg.token = Some("shared-next-command-fixture".into());
+        assert_eq!(
+            token(&cfg, "https://example.org", false)
+                .unwrap()
+                .as_deref(),
+            Some("shared-next-command-fixture")
+        );
+    }
+
+    #[test]
+    fn destination_admission_precedes_descriptor_access() {
+        let mut cfg = config();
+        for (url, from_project) in [
+            ("https://untrusted.example.org", true),
+            ("http://remote.example.org", false),
+        ] {
+            let e = token(&cfg, url, from_project).unwrap_err();
+            assert!(e.to_string().contains("destination is not admitted"));
+        }
+        cfg.trusted_hosts.push("untrusted.example.org".into());
+        assert!(token(&cfg, "https://untrusted.example.org", true)
+            .unwrap_err()
+            .to_string()
+            .contains("selected credential unavailable"));
     }
 }

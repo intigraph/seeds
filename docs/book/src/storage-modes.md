@@ -200,6 +200,42 @@ project file only if your user config lists its host in `trusted_hosts`, and
 never over plain `http://` except to localhost or to a host your user config
 lists in `allow_plain_http_hosts`.
 
+### Explicit command-scoped credentials (native Unix)
+
+A trusted launcher can opt in by setting both
+`SEEDS_QUIPU_CREDENTIAL_PRINCIPAL` (a nonsecret declaration) and
+`SEEDS_QUIPU_TOKEN_FD` (an inherited descriptor number, at least 3). The
+selected descriptor wins over ambient `SEEDS_QUIPU_TOKEN` and
+`SEEDS_QUIPU_TOKEN_FILE`; neither ambient credential is read. There is no
+`QUIPU_AUTH_TOKEN_FILE` alias. Project configuration cannot select a descriptor
+or executable resolver. The launcher must clear inherited Seeds token inputs
+in the child only, clear both selection variables for unselected children, and
+must not copy bearer bytes into environment, arguments,
+persistent configuration or logs.
+
+The descriptor must refer to an anonymous/unlinked, user-owned regular file,
+private to its owner, containing 1–4096 printable ASCII bytes without whitespace.
+An inherited anonymous file works on Linux and macOS; other platforms refuse
+this selection. Destination trust and transport policy are checked **before**
+reading it. The backend reads a bounded duplicate at offset zero and closes that
+duplicate; the launcher owns and closes its original descriptor. Provider output
+must remain private and stable until the child has read it. Pipes and linked
+files are refused. Selection resolves at command/backend creation, not on every
+HTTP request.
+
+An unavailable, malformed or denied selected credential refuses the command;
+there is no same-command retry using a shared credential. Blank, whitespace-only
+or non-Unicode selection metadata is invalid; only both variables being absent
+means deselection. To explicitly override
+or return to shared defaults, remove **both** selection variables before starting
+the next command and deliberately set that command's normal token inputs. Seeds
+cannot infer whether an inherited environment variable was intentionally set.
+A principal declaration is not proof of the principal authenticated by the
+server. SDK callers explicitly construct the same native selection contract;
+the core library does not import process environment or resolve providers. A
+selected bearer cannot be combined with a signing identity: signed requests
+authenticate the signing key instead of the selected bearer.
+
 ## Mode 3: sync
 
 ```toml

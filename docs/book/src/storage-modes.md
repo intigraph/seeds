@@ -236,6 +236,40 @@ the core library does not import process environment or resolve providers. A
 selected bearer cannot be combined with a signing identity: signed requests
 authenticate the signing key instead of the selected bearer.
 
+#### Launcher admission before provider access
+
+Append `--credential-admission` to the intended command, using the same working
+directory, arguments and sanitized child environment. Seeds resolves its normal
+configuration but does not execute the operation, open a store, read a token
+file/descriptor, create a project id, or make a network request. Even `init` and
+other early-exit commands cannot run under this flag. Only a remote destination
+admitted by the native trust/transport policy and compatible with bearer
+authentication returns JSON:
+
+```json
+{"contract":"seeds-credential-admission/v1","admitted":true,"destination":"https://example.org","destination_binding":true}
+```
+
+Local stores, untrusted project destinations, unsafe transport, signing
+identities, and URLs with credentials/query/fragment or malformed authority
+refuse. The launcher must refuse an unsupported CLI or malformed proof **before**
+accessing its provider; it must not interpret an open health response as this
+admission contract.
+
+After fetching its selected credential, the launcher supplies the returned URL
+unchanged as `SEEDS_QUIPU_CREDENTIAL_DESTINATION`, alongside the principal and
+descriptor metadata. Native code checks this exact destination again before
+reading the descriptor, so an intervening configuration change cannot retarget
+the bearer. This optional binding does not change existing explicit descriptor
+callers, but a strict provider adapter requires it. Destination metadata without
+both selection fields is invalid. Clear all three fields on explicit
+deselection; no provider error or server refusal triggers a shared retry.
+
+This is a source protocol, not an installed launcher or authenticated SDK
+receipt. Providers and launchers remain outside the native CLI; their delivery,
+private descriptor lifetime, sanitation and authenticated attribution require
+separate controls.
+
 ## Mode 3: sync
 
 ```toml

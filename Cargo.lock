@@ -2522,6 +2522,7 @@ dependencies = [
  "shacl",
  "toml 0.8.23",
  "ureq",
+ "url",
  "wasm-bindgen-test",
  "yaml-rust2",
 ]

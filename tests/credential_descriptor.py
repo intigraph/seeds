@@ -53,7 +53,7 @@ def main():
                    "SEEDS_QUIPU_TOKEN": "foreign-inline-fixture",
                    "SEEDS_QUIPU_TOKEN_FILE": str(foreign)}
 
-            def run(value=None, selected=True, malformed=False, selection_override=None):
+            def run(value=None, selected=True, malformed=False, selection_override=None, destination=None):
                 observed.clear()
                 child = dict(env)
                 with tempfile.TemporaryFile() as f:
@@ -63,6 +63,8 @@ def main():
                     if selected:
                         child.update(SEEDS_QUIPU_CREDENTIAL_PRINCIPAL="own-fixture",
                                      SEEDS_QUIPU_TOKEN_FD=str(f.fileno()) if not malformed else "2147483647")
+                    if destination is not None:
+                        child["SEEDS_QUIPU_CREDENTIAL_DESTINATION"] = destination
                     if selection_override is not None:
                         child.pop("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL", None)
                         child.pop("SEEDS_QUIPU_TOKEN_FD", None)
@@ -82,6 +84,10 @@ def main():
                 print("legacy CLI: selected descriptor ignored; inherited inline fixture sent")
                 return
             assert auth == ["Bearer own-fixture-value"], (result.stderr, requests)
+            result, requests = run(b"own-fixture-value", destination=url)
+            assert [auth for _, auth in requests if auth] == ["Bearer own-fixture-value"]
+            result, requests = run(b"own-fixture-value", destination="https://other.example")
+            assert result.returncode != 0 and not requests, "destination changed after provider admission"
             result, requests = run(b"other-own-value")
             assert [auth for _, auth in requests if auth] == ["Bearer other-own-value"]
             for value, malformed in [(b"", False), (b"bad\nvalue", False), (b"x" * 4097, False), (None, True)]:
@@ -106,6 +112,35 @@ def main():
             result, requests = run(selected=False)
             assert [auth for _, auth in requests if auth] == ["Bearer foreign-file-fixture"]
             print("descriptor CLI: own/rotation, foreign inline/file isolation, 4 fail-closed + 8 invalid-presence cases, next-deselected defaults PASS")
+            # Admission must precede init and every other command's early exits.
+            # Missing configured token files are not read; no HTTP is performed.
+            env.pop("SEEDS_QUIPU_TOKEN", None)
+            env["SEEDS_QUIPU_TOKEN_FILE"] = str(root / "absent-token")
+            observed.clear()
+            command = [binary, "--quipu", url, "--graph", "https://example.org/test-board",
+                       "init", "--credential-admission"]
+            admitted = subprocess.run(command, cwd=tmp, env=env, capture_output=True, timeout=10)
+            proof = json.loads(admitted.stdout)
+            assert admitted.returncode == 0 and proof == {
+                "contract": "seeds-credential-admission/v1", "admitted": True,
+                "destination": url, "destination_binding": True}, admitted.stderr
+            assert not observed and not (root / ".seeds").exists()
+            for destination in ("http://remote.example", "https://", "https://u:p@example.org",
+                                "https://example.org/?secret=fixture"):
+                denied = subprocess.run([binary, "--quipu", destination, "init", "--credential-admission"],
+                                        cwd=tmp, env=env, capture_output=True, timeout=10)
+                assert denied.returncode != 0 and not observed
+                assert b"secret=fixture" not in denied.stdout + denied.stderr
+            denied = subprocess.run([binary, "--store", str(root / "must-not-create"),
+                                     "init", "--credential-admission"], cwd=tmp, env=env,
+                                    capture_output=True, timeout=10)
+            assert denied.returncode != 0 and not (root / "must-not-create").exists()
+            (root / ".seeds").mkdir()
+            (root / ".seeds/config.toml").write_text('[quipu]\nurl="https://example.org"\n')
+            denied = subprocess.run([binary, "show", "fixture", "--credential-admission"],
+                                    cwd=tmp, env=env, capture_output=True, timeout=10)
+            assert denied.returncode != 0 and not observed, "untrusted project destination admitted"
+            print("admission CLI: no HTTP/token-file read/init mutation, destination bind, trust/transport/URL/local refusals PASS")
     finally:
         server.shutdown()
         server.server_close()

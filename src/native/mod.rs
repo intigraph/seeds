@@ -47,6 +47,18 @@ pub struct Outcome {
 /// Run a parsed command against the configuration in the environment.
 pub fn run(cli: &Cli) -> Outcome {
     let _command_context = command_context::Scope::new(&cli.command);
+    // This must precede even init/merge-driver and the other early exits.
+    // A launcher may ask about a mutating command, but admission never runs it.
+    if cli.credential_admission {
+        let result =
+            config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
+                .and_then(|i| config::resolve(&i))
+                .and_then(|cfg| credential_admission(&cfg));
+        return match result {
+            Ok(value) => ok(true, value.clone(), value.to_string(), vec![]),
+            Err(e) => error_outcome(true, &e, vec![]),
+        };
+    }
     if let Some(f) = cli.format.as_deref() {
         if !matches!(f, "text" | "json" | "csv") {
             let e = SdError::usage(format!(
@@ -1232,21 +1244,56 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
 /// The bearer for writes to `url`, if one is configured AND may go there: a
 /// token is never sent to a server URL that came from a project file unless
 /// the user's own config lists its host in `trusted_hosts`.
+fn admit_selected_destination(cfg: &Resolved, url: &str, from_project: bool) -> Result<()> {
+    if cfg.signing.is_some() {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "selected bearer cannot be combined with a signing identity",
+        ));
+    }
+    let valid_url = url::Url::parse(url).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https")
+            && u.has_host()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && !url.chars().any(char::is_whitespace)
+    });
+    if !valid_url
+        || !cfg.token_allowed(url, from_project)
+        || (!remote::secure_enough(url)
+            && !remote::plain_http_allowed(url, &cfg.allow_plain_http_hosts))
+    {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "selected credential destination is not admitted",
+        ));
+    }
+    Ok(())
+}
+
+fn credential_admission(cfg: &Resolved) -> Result<Json> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "named credentials require a remote destination",
+        ));
+    };
+    admit_selected_destination(cfg, url, cfg.location_from_project)?;
+    Ok(
+        json!({"contract": "seeds-credential-admission/v1", "admitted": true,
+              "destination": url, "destination_binding": true}),
+    )
+}
+
 fn token(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<String>> {
     if let Some(selected) = &cfg.selected_credential {
-        if cfg.signing.is_some() {
+        admit_selected_destination(cfg, url, from_project)?;
+        if !selected.permits_destination(url) {
             return Err(SdError::new(
                 ErrorKind::Config,
-                "selected bearer cannot be combined with a signing identity",
-            ));
-        }
-        if !cfg.token_allowed(url, from_project)
-            || (!remote::secure_enough(url)
-                && !remote::plain_http_allowed(url, &cfg.allow_plain_http_hosts))
-        {
-            return Err(SdError::new(
-                ErrorKind::Config,
-                "selected credential destination is not admitted",
+                "selected credential destination changed after admission",
             ));
         }
         return selected.read().map(Some);

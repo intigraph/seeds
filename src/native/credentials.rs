@@ -17,6 +17,7 @@ fn unavailable() -> SdError {
 pub struct Selected {
     principal: String,
     fd: i32,
+    destination: Option<String>,
 }
 
 impl Selected {
@@ -38,10 +39,28 @@ impl Selected {
                 Ok(Some(Self {
                     principal: principal.into(),
                     fd,
+                    destination: None,
                 }))
             }
             _ => Err(unavailable()),
         }
+    }
+
+    /// Bind a launcher's pre-provider admission to the final destination.
+    pub fn bind_destination(mut self, destination: Option<&str>) -> Result<Self> {
+        if let Some(url) = destination {
+            if url.is_empty() || url.len() > 4096 || url.chars().any(char::is_whitespace) {
+                return Err(unavailable());
+            }
+            self.destination = Some(url.into());
+        }
+        Ok(self)
+    }
+
+    pub fn permits_destination(&self, url: &str) -> bool {
+        self.destination
+            .as_deref()
+            .is_none_or(|expected| expected == url)
     }
 
     /// Read at most CAP bytes from a duplicated descriptor. Seek is positional:

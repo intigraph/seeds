@@ -1445,6 +1445,13 @@ fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
 }
 
 fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome> {
+    // Maintained summaries describe current coverage, not a pinned transaction.
+    // Refuse before connect so a historical request cannot return current data.
+    if matches!(&cli.command, Command::Info(_)) && cli.at.is_some() {
+        return Err(SdError::refused(
+            "remote info does not support --at; no historical summary receipt is available",
+        ));
+    }
     // pendant_of currently assembles an unpinned snapshot in a local scratch
     // store. Do not silently turn a historical export into a current one.
     // Refuse before connect, vocabulary probes, or any destination write.

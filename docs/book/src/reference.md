@@ -57,6 +57,8 @@ Remote `tx` is `null` while semantic transaction receipts remain unsupported.
 `evaluated_at`, `valid_until` and the explicitly absent semantic receipt.
 The registered main and ephemeral IRIs must match the configured project and
 its canonical ephemeral graph; a mismatched or absent profile refuses.
+Remote `info --at` refuses before connecting because a current summary cannot
+answer a historical pin.
 Coverage is an as-of watermark, not a transaction cursor. Local backends keep
 their actual transaction cursor and emit `summary_metadata: null`. This command
 does not register scopes, reconcile counters or maintain a client-side index.

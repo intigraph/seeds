@@ -21,6 +21,9 @@ fn summary() -> Value {
     }})
 }
 fn probe(body: Value, code: u16, exact: bool, success: bool) -> Value {
+    probe_at(body, code, exact, success, None)
+}
+fn probe_at(body: Value, code: u16, exact: bool, success: bool, at: Option<&str>) -> Value {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -109,6 +112,9 @@ fn probe(body: Value, code: u16, exact: bool, success: bool) -> Value {
     if exact {
         command.arg("--exact-comments");
     }
+    if let Some(at) = at {
+        command.args(["--at", at]);
+    }
     let output = command.output().unwrap();
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
@@ -119,6 +125,14 @@ fn probe(body: Value, code: u16, exact: bool, success: bool) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     let requests = requests.lock().unwrap();
+    if at.is_some() {
+        assert_eq!(output.status.code(), Some(5));
+        assert!(
+            requests.is_empty(),
+            "pinned info must refuse before HTTP: {requests:?}"
+        );
+        return serde_json::from_slice(&output.stdout).unwrap();
+    }
     assert_eq!(requests.len(), 3, "{requests:?}");
     assert_eq!(requests[0].0, "/health");
     assert_eq!(requests[1].0, "/query");
@@ -219,4 +233,14 @@ fn maintained_info_refuses_unavailable_wrong_scope_schema_bounds_and_partial_dat
     for body in cases {
         probe(body, 200, false, false);
     }
+}
+
+#[test]
+fn maintained_info_refuses_historical_pin_before_network_with_live_positive_control() {
+    assert_eq!(probe(summary(), 200, false, true)["issue_count"], 1);
+    let output = probe_at(summary(), 200, false, false, Some("1"));
+    assert!(output["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no historical summary receipt"));
 }

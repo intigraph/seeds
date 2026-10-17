@@ -268,8 +268,19 @@ impl Inputs {
         flag_graph: Option<String>,
     ) -> Result<Self> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let principal = var("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL");
-        let descriptor = var("SEEDS_QUIPU_TOKEN_FD");
+        // Presence is security-significant: invalid/blank selection must never
+        // be reinterpreted as deselection and restore an ambient bearer.
+        let selection_var = |key: &str| -> Result<Option<String>> {
+            std::env::var_os(key)
+                .map(|value| {
+                    value
+                        .into_string()
+                        .map_err(|_| config_error("invalid selected credential metadata".into()))
+                })
+                .transpose()
+        };
+        let principal = selection_var("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL")?;
+        let descriptor = selection_var("SEEDS_QUIPU_TOKEN_FD")?;
         let selected = principal.is_some() || descriptor.is_some();
         let home = var("HOME").map(PathBuf::from);
         let user_config_dir = var("XDG_CONFIG_HOME")

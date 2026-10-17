@@ -224,7 +224,9 @@ files are refused. Selection resolves at command/backend creation, not on every
 HTTP request.
 
 An unavailable, malformed or denied selected credential refuses the command;
-there is no same-command retry using a shared credential. To explicitly override
+there is no same-command retry using a shared credential. Blank, whitespace-only
+or non-Unicode selection metadata is invalid; only both variables being absent
+means deselection. To explicitly override
 or return to shared defaults, remove **both** selection variables before starting
 the next command and deliberately set that command's normal token inputs. Seeds
 cannot infer whether an inherited environment variable was intentionally set.

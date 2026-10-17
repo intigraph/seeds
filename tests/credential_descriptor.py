@@ -53,7 +53,7 @@ def main():
                    "SEEDS_QUIPU_TOKEN": "foreign-inline-fixture",
                    "SEEDS_QUIPU_TOKEN_FILE": str(foreign)}
 
-            def run(value=None, selected=True, malformed=False):
+            def run(value=None, selected=True, malformed=False, selection_override=None):
                 observed.clear()
                 child = dict(env)
                 with tempfile.TemporaryFile() as f:
@@ -63,6 +63,10 @@ def main():
                     if selected:
                         child.update(SEEDS_QUIPU_CREDENTIAL_PRINCIPAL="own-fixture",
                                      SEEDS_QUIPU_TOKEN_FD=str(f.fileno()) if not malformed else "2147483647")
+                    if selection_override is not None:
+                        child.pop("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL", None)
+                        child.pop("SEEDS_QUIPU_TOKEN_FD", None)
+                        child.update(selection_override)
                     result = subprocess.run([binary, "--quipu", url, "--graph",
                         "https://example.org/test-board", "create", "fixture", "--json"],
                         cwd=tmp, env=child, pass_fds=(f.fileno(),), capture_output=True, timeout=15)
@@ -83,6 +87,17 @@ def main():
             for value, malformed in [(b"", False), (b"bad\nvalue", False), (b"x" * 4097, False), (None, True)]:
                 result, requests = run(value, malformed=malformed)
                 assert result.returncode != 0 and not requests, (result.stderr, requests)
+            for principal, descriptor in [("", ""), (" ", " "), ("", " "), (" ", ""), ("", None), (None, "")]:
+                selection = {}
+                if principal is not None:
+                    selection["SEEDS_QUIPU_CREDENTIAL_PRINCIPAL"] = principal
+                if descriptor is not None:
+                    selection["SEEDS_QUIPU_TOKEN_FD"] = descriptor
+                result, requests = run(selection_override=selection)
+                assert result.returncode != 0 and not requests, "present invalid selection fell back"
+            for key in ("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL", "SEEDS_QUIPU_TOKEN_FD"):
+                result, requests = run(selection_override={key: b"\xff"})
+                assert result.returncode != 0 and not requests, "non-Unicode selection fell back"
             result, requests = run(selected=False)
             assert [auth for _, auth in requests if auth] == ["Bearer foreign-inline-fixture"]
             del env["SEEDS_QUIPU_TOKEN"]
@@ -90,7 +105,7 @@ def main():
             assert [auth for _, auth in requests if auth] == ["Bearer own-fixture-value"]
             result, requests = run(selected=False)
             assert [auth for _, auth in requests if auth] == ["Bearer foreign-file-fixture"]
-            print("descriptor CLI: own/rotation, foreign inline/file isolation, 4 fail-closed cases, next-deselected defaults PASS")
+            print("descriptor CLI: own/rotation, foreign inline/file isolation, 4 fail-closed + 8 invalid-presence cases, next-deselected defaults PASS")
     finally:
         server.shutdown()
         server.server_close()

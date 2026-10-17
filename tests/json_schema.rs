@@ -39,6 +39,7 @@ const SEED_KEYS: &[&str] = &[
     "outcome",
     "parent",
     "priority",
+    "rank",
     "revision",
     "status",
     "title",

@@ -1,0 +1,16 @@
+Script started on 2026-10-17 10:40:27-04:00 [COMMAND="python3 docs/demos/rank-order/demo.py" <not executed on terminal>]
+base binary SHA256 f5801e55d81007aafd1167b03b53f8faf2d25a08dda6ce39f3f2763c46c87daa
+sd 0.4.2 (seeds)
+$ sd ready: initial titles ['left', 'right', 'moving']
+$ sd update moving --before right
+refusal exit: 2
+error: unexpected argument '--before' found
+head binary SHA256 4c3c024981886f0fa9b598379b4fee41fbe6c1800fb63c471719b1f357b3b403
+sd 0.5.0 (seeds)
+$ sd ready: initial titles ['right', 'left', 'moving']
+$ sd update moving --before right
+moving rank: 1.5
+$ sd ready --sort priority,rank: [('left', '1'), ('moving', '1.5'), ('right', '2')]
+neighbor records unchanged; all due dates unchanged
+
+Script done on 2026-10-17 10:40:29-04:00 [COMMAND_EXIT_CODE="0"]

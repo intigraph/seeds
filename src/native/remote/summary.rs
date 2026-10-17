@@ -207,15 +207,18 @@ impl RemoteBackend {
             predicates.push(term::defer_until());
         }
         let sort = sort.unwrap_or("priority");
-        if sort == "priority"
+        if matches!(sort, "priority" | "priority,rank")
             || filter.priority.is_some()
             || filter.priority_min.is_some()
             || filter.priority_max.is_some()
         {
             predicates.push(term::priority());
         }
-        if sort == "priority" || sort == "created" {
+        if matches!(sort, "priority" | "priority,rank" | "created") {
             predicates.push(term::created_at());
+        }
+        if sort == "priority,rank" {
+            predicates.extend([term::rank(), term::due_at()]);
         }
         if sort == "updated" {
             predicates.push(term::updated_at());

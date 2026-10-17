@@ -4956,3 +4956,117 @@ fn dep_add_many_is_atomic_and_keeps_single_revision_and_cycle_guards() {
         revision
     );
 }
+
+#[test]
+fn rank_moves_preserve_neighbors_and_deadlines() {
+    let mut b = backend();
+    let mut items = Vec::new();
+    for (n, title) in ["left", "right", "moving", "unranked", "urgent"]
+        .iter()
+        .enumerate()
+    {
+        let (s, _) = engine::create(
+            &mut b,
+            &ctx(n as u32),
+            &CreateReq {
+                title: (*title).into(),
+                priority: Some(if *title == "urgent" { "0" } else { "1" }.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        items.push(s);
+    }
+    for (id, rank) in [(&items[0].id, "1"), (&items[1].id, "2")] {
+        engine::update(
+            &mut b,
+            &ctx(10),
+            std::slice::from_ref(id),
+            &UpdateReq {
+                rank: Some(rank.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    // The embedded backend's generic snapshot fallback contains other priorities.
+    // An equal rank there must never tie this priority's move anchor.
+    engine::update(
+        &mut b,
+        &ctx(10),
+        &[items[4].id.clone()],
+        &UpdateReq {
+            rank: Some("2".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = b.snapshot(None).unwrap();
+    let (moved, _) = engine::update(
+        &mut b,
+        &ctx(11),
+        &[items[2].id.clone()],
+        &UpdateReq {
+            before: Some(items[1].id.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(moved[0].rank.as_deref(), Some("1.5"));
+    let after = b.snapshot(None).unwrap();
+    for s in &items {
+        if s.id != items[2].id {
+            assert_eq!(before.get(&s.id).unwrap(), after.get(&s.id).unwrap());
+        }
+    }
+    for s in &items {
+        assert_eq!(
+            before.get(&s.id).unwrap().due_at,
+            after.get(&s.id).unwrap().due_at
+        );
+    }
+    let ready = engine::ready(&b, &ctx(12), &ReadyReq::default(), None).unwrap();
+    assert_eq!(
+        ready
+            .issues
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        [4, 0, 2, 1, 3].map(|i| items[i].id.as_str())
+    );
+    for req in [
+        UpdateReq {
+            before: Some(items[4].id.clone()),
+            ..Default::default()
+        },
+        UpdateReq {
+            before: Some(items[2].id.clone()),
+            ..Default::default()
+        },
+        UpdateReq {
+            after: Some(items[3].id.clone()),
+            ..Default::default()
+        },
+        UpdateReq {
+            rank: Some("NaN".into()),
+            ..Default::default()
+        },
+    ] {
+        assert!(engine::update(&mut b, &ctx(13), &[items[2].id.clone()], &req).is_err());
+    }
+    assert_eq!(after.seeds, b.snapshot(None).unwrap().seeds);
+    engine::update(
+        &mut b,
+        &ctx(14),
+        &[items[2].id.clone()],
+        &UpdateReq {
+            rank: Some(String::new()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        b.snapshot(None).unwrap().get(&items[2].id).unwrap().rank,
+        None
+    );
+}

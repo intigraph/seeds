@@ -121,6 +121,8 @@ pub struct Seed {
     pub external_ref: Option<String>,
     /// When the work is due (br's `due_at`): a date or an RFC 3339 instant.
     pub due_at: Option<String>,
+    /// Exact decimal ordering key within a priority; absent sorts last.
+    pub rank: Option<String>,
     /// A time estimate in minutes (br's `estimated_minutes`).
     pub estimated_minutes: Option<u32>,
     /// Who owns the work (br's `owner`, usually an email); distinct from the
@@ -309,6 +311,7 @@ impl Seed {
             &self.acceptance_criteria,
         );
         opt(&mut f, term::external_ref(), &self.external_ref);
+        opt(&mut f, term::rank(), &self.rank);
         if let Some(d) = &self.due_at {
             f.push((term::due_at(), date_or_date_time(d)));
         }
@@ -397,6 +400,7 @@ impl Seed {
                 acceptance_criteria: some("k"),
                 external_ref: some("e"),
                 due_at: some("2026-01-01"),
+                rank: some("1"),
                 estimated_minutes: Some(30),
                 owner: some("o"),
                 status: "closed".into(),
@@ -511,6 +515,7 @@ impl Seed {
             acceptance_criteria: s(term::acceptance_criteria()),
             external_ref: s(term::external_ref()),
             due_at: t(term::due_at()),
+            rank: s(term::rank()),
             estimated_minutes: t(term::estimated_minutes())
                 .as_deref()
                 .and_then(parse_minutes_duration),
@@ -557,6 +562,11 @@ impl Seed {
     /// ([`canonical_time`]).
     pub fn time_problems(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if let Some(rank) = &self.rank {
+            if crate::rank::parse(rank).is_err() {
+                out.push(format!("{}: invalid rank", self.id));
+            }
+        }
         let mut check = |field: &str, v: Option<&str>, date_ok: bool| {
             if let Some(v) = v {
                 if canonical_time(v, date_ok).is_none() {
@@ -718,6 +728,7 @@ impl Seed {
             "acceptance_criteria": self.acceptance_criteria,
             "external_ref": self.external_ref,
             "due_at": self.due_at,
+            "rank": self.rank,
             "estimated_minutes": self.estimated_minutes,
             "owner": self.owner,
             "status": self.status,

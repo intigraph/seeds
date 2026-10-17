@@ -63,3 +63,33 @@ or `--status`; 3 for an unknown id; 4 for a lost claim or a concurrent change;
 5 for replacing existing text without `--force`.
 
 `sd update ID -a owner` is the short form of `--assignee owner`.
+
+## Rank within a priority
+
+`sd update ID --rank 10` assigns an exact decimal ordering key; `--rank ""`
+clears it. `--before OTHER` and `--after OTHER` insert only ID beside a ranked,
+live item of the same priority, without editing neighbors or deadlines. Moves
+accept one ID and cannot change priority or claim work in the same command.
+
+Ranks are canonical decimal strings in JSON (`null` when absent), with up to nine
+fractional digits and magnitude at most 9000000000000000000. No binary floating
+point is used. Tied anchors, exhausted precision and boundary exhaustion refuse
+without renumbering. Explicit rank assignments may tie; ordering then uses due
+date, creation time and ID. Moving is relative to the observed cohort: concurrent
+independent moves may receive the same rank. The moved item's revision is checked
+atomically; neighbors are never rewritten.
+
+`sd ready` defaults to `priority,rank`; `sd list --sort priority,rank` requests the
+same order. Unranked items sort last within their priority, oldest first. Due
+dates remain time limits and are never changed by ranking.
+
+A reviewed bulk migration can use `scripts/migrate-ranks.py`. Its plan is a JSON
+object with `quipu`, `graph` and `rows`; each row names `id`, canonical `rank`
+(or null), and `expected` priority, revision, rank and due_at. The default is a
+read-only rehearsal. Execution requires `--execute --plan-sha256 SHA`; every edit
+uses `--if-revision` and touches only rank. The receipt records each completed
+edit and a revision-guarded rollback plan. A refusal or unknown outcome stops
+without retry or automatic rollback. Inspect `pending_id` before continuing.
+Rehearsal and execution need distinct receipt paths; an existing receipt is
+never overwritten. Do not derive ordering from current deadlines implicitly:
+review an explicit order and its current target preconditions first.

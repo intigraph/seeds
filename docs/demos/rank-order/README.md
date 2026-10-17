@@ -12,10 +12,10 @@ with its actual binary SHA256 recorded. This is author-build evidence, not an
 independent release build. Initial creation-time ties may order IDs differently;
 the explicit ranks determine the demonstrated final order.
 
-Download [output.log](output.log) and [timing.log](timing.log), then replay:
+Download [output.txt](output.txt) and [timing.txt](timing.txt), then replay:
 
 ```bash
-scriptreplay --log-out output.log --log-timing timing.log
+scriptreplay --log-out output.txt --log-timing timing.txt
 ```
 
 The output is also a readable transcript; no inline player is assumed.

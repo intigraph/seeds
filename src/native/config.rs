@@ -248,6 +248,7 @@ pub struct Inputs {
     pub env_token_file: Option<String>,
     pub env_credential_principal: Option<String>,
     pub env_token_fd: Option<String>,
+    pub env_credential_destination: Option<String>,
     /// `SEEDS_MAX_WRITE_BYTES`.
     pub env_max_write_bytes: Option<String>,
     /// `SEEDS_MAX_WRITE_CLAUSES`.
@@ -281,6 +282,12 @@ impl Inputs {
         };
         let principal = selection_var("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL")?;
         let descriptor = selection_var("SEEDS_QUIPU_TOKEN_FD")?;
+        let destination = selection_var("SEEDS_QUIPU_CREDENTIAL_DESTINATION")?;
+        if destination.is_some() && (principal.is_none() || descriptor.is_none()) {
+            return Err(config_error(
+                "credential destination requires explicit selection".into(),
+            ));
+        }
         let selected = principal.is_some() || descriptor.is_some();
         let home = var("HOME").map(PathBuf::from);
         let user_config_dir = var("XDG_CONFIG_HOME")
@@ -301,6 +308,7 @@ impl Inputs {
             env_token_file: (!selected).then(|| var("SEEDS_QUIPU_TOKEN_FILE")).flatten(),
             env_credential_principal: principal,
             env_token_fd: descriptor,
+            env_credential_destination: destination,
             env_max_write_bytes: var("SEEDS_MAX_WRITE_BYTES"),
             env_max_write_clauses: var("SEEDS_MAX_WRITE_CLAUSES"),
             flag_store,
@@ -618,7 +626,9 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         selected_credential: super::credentials::Selected::parse(
             inputs.env_credential_principal.as_deref(),
             inputs.env_token_fd.as_deref(),
-        )?,
+        )?
+        .map(|s| s.bind_destination(inputs.env_credential_destination.as_deref()))
+        .transpose()?,
         token: inputs.env_token.clone(),
         token_file,
         signing,

@@ -20,6 +20,10 @@ use clap::{Args, Parser, Subcommand};
                   a local store at .seeds/seeds.db, created on first write."
 )]
 pub struct Cli {
+    /// Check named-credential destination policy without executing the command or reading a token.
+    #[arg(long, global = true)]
+    pub credential_admission: bool,
+
     /// Output as JSON, in bd's output shape (--robot is br's alias for it)
     #[arg(long, global = true, visible_alias = "robot")]
     pub json: bool,

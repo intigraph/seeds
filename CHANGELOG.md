@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-10-17
+
+### Added
+
+- *(rank)* Order work within priority without changing deadlines (#158) ([e760c8b](https://github.com/scbrown/seeds/commit/e760c8b3fd8f871c0681a97b91b23a3f546233e3))
+- Accept command-scoped credential descriptors (#163) ([5e62930](https://github.com/scbrown/seeds/commit/5e6293036c83ca43c0c57968744cdec7133cad4e))
+- Admit credential providers before native execution (#164) ([fcc6388](https://github.com/scbrown/seeds/commit/fcc63882193495631b8c094a02eaf7018353cb5c))
+
+### Documentation
+
+- Describe current storage and provenance behavior (#162) ([fcc06c4](https://github.com/scbrown/seeds/commit/fcc06c4d1c59b59e3d8254185f20753114c5de25))
+
+### Fixed
+
+- *(docs)* Keep demo artifacts outside ignored log paths (#159) ([f997e13](https://github.com/scbrown/seeds/commit/f997e13e88dafe8bde9b6e6a4dcf23aebab771e6))
+
 ## [0.5.0] - 2026-10-17
 
 ### Added

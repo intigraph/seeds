@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2026-10-19
+
+### Documentation
+
+- Verify the apt signing key before trusting it (#157) ([a7bcf94](https://github.com/scbrown/seeds/commit/a7bcf94a290dc70b1e8c8002827fc6591c1fea7d))
+
 ## [0.6.0] - 2026-10-17
 
 ### Added

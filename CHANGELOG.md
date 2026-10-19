@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-10-17
+
+### Added
+
+- *(rank)* Order work within priority without changing deadlines (#158) ([e760c8b](https://github.com/scbrown/seeds/commit/e760c8b3fd8f871c0681a97b91b23a3f546233e3))
+- Accept command-scoped credential descriptors (#163) ([5e62930](https://github.com/scbrown/seeds/commit/5e6293036c83ca43c0c57968744cdec7133cad4e))
+- Admit credential providers before native execution (#164) ([fcc6388](https://github.com/scbrown/seeds/commit/fcc63882193495631b8c094a02eaf7018353cb5c))
+
+### Documentation
+
+- Describe current storage and provenance behavior (#162) ([fcc06c4](https://github.com/scbrown/seeds/commit/fcc06c4d1c59b59e3d8254185f20753114c5de25))
+
+### Fixed
+
+- *(docs)* Keep demo artifacts outside ignored log paths (#159) ([f997e13](https://github.com/scbrown/seeds/commit/f997e13e88dafe8bde9b6e6a4dcf23aebab771e6))
+
+## [0.5.0] - 2026-10-17
+
+### Added
+
+- Replace specifications with versioned owner acknowledgements (#141) ([525ab6a](https://github.com/scbrown/seeds/commit/525ab6ad6edffc9eba8af1d12539d2179f728a33))
+- *(provenance)* Attribute remote reads to parsed CLI command (#156) ([5340550](https://github.com/scbrown/seeds/commit/5340550041fcde4338ca375d588bf5a4b1e1e95d))
+
+### Documentation
+
+- Install from the signed apt repository (#155) ([c2871d9](https://github.com/scbrown/seeds/commit/c2871d986f997b03b80bd62af3c77a3099bd9d00))
+
+### Fixed
+
+- Bound remote reads and batch epic creation (#153) ([e7f52ef](https://github.com/scbrown/seeds/commit/e7f52ef591a8c4a8878cee221fcfde59a045ad35))
+- *(cli)* Use seed terminology in instructions and help (#154) ([2635e72](https://github.com/scbrown/seeds/commit/2635e72b6b69a6684a673a0beee5d11d9fa8c294))
+
 ## [0.4.2] - 2026-10-16
 
 ### Added

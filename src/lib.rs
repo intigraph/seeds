@@ -37,6 +37,7 @@ pub mod model;
 pub mod output;
 pub mod pendant;
 pub mod quipu_backend;
+pub mod rank;
 pub mod schema;
 pub mod spec;
 pub mod sync;

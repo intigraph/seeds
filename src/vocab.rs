@@ -152,6 +152,10 @@ pub mod term {
     pub fn external_ref() -> String {
         seeds("externalRef")
     }
+    /// Exact decimal text ordering within a priority (tracker mechanics).
+    pub fn rank() -> String {
+        seeds("rank")
+    }
     /// `ical:due`: when the work is due (br's `due_at`), an `xsd:date` or an
     /// `xsd:dateTime`.
     pub fn due_at() -> String {

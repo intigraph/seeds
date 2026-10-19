@@ -159,7 +159,7 @@ pub fn read_headers_from(
             "X-Quipu-Source",
             env("QUIPU_SOURCE")
                 .and_then(|v| task_header(&v))
-                .unwrap_or_else(|| PRODUCER.to_string()),
+                .unwrap_or_else(|| super::command_context::source().to_string()),
         ),
         (
             "X-Quipu-Operation",

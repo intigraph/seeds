@@ -3246,3 +3246,62 @@ fn desire_path_usage_traps_name_commands_that_actually_work() {
     assert_eq!(comments.as_array().unwrap().len(), 1);
     assert_eq!(comments[0]["text"], "Message control");
 }
+
+#[test]
+fn decimal_rank_cli_roundtrip_and_single_item_move() {
+    let s = Sandbox::new("decimal-rank");
+    s.ok(&["init", "--prefix", "rk"]);
+    let ids: Vec<String> = ["left", "right", "move"]
+        .iter()
+        .map(|title| {
+            s.json(&["create", title, "--priority", "1"])["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    let (left_id, right_id, moved_id) = (&ids[0], &ids[1], &ids[2]);
+    s.ok(&["update", left_id, "--rank", "-2"]);
+    s.ok(&["update", right_id, "--rank", "0"]);
+    let left = s.json(&["show", left_id]);
+    let right = s.json(&["show", right_id]);
+    s.ok(&["update", moved_id, "--after", left_id]);
+    let ready = s.json(&["ready", "--sort", "priority,rank"]);
+    let rows = ready.as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [left_id.as_str(), moved_id.as_str(), right_id.as_str()]
+    );
+    assert_eq!(rows[1]["rank"], "-1");
+    assert_eq!(s.json(&["show", left_id]), left);
+    assert_eq!(s.json(&["show", right_id]), right);
+    assert_eq!(
+        s.run(&["update", moved_id, "--rank", "1", "--before", left_id])
+            .status
+            .code(),
+        Some(2)
+    );
+    let listed = s.json(&["list", "--sort", "priority,rank", "--format", "json"]);
+    let listed = listed
+        .as_array()
+        .or_else(|| listed["issues"].as_array())
+        .unwrap();
+    assert_eq!(listed[0]["rank"], "-2");
+    let revision = rows[1]["revision"].as_u64().unwrap();
+    assert_eq!(
+        s.run(&[
+            "update",
+            moved_id,
+            "--rank",
+            "7",
+            "--if-revision",
+            &(revision - 1).to_string()
+        ])
+        .status
+        .code(),
+        Some(4)
+    );
+    assert_eq!(s.json(&["show", moved_id])[0]["rank"], "-1");
+}

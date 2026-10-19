@@ -79,10 +79,16 @@ omit `X-Quipu-Agent`; the executable is not a crew identity. Inherited
 `SHANTY_AGENT` alone remains insufficient outside a harness. Write provenance,
 actors, authentication and signatures retain their existing contract.
 
-Reads separately declare `X-Quipu-Source` (default `seeds`) and
+Reads separately declare `X-Quipu-Source` (default `sd-show`, `sd-list`,
+`sd-ready`, `sd-search`, `sd-stats`, `sd-count`, `sd-create`, `sd-update`,
+`sd-close`, `sd-comments`, `sd-where`, `sd-info`, or `sd-other` from the parsed
+CLI command; library calls outside a CLI scope default to `seeds`) and
 `X-Quipu-Operation` (finite endpoint name: `health`, `graphs`, `query`). Wrappers
 may supply `QUIPU_SOURCE` and `QUIPU_OPERATION`, using the same bounded token
-syntax as task ids. These are diagnostic extension headers, not authenticated
+syntax as task ids. A supplied wrapper source such as `st-anchor` remains the
+outer attribution. No command arguments or item/message text enter the default
+source value. Command scope is restored after a call or failure without changing
+the process environment or write actor. These are diagnostic extension headers, not authenticated
 identity or new metric labels. Servers that do not expose them still cannot
 join a completion to its source operation; header propagation alone does not
 prove that server visibility. No request body or credential is logged.

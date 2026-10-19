@@ -2,10 +2,11 @@
 
 List seeds that are ready to work on: status `open`, no `blocks` dependency on
 a seed that is not closed, and no defer date in the future. Sorted by priority,
-then age.
+then explicit rank, then due date for tied ranks. Unranked items follow ranked
+ones within each priority, oldest first. `--sort priority` retains age ordering.
 
 ```bash
-sd ready --json
+sd ready --sort priority,rank --json
 sd ready --assignee            # mine (the current actor)
 sd ready --unassigned -l parser
 ```

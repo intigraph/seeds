@@ -20,6 +20,10 @@ use clap::{Args, Parser, Subcommand};
                   a local store at .seeds/seeds.db, created on first write."
 )]
 pub struct Cli {
+    /// Check named-credential destination policy without executing the command or reading a token.
+    #[arg(long, global = true)]
+    pub credential_admission: bool,
+
     /// Output as JSON, in bd's output shape (--robot is br's alias for it)
     #[arg(long, global = true, visible_alias = "robot")]
     pub json: bool,
@@ -616,7 +620,7 @@ pub struct ListArgs {
     /// Page size (default 50; 0 = all). The output says when it was cut short.
     #[arg(long)]
     pub limit: Option<usize>,
-    /// priority (default), created, updated, id or title
+    /// priority (default), priority,rank, created, updated, id or title
     #[arg(long)]
     pub sort: Option<String>,
     /// Title contains this (case-insensitive)
@@ -701,7 +705,7 @@ pub struct SearchArgs {
     /// Page size (default 50; 0 = all). The output says when it was cut short.
     #[arg(long)]
     pub limit: Option<usize>,
-    /// priority (default), created, updated, id or title
+    /// priority (default), priority,rank, created, updated, id or title
     #[arg(long)]
     pub sort: Option<String>,
     /// Title contains this (case-insensitive)
@@ -785,7 +789,7 @@ pub struct ReadyArgs {
     /// Only seeds with ANY of these labels (repeatable)
     #[arg(long)]
     pub label_any: Vec<String>,
-    /// hybrid (P0/P1 first by age, then the rest by age), priority (default) or oldest
+    /// priority,rank (default), hybrid (P0/P1 first by age), priority or oldest
     #[arg(long)]
     pub sort: Option<String>,
     /// Also list deferred seeds (status deferred, or a defer date not yet reached)
@@ -1036,6 +1040,18 @@ pub struct UpdateArgs {
     /// New due date: +1d, tomorrow, YYYY-MM-DD or an RFC 3339 instant ("" clears it)
     #[arg(long)]
     pub due: Option<String>,
+    /// Refuse if the single target has changed from this revision
+    #[arg(long)]
+    pub if_revision: Option<u64>,
+    /// Exact decimal rank (up to nine fractional digits); empty clears it
+    #[arg(long, allow_hyphen_values = true, conflicts_with_all = ["before", "after"])]
+    pub rank: Option<String>,
+    /// Move before a ranked seed of the same priority
+    #[arg(long, conflicts_with_all = ["rank", "after"])]
+    pub before: Option<String>,
+    /// Move after a ranked seed of the same priority
+    #[arg(long, conflicts_with_all = ["rank", "before"])]
+    pub after: Option<String>,
     /// New time estimate in minutes
     #[arg(long)]
     pub estimate: Option<String>,

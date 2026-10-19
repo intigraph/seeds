@@ -9,7 +9,9 @@
 mod agent_context;
 pub mod attest;
 pub mod cli;
+mod command_context;
 pub mod config;
+pub mod credentials;
 mod cutover;
 pub mod provenance;
 pub mod remote;
@@ -44,6 +46,19 @@ pub struct Outcome {
 
 /// Run a parsed command against the configuration in the environment.
 pub fn run(cli: &Cli) -> Outcome {
+    let _command_context = command_context::Scope::new(&cli.command);
+    // This must precede even init/merge-driver and the other early exits.
+    // A launcher may ask about a mutating command, but admission never runs it.
+    if cli.credential_admission {
+        let result =
+            config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
+                .and_then(|i| config::resolve(&i))
+                .and_then(|cfg| credential_admission(&cfg));
+        return match result {
+            Ok(value) => ok(true, value.clone(), value.to_string(), vec![]),
+            Err(e) => error_outcome(true, &e, vec![]),
+        };
+    }
     if let Some(f) = cli.format.as_deref() {
         if !matches!(f, "text" | "json" | "csv") {
             let e = SdError::usage(format!(
@@ -294,10 +309,14 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
         ),
         (
             "quipu.token",
-            serde_json::json!(match (&cfg.token, &cfg.token_file) {
-                (Some(_), _) => "(set: SEEDS_QUIPU_TOKEN)",
-                (None, Some(_)) => "(set: token_file)",
-                (None, None) => "(unset)",
+            serde_json::json!(if cfg.selected_credential.is_some() {
+                "(set: selected descriptor)"
+            } else {
+                match (&cfg.token, &cfg.token_file) {
+                    (Some(_), _) => "(set: SEEDS_QUIPU_TOKEN)",
+                    (None, Some(_)) => "(set: token_file)",
+                    (None, None) => "(unset)",
+                }
             }),
         ),
         ("quipu.token_file", path(&cfg.token_file)),
@@ -1225,7 +1244,60 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
 /// The bearer for writes to `url`, if one is configured AND may go there: a
 /// token is never sent to a server URL that came from a project file unless
 /// the user's own config lists its host in `trusted_hosts`.
+fn admit_selected_destination(cfg: &Resolved, url: &str, from_project: bool) -> Result<()> {
+    if cfg.signing.is_some() {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "selected bearer cannot be combined with a signing identity",
+        ));
+    }
+    let valid_url = url::Url::parse(url).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https")
+            && u.has_host()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && !url.chars().any(char::is_whitespace)
+    });
+    if !valid_url
+        || !cfg.token_allowed(url, from_project)
+        || (!remote::secure_enough(url)
+            && !remote::plain_http_allowed(url, &cfg.allow_plain_http_hosts))
+    {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "selected credential destination is not admitted",
+        ));
+    }
+    Ok(())
+}
+
+fn credential_admission(cfg: &Resolved) -> Result<Json> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "named credentials require a remote destination",
+        ));
+    };
+    admit_selected_destination(cfg, url, cfg.location_from_project)?;
+    Ok(
+        json!({"contract": "seeds-credential-admission/v1", "admitted": true,
+              "destination": url, "destination_binding": true}),
+    )
+}
+
 fn token(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<String>> {
+    if let Some(selected) = &cfg.selected_credential {
+        admit_selected_destination(cfg, url, from_project)?;
+        if !selected.permits_destination(url) {
+            return Err(SdError::new(
+                ErrorKind::Config,
+                "selected credential destination changed after admission",
+            ));
+        }
+        return selected.read().map(Some);
+    }
     if !cfg.token_allowed(url, from_project) {
         if cfg.token.is_some() || cfg.token_file.is_some() {
             eprintln!(
@@ -2990,6 +3062,10 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 uncheck_acceptance: a.uncheck_acceptance.clone(),
                 add_acceptance: a.add_acceptance.clone(),
                 due: resolve_due(&a.due, &ctx.now)?,
+                if_revision: a.if_revision,
+                rank: a.rank.clone(),
+                before: a.before.clone(),
+                after: a.after.clone(),
                 estimate: a.estimate.clone(),
                 owner: a.owner.clone(),
                 status: a.status.clone(),
@@ -3866,5 +3942,68 @@ mod vocabulary_check_tests {
         let (r, calls, _) = run(vec![Ok(false)]);
         assert!(r.is_ok());
         assert_eq!(calls, 1);
+    }
+}
+
+#[cfg(test)]
+mod selected_credential_tests {
+    use super::*;
+
+    fn config() -> Resolved {
+        config::resolve(&config::Inputs {
+            cwd: std::env::temp_dir(),
+            env_credential_principal: Some("test-principal".into()),
+            env_token_fd: Some("2147483647".into()),
+            env_token: Some("foreign-inline-fixture".into()),
+            env_token_file: Some("missing-foreign-file".into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn selected_failure_never_uses_inherited_token_or_file() {
+        let mut cfg = config();
+        let e = token(&cfg, "https://example.org", false).unwrap_err();
+        assert!(e.to_string().contains("selected credential unavailable"));
+        cfg.token = None;
+        assert!(token(&cfg, "https://example.org", false).is_err());
+        cfg.token_file = None;
+        assert!(token(&cfg, "https://example.org", false).is_err());
+        cfg.signing = Some(config::Signing {
+            key_file: "unread-signing-key".into(),
+            session: "fixture".into(),
+            introducer: "fixture".into(),
+        });
+        assert!(token(&cfg, "https://example.org", false)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be combined"));
+        cfg.signing = None;
+        cfg.selected_credential = None;
+        cfg.token = Some("shared-next-command-fixture".into());
+        assert_eq!(
+            token(&cfg, "https://example.org", false)
+                .unwrap()
+                .as_deref(),
+            Some("shared-next-command-fixture")
+        );
+    }
+
+    #[test]
+    fn destination_admission_precedes_descriptor_access() {
+        let mut cfg = config();
+        for (url, from_project) in [
+            ("https://untrusted.example.org", true),
+            ("http://remote.example.org", false),
+        ] {
+            let e = token(&cfg, url, from_project).unwrap_err();
+            assert!(e.to_string().contains("destination is not admitted"));
+        }
+        cfg.trusted_hosts.push("untrusted.example.org".into());
+        assert!(token(&cfg, "https://untrusted.example.org", true)
+            .unwrap_err()
+            .to_string()
+            .contains("selected credential unavailable"));
     }
 }

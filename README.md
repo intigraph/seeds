@@ -51,8 +51,8 @@ republishes each checksum-verified release. The package puts `sd` in
 commands stop if it does not match:
 
 ```bash
-curl -fsSL https://scbrown.github.io/apt/key.gpg -o scbrown-stack.gpg
-gpg --show-keys --with-colons scbrown-stack.gpg \
+curl -fsSL https://scbrown.github.io/apt/key.gpg -o scbrown-stack.gpg \
+  && gpg --show-keys --with-colons scbrown-stack.gpg \
   | grep -qx 'fpr:::::::::AB5625C5612F643BF76464DF0DC99924994EC959:' \
   && sudo install -D -m 0644 scbrown-stack.gpg /etc/apt/keyrings/scbrown-stack.gpg \
   && echo "deb [signed-by=/etc/apt/keyrings/scbrown-stack.gpg] https://scbrown.github.io/apt stable main" \

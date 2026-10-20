@@ -76,10 +76,40 @@ jobs:
         with:
           toolchain: "1.98.1"
 
-      - uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5
+      # Same pinned tool versions as release-plz/action b8d6b54. Install
+      # separately so its semver invocation can use locked rustdoc inputs.
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+        with:
+          tool: cargo-semver-checks@0.50.0,release-plz@0.3.169
+
+      - uses: release-plz/git-config@59144859caf016f8b817a2ac9b051578729173c4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run release-plz with locked API comparison
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SEEDS_SEMVER_REAL="$(command -v cargo-semver-checks)"
+          export SEEDS_SEMVER_REAL
+          export SEEDS_SEMVER_REPO="$GITHUB_WORKSPACE"
+          adapter_bin="$(mktemp -d)"
+          trap 'rm -rf "$adapter_bin"' EXIT
+          install -m 0755 scripts/ci/cargo-semver-checks-locked.py "$adapter_bin/cargo-semver-checks"
+          export PATH="$adapter_bin:$PATH"
+          # Preserve the upstream action's two commands and JSON outputs. The
+          # adapter preserves semver's incompatible/error exit distinction.
+          release_pr_output="$(release-plz release-pr --git-token "$GITHUB_TOKEN" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --forge github -o json)"
+          prs="$(jq -c '.prs' <<< "$release_pr_output")"
+          echo "prs=$prs" >> "$GITHUB_OUTPUT"
+          echo "pr=$(jq -c '.prs[0] // {}' <<< "$release_pr_output")" >> "$GITHUB_OUTPUT"
+          echo "prs_created=$(jq '.prs | length > 0' <<< "$release_pr_output")" >> "$GITHUB_OUTPUT"
+          release_output="$(release-plz release --git-token "$GITHUB_TOKEN" --forge github -o json)"
+          echo "releases=$(jq -c '.releases' <<< "$release_output")" >> "$GITHUB_OUTPUT"
+          echo "releases_created=$(jq '.releases | length > 0' <<< "$release_output")" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.target }}

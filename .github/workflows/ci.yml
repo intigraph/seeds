@@ -41,6 +41,8 @@ jobs:
       - run: cargo test --no-default-features
       - name: Publishing guard refuses what it must
         run: bash scripts/ci/crates-publish-guard.sh --selftest
+      - name: Locked semver baseline provenance controls
+        run: python3 -m unittest discover -s scripts/ci/tests -p 'test_locked_semver.py'
       - name: Prove the built binary round-trips create -> dep add -> ready -> close
         run: |
           set -euo pipefail

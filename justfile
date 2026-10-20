@@ -53,6 +53,7 @@ check:
     cargo test --no-default-features
     python3 tests/rank_migration.py
     bash scripts/ci/crates-publish-guard.sh --selftest
+    python3 -m unittest discover -s scripts/ci/tests -p 'test_locked_semver.py'
     mdbook build docs/book
 
 # The local CI equivalent: the native checks plus the wasm job

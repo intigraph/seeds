@@ -203,17 +203,6 @@ pub(super) fn hostname() -> Option<String> {
         .filter(|h| !h.is_empty())
 }
 
-/// Diagnostic metadata cannot assert the agent/session on a signed request.
-/// The receiving protected registry supplies both fields from the verified key.
-pub fn apply_signed(mut req: ureq::Request) -> ureq::Request {
-    for (name, value) in headers() {
-        if !matches!(*name, "X-Quipu-Agent" | "X-Quipu-Session") {
-            req = req.set(name, value);
-        }
-    }
-    req
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

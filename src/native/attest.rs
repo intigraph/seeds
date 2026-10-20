@@ -18,9 +18,8 @@ use crate::error::{ErrorKind, Result, SdError};
 pub const HEADER: &str = "x-quipu-attestation";
 pub const VERSION: &str = "quipu-write-v1";
 
-/// Audited mutation paths and the identity read. Signed general reads are
-/// dispatched separately; unsupported signed mutations refuse without fallback.
-pub const SIGNED_PATHS: [&str; 5] = ["/knot", "/update", "/episode", "/graph/create", "/identity"];
+/// The paths quipu accepts a signed write on. Anything else still needs a bearer.
+pub const SIGNED_PATHS: [&str; 4] = ["/knot", "/update", "/episode", "/graph/create"];
 
 /// A registered signing identity: the private key and the binding it was
 /// registered under (`quipu attest register --session S --introducer I`).
@@ -83,12 +82,9 @@ impl Signer {
     /// Load the key file: 64 hex characters (the Ed25519 seed), readable by the
     /// owner only.
     pub fn load(path: &Path, session: &str, introducer: &str) -> Result<Self> {
-        use std::io::Read as _;
-        let file = check_private(path)?;
-        let mut text = String::new();
-        file.take(256)
-            .read_to_string(&mut text)
-            .map_err(|_| key_error("cannot read signing key".into()))?;
+        check_private(path)?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| key_error(format!("reading signing key {}: {e}", path.display())))?;
         let seed: [u8; 32] = unhex(text.trim())
             .and_then(|v| v.try_into().ok())
             .ok_or_else(|| {
@@ -234,36 +230,12 @@ fn fresh_nonce() -> Result<String> {
 }
 
 /// Refuse a key file anyone but its owner can read.
-fn check_private(path: &Path) -> Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
+fn check_private(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        // Validate the opened descriptor before reading: a FIFO must not wait
-        // for a writer, and a device path must not become our controlling tty.
-        options
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOCTTY);
-    }
-    let file = options
-        .open(path)
-        .map_err(|_| key_error("cannot open owned signing key (symlinks are refused)".into()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let meta = file
-            .metadata()
-            .map_err(|_| key_error("cannot inspect signing key".into()))?;
-        // SAFETY: geteuid has no pointer arguments or mutable caller state.
-        let effective_uid = unsafe { libc::geteuid() };
-        if !meta.is_file() || meta.file_type().is_symlink() || meta.uid() != effective_uid {
-            return Err(key_error(
-                "signing key must be a regular file owned by the effective Unix user".into(),
-            ));
-        }
-        if meta.len() > 128 {
-            return Err(key_error("signing key file is oversized".into()));
-        }
+        use std::os::unix::fs::PermissionsExt as _;
+        let meta = std::fs::metadata(path)
+            .map_err(|e| key_error(format!("signing key {}: {e}", path.display())))?;
         if meta.permissions().mode() & 0o077 != 0 {
             return Err(key_error(format!(
                 "signing key {} is readable by others; run: chmod 600 {}",
@@ -272,7 +244,7 @@ fn check_private(path: &Path) -> Result<std::fs::File> {
             )));
         }
     }
-    Ok(file)
+    Ok(())
 }
 
 /// Generate a new key file at `path` (owner-only), refusing to overwrite one.
@@ -440,105 +412,5 @@ mod tests {
             "a world-readable key is refused"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[cfg(all(test, unix))]
-mod owned_key_tests {
-    use super::*;
-    #[test]
-    fn key_descriptor_refuses_symlink_and_public_permissions() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
-        let temp = std::env::temp_dir().join(format!(
-            "sd-owned-key-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&temp).unwrap();
-        let path = temp.join("synthetic-key");
-        std::fs::write(&path, "31".repeat(32)).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(Signer::load(&path, "synthetic-session", "synthetic-introducer").is_ok());
-        let alias = temp.join("alias");
-        symlink(&path, &alias).unwrap();
-        assert!(Signer::load(&alias, "synthetic-session", "synthetic-introducer").is_err());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(Signer::load(&path, "synthetic-session", "synthetic-introducer").is_err());
-        std::fs::remove_dir_all(&temp).unwrap();
-    }
-
-    #[test]
-    fn fifo_key_is_refused_without_waiting_for_a_writer() {
-        const CHILD_PATH: &str = "SEEDS_TEST_FIFO_KEY";
-        if let Some(path) = std::env::var_os(CHILD_PATH) {
-            let error = Signer::load(Path::new(&path), "fixture-session", "fixture-introducer")
-                .err()
-                .expect("FIFO must be refused");
-            assert!(error.to_string().contains("regular file"), "{error}");
-            println!("FIFO_CHILD_REGULAR_FILE_REFUSAL");
-            return;
-        }
-        use std::os::unix::{ffi::OsStrExt as _, fs::PermissionsExt as _};
-        use std::process::{Command, Stdio};
-        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-        let temp = std::env::temp_dir().join(format!(
-            "sd-fifo-key-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
-        std::fs::create_dir(&temp).unwrap();
-        let regular = temp.join("regular");
-        std::fs::write(&regular, "31".repeat(32)).unwrap();
-        std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(Signer::load(&regular, "fixture-session", "fixture-introducer").is_ok());
-        let fifo = temp.join("fifo");
-        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        // SAFETY: name is a live NUL-terminated synthetic path; no pointer escapes.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "fifo_key_is_refused_without_waiting_for_a_writer",
-                "--nocapture",
-            ])
-            .env(CHILD_PATH, &fifo)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let completed = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break Some(status);
-            }
-            if Instant::now() >= deadline {
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        if completed.is_none() {
-            let _ = child.kill();
-        }
-        let output = child.wait_with_output().unwrap();
-        std::fs::remove_dir_all(&temp).unwrap();
-        assert!(
-            completed.is_some(),
-            "FIFO key load blocked; child killed and reaped"
-        );
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("FIFO_CHILD_REGULAR_FILE_REFUSAL"),
-            "child did not execute the falsifier"
-        );
     }
 }

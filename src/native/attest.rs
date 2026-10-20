@@ -240,7 +240,10 @@ fn check_private(path: &Path) -> Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        // Validate the opened descriptor before reading: a FIFO must not wait
+        // for a writer, and a device path must not become our controlling tty.
+        options
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOCTTY);
     }
     let file = options
         .open(path)

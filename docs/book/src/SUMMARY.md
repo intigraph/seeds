@@ -53,5 +53,6 @@
 - [What is built, and what is not](status.md)
 - [The stack](stack.md)
 - [Docs map](docs-map.md)
+  - [Reproducible release API comparison](semver-baseline.md)
 
 - [Specification replacement and acknowledgement](rescope.md)

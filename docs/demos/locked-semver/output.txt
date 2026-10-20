@@ -1,0 +1,27 @@
+Script started on 2026-10-20 16:45:12-04:00 [COMMAND="[private source-fixture driver redacted; see caption]" <not executed on terminal>]
+Locked rustdoc API comparison, source fixture; Rust1.98.1 / cargo-semver-checks0.50.0
+
+$ compare released0.6.1 self
+    Checking <unknown> v0.6.1 -> v0.6.1 (assume minor change)
+     Checked [   0.430s] 196 checks: 196 pass, 58 skip
+     Summary no semver update required
+exit=0 expected=0
+
+$ compare original167 current
+--- failure constructible_struct_adds_field: struct exhaustively constructible through public API adds field ---
+--- failure enum_variant_added: enum variant added on exhaustive enum ---
+    Checking <unknown> v0.6.1 -> v0.6.1 (assume minor change)
+     Checked [   0.417s] 196 checks: 194 pass, 2 fail, 0 warn, 58 skip
+     Summary semver requires new major version: 2 major and 0 minor checks failed
+exit=100 expected=100
+
+$ compare released0.6.1 private-rank mutant
+--- failure function_missing: pub fn removed or renamed ---
+--- failure module_missing: pub module removed or renamed ---
+    Checking <unknown> v0.6.1 -> v0.6.1 (assume minor change)
+     Checked [   0.410s] 196 checks: 194 pass, 2 fail, 0 warn, 58 skip
+     Summary semver requires new major version: 2 major and 0 minor checks failed
+exit=100 expected=100
+No publisher, release, tag or install executed. JSONs copied from actual locked builds.
+
+Script done on 2026-10-20 16:45:14-04:00 [COMMAND_EXIT_CODE="0"]

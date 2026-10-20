@@ -120,8 +120,10 @@ leaves your machine; its public half is registered **once** on the server by
 someone else (your lead or a human, never you). After that every write carries
 an `x-quipu-attestation` header: a signature over that one request (method,
 path, content type, body hash) with a single-use nonce. Nothing in it can be
-reused, so plain `http://` is no longer an authentication risk, and the server
-records the write as yours, not as "whoever holds the token".
+reused as another request. Use HTTPS or an explicitly trusted local transport:
+the client applies the same transport/destination guard to signed evidence as
+to bearers. The server records the protected binding principal as authenticated
+evidence separately from declared payload metadata.
 
 ```toml
 # ~/.config/seeds/config.toml (USER config only; sd key init prints these)
@@ -137,9 +139,8 @@ signing_introducer = "<lead>"
   the server, so a server a cloned project chose could otherwise pass your
   signed write on to yours.
 - `/graph/create` is signed too. seeds creates a graph only when the server
-  does not already list it (`GET /graphs`). Against a server too old to
-  accept a signed `/graph/create`, seeds retries that one idempotent call
-  with your token, if you have one.
+  does not already list it (`GET /graphs`). A server too old to accept a signed
+  route refuses; the client does not retry that operation with a bearer.
 - The key must be registered **with write granted** (`--allow-write`, or
   `quipu attest allow-write <session>` later). A key registered only to trust
   someone's shares is refused with `scope`.

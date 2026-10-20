@@ -466,4 +466,76 @@ mod owned_key_tests {
         assert!(Signer::load(&path, "synthetic-session", "synthetic-introducer").is_err());
         std::fs::remove_dir_all(&temp).unwrap();
     }
+
+    #[test]
+    fn fifo_key_is_refused_without_waiting_for_a_writer() {
+        const CHILD_PATH: &str = "SEEDS_TEST_FIFO_KEY";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let error = Signer::load(Path::new(&path), "fixture-session", "fixture-introducer")
+                .err()
+                .expect("FIFO must be refused");
+            assert!(error.to_string().contains("regular file"), "{error}");
+            println!("FIFO_CHILD_REGULAR_FILE_REFUSAL");
+            return;
+        }
+        use std::os::unix::{ffi::OsStrExt as _, fs::PermissionsExt as _};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        let temp = std::env::temp_dir().join(format!(
+            "sd-fifo-key-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&temp).unwrap();
+        let regular = temp.join("regular");
+        std::fs::write(&regular, "31".repeat(32)).unwrap();
+        std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Signer::load(&regular, "fixture-session", "fixture-introducer").is_ok());
+        let fifo = temp.join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a live NUL-terminated synthetic path; no pointer escapes.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "fifo_key_is_refused_without_waiting_for_a_writer",
+                "--nocapture",
+            ])
+            .env(CHILD_PATH, &fifo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let completed = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        if completed.is_none() {
+            let _ = child.kill();
+        }
+        let output = child.wait_with_output().unwrap();
+        std::fs::remove_dir_all(&temp).unwrap();
+        assert!(
+            completed.is_some(),
+            "FIFO key load blocked; child killed and reaped"
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("FIFO_CHILD_REGULAR_FILE_REFUSAL"),
+            "child did not execute the falsifier"
+        );
+    }
 }

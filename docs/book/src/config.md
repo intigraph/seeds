@@ -179,3 +179,35 @@ core never reads a file or an environment variable; it is handed a storage
 backend that is already open, which is what keeps it
 [wasm-clean](wasm.md). The precedence rules above are unit-tested there, and
 end to end in `tests/cli.rs`.
+
+
+## Key-derived identity profile
+
+`sd identity --json` sends an existing session-attestation signature to the
+server's protected `/identity` endpoint. Its principal comes from the enrolled
+public-key binding, not `SEEDS_ACTOR`, `USER`, or caller headers. A bearer alone
+cannot answer this command. The client checks the returned key ID and session.
+
+Set `require_identity = true` in the **user** `[quipu]` configuration only after
+installing the matching server and enrolling that user's own signing key using
+the existing introducer. In this profile, writes require a remote signing key;
+a local or unkeyed write refuses before opening a store. An explicit actor flag
+or environment actor must match the authenticated principal. Signed requests do
+not carry caller-declared agent/session headers, and signature refusal never
+falls back to a shared bearer. Unmigrated configurations retain legacy behavior.
+
+Keep the key in an owner-only regular file owned by the current effective Unix
+UID. Symlinks, foreign owners, group/world permissions and oversized files are
+refused through the same descriptor used to read the seed. This protects the
+file boundary only when agents have **different OS users**; mode 0600 under one
+shared user cannot prevent borrowing another agent's key.
+
+Migration order: install compatible binaries; prepare distinct private user
+homes; enroll each user's public binding; verify own-key identity, wrong-key,
+replay and cross-user refusal; configure required identity; then activate server
+key enforcement in the separately reviewed migration window. Preserve the old
+configuration and public binding inventory for rollback. Never copy another
+agent's private key. Do not enable strict server policy while required clients
+still depend on unsigned endpoints. The signed server profile currently covers
+read routes and the four audited mutation routes, without URL query strings;
+unsupported mutations refuse rather than silently using bearer authentication.

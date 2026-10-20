@@ -182,3 +182,76 @@ fn gateway_graph_and_history_reads_recover_with_metadata_validation_intact() {
     assert!(requests[1].starts_with("GET /graphs "));
     assert!(requests[3].starts_with("GET /transactions?since=16&limit=1 "));
 }
+
+#[test]
+fn signed_identity_checks_binding_and_never_sends_declared_actor() {
+    for mutation in [
+        "valid",
+        "wrong_key",
+        "wrong_session",
+        "unkeyed",
+        "wrong_class",
+        "empty_principal",
+    ] {
+        let signer = crate::native::attest::Signer::from_seed(
+            [47; 32],
+            "synthetic-session",
+            "urn:crew:introducer",
+        )
+        .unwrap();
+        let mut value = json!({"authenticated":true,"auth_class":"attested_session",
+            "principal":"synthetic-owner","key_id":signer.key_id(),"session":signer.session});
+        match mutation {
+            "wrong_key" => value["key_id"] = json!("sha256:wrong"),
+            "wrong_session" => value["session"] = json!("other-session"),
+            "unkeyed" => value["authenticated"] = json!(false),
+            "wrong_class" => value["auth_class"] = json!("named_bearer"),
+            "empty_principal" => value["principal"] = json!(""),
+            _ => (),
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            for body in ["ok".to_string(), value.to_string()] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut headers = String::new();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap();
+                    }
+                    headers.push_str(&line);
+                }
+                let mut payload = vec![0; length];
+                reader.read_exact(&mut payload).unwrap();
+                captured.push(headers.to_ascii_lowercase());
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            captured
+        });
+        let backend =
+            RemoteBackend::connect(&base, "urn:fixture", None, Some(signer), &[]).unwrap();
+        let result = backend.authenticated_identity();
+        assert_eq!(result.is_ok(), mutation == "valid", "{mutation}");
+        let requests = worker.join().unwrap();
+        assert!(requests[1].starts_with("post /identity "));
+        for request in requests {
+            assert!(request.contains("x-quipu-attestation:"));
+            assert!(!request.contains("x-quipu-agent:"));
+            assert!(!request.contains("x-quipu-session:"));
+            assert!(!request.contains("authorization:"));
+        }
+    }
+}

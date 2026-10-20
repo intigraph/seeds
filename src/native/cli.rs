@@ -79,6 +79,8 @@ pub struct Cli {
 /// The verbs.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Resolve the actor from an enrolled key and the server protected registry.
+    Identity,
     /// Create a seed
     #[command(
         before_help = "Common: sd create 'Title' -a OWNER -l LABEL --parent EPIC --deps BLOCKER\nBulk: sd create -f tasks.md (one transaction; Parent/Dependencies may use @1, @2, ...)\nUse --parent for epic children; --deps means this item waits for the named blocker."
@@ -1427,6 +1429,7 @@ impl Command {
             Command::Export(_)
             | Command::Completions(_)
             | Command::Version(_)
+            | Command::Identity
             | Command::Where
             | Command::Doctor(_)
             | Command::Key { .. }
@@ -1524,6 +1527,7 @@ impl Command {
             },
             Command::Completions(_) => "completions",
             Command::Version(_) => "version",
+            Command::Identity => "identity",
             Command::Where => "where",
             Command::Info(_) => "info",
             Command::Doctor(_) => "doctor",

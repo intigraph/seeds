@@ -16,7 +16,7 @@
       "source": "docs/book/src/storage-modes.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage-modes.md",
       "summary": "The same work-item model supports embedded storage, a repository-local pendant, a remote server and synchronization; conflicts are reported rather than silently choosing a side.",
-      "source_sha256": "b6fb42d228cc525c9352ac3ea0e04ac16f6b0c12ad87434491b5535b26c8594f",
+      "source_sha256": "08c017df09cfbf57a1ca6e6f0ff0bb428c3e0bac8ea680b469a4a021c6b35aac",
       "type": "Concept"
     },
     {

@@ -332,8 +332,8 @@ pub(crate) fn seed_query_pattern_var(
     seed_query_pattern_var_with_status_defaults(q, subject, true)
 }
 
-/// Omit the default-open branch only after the remote graph's bounded
-/// presence check proved that every item has a regular status.
+/// Explicit query-planning variant. Shared mutable remote graphs must include
+/// defaults: a separate presence check cannot establish a discovery snapshot.
 pub(crate) fn seed_query_pattern_var_with_status_defaults(
     q: &crate::backend::SeedQuery,
     subject: &str,

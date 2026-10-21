@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.3] - 2026-10-21
+
+### CI/CD
+
+- *(release)* Verify the repository pendant only for an admitted publisher (#174) ([5090d08](https://github.com/scbrown/seeds/commit/5090d08b6f8f01a2f53c57d91b340cad5b04326d))
+
+### Perf
+
+- *(query)* Reduce repeated owner status discovery joins (#173) ([ad427d2](https://github.com/scbrown/seeds/commit/ad427d213f13a9c7f1ab167677b44a43922eab6c))
+
 ## [0.6.2] - 2026-10-21
 
 ### Added

@@ -2152,7 +2152,9 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         snap.seeds
             .values()
             .filter(|s| s.status == "deferred" && snap.open_blockers(s).is_empty())
-            .filter(|s| req.include_deferred || lapsed_deferral(s, &ctx.now))
+            // Ephemeral seeds are never ready (br), even once their deferral
+            // lapses; the backend's ready query never returns them either.
+            .filter(|s| req.include_deferred || (lapsed_deferral(s, &ctx.now) && !s.ephemeral))
             .map(|s| s.id.clone()),
     );
     let mut seeds: Vec<Seed> = ids

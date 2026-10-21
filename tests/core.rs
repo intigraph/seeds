@@ -796,11 +796,23 @@ fn a_lapsed_sd_defer_is_ready_again_without_reopening() {
     let parked = mk(&mut b, "parked", 1);
     let blocked = mk(&mut b, "blocked", 1);
     let blocker = mk(&mut b, "blocker", 1);
+    let ephemeral = engine::create(
+        &mut b,
+        &ctx(1),
+        &CreateReq {
+            title: "ephemeral".into(),
+            ephemeral: true,
+            ..CreateReq::default()
+        },
+    )
+    .unwrap()
+    .0
+    .id;
     engine::dep_add(&mut b, &ctx(2), &blocked, &blocker, "blocks").unwrap();
     engine::defer(
         &mut b,
         &ctx(3),
-        &[dated.clone(), blocked.clone()],
+        &[dated.clone(), blocked.clone(), ephemeral.clone()],
         Some("2026-10-01"),
     )
     .unwrap();
@@ -826,6 +838,10 @@ fn a_lapsed_sd_defer_is_ready_again_without_reopening() {
     assert!(
         !after.contains(&blocked),
         "a lapsed deferral that is still blocked stays out"
+    );
+    assert!(
+        !after.contains(&ephemeral),
+        "an ephemeral seed is never ready, even once its deferral lapses"
     );
 
     // Status and date are untouched: the deferral's history is kept.

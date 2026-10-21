@@ -25,6 +25,68 @@ publisher = load("publisher_test", ROOT / "publish_repository_share.py")
 verifier = load("verifier_test", ROOT / "verify-repository-share.py")
 
 
+class PendantAdmission(unittest.TestCase):
+    """aegis-ro425e.16 option B: verify only an ADMITTED publisher; record the state always.
+
+    Dependency-free: CI has no YAML library, so each job block is read by its
+    two-space indentation in release.yml, which is how the workflow is written.
+    """
+
+    @staticmethod
+    def job(name):
+        lines = (ROOT.parent / ".github/workflows/release.yml").read_text().splitlines()
+        start = lines.index("  " + name + ":")
+        block = []
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                break
+            block.append(line)
+        return block
+
+    @staticmethod
+    def value(block, key):
+        hits = [line.split(":", 1)[1].strip() for line in block if line.startswith("    " + key + ":")]
+        if len(hits) != 1:
+            raise AssertionError(f"expected one {key}: in job, found {len(hits)}")
+        return hits[0]
+
+    def run_script(self, block):
+        index = next(i for i, line in enumerate(block) if line.strip() == "run: |")
+        indent = len(block[index + 1]) - len(block[index + 1].lstrip())
+        body = []
+        for line in block[index + 1:]:
+            if line.strip() and len(line) - len(line.lstrip()) < indent:
+                break
+            body.append(line[indent:])
+        return "\n".join(body) + "\n"
+
+    def test_verify_runs_only_when_publication_is_admitted(self):
+        verify = self.job("repository-pendant")
+        condition = self.value(verify, "if")
+        for part in ("needs.release.result == 'success'", "inputs.dry_run != true",
+                     "vars.SEEDS_PENDANT_PUBLICATION == 'enabled'"):
+            self.assertIn(part, condition)
+        # The verification itself is unchanged, not removed or softened.
+        self.assertTrue(any("verify-repository-share.py" in line for line in verify))
+        self.assertEqual(self.value(verify, "timeout-minutes"), "45")
+
+    def test_admission_state_is_recorded_and_unset_means_not_admitted(self):
+        import os
+        import subprocess
+        job = self.job("repository-pendant-admission")
+        verify = self.value(self.job("repository-pendant"), "if")
+        self.assertEqual(self.value(job, "if"), verify.rsplit(" && vars.", 1)[0])
+        self.assertEqual(self.value(job, "permissions"), "{}")
+        script = self.run_script(job)
+        for value, expected in (("", "NOT ADMITTED"), ("disabled", "NOT ADMITTED"), ("enabled", "admitted:")):
+            with tempfile.NamedTemporaryFile() as summary:
+                out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True,
+                                     env={**os.environ, "ADMISSION": value, "GITHUB_STEP_SUMMARY": summary.name}).stdout
+                self.assertIn(expected, out)
+                self.assertIn(expected, Path(summary.name).read_text())
+                self.assertNotIn("verified", out.lower())  # a recorded state is never a pass
+
+
 class Publication(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

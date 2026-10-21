@@ -182,3 +182,115 @@ fn gateway_graph_and_history_reads_recover_with_metadata_validation_intact() {
     assert!(requests[1].starts_with("GET /graphs "));
     assert!(requests[3].starts_with("GET /transactions?since=16&limit=1 "));
 }
+
+#[test]
+fn owner_open_default_probe_is_cached_per_graph_and_skipped_for_closed() {
+    let (base, worker) = server(vec![
+        (200, "ok"),
+        (200, r#"{"boolean":false}"#),
+        (200, r#"{"boolean":true}"#),
+    ]);
+    let backend = RemoteBackend::connect(&base, "urn:board", None, None, &[]).unwrap();
+    let mut query = crate::backend::SeedQuery {
+        assignee: Some("reader".into()),
+        statuses: Some(["closed".into()].into()),
+        ..Default::default()
+    };
+    assert!(backend
+        .owner_seed_query_pattern("urn:board", &query)
+        .unwrap()
+        .is_some());
+    query.statuses = None;
+    assert!(backend
+        .owner_seed_query_pattern("urn:board", &query)
+        .unwrap()
+        .is_some());
+    query.statuses = Some(["open".into()].into());
+    for attempt in 0..3 {
+        let pattern = backend
+            .owner_seed_query_pattern("urn:board", &query)
+            .unwrap()
+            .unwrap();
+        if attempt == 0 {
+            eprintln!(
+                "OWNER_QUERY_PATTERN {}",
+                serde_json::to_string(&pattern).unwrap()
+            );
+        }
+        assert!(!pattern.contains("FILTER NOT EXISTS"));
+    }
+    let other = backend
+        .owner_seed_query_pattern("urn:other", &query)
+        .unwrap()
+        .unwrap();
+    assert!(other.contains("FILTER NOT EXISTS"));
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 3, "health plus one probe per graph");
+    assert!(requests[1].contains("OPTIONAL"));
+    assert!(requests[1].contains("urn:board"));
+    assert!(requests[2].contains("urn:other"));
+}
+
+#[test]
+fn invalid_status_presence_answer_is_not_cached_as_absence() {
+    let (base, worker) = server(vec![
+        (200, "ok"),
+        (200, r#"{"boolean":"false"}"#),
+        (200, r#"{"boolean":true}"#),
+    ]);
+    let backend = RemoteBackend::connect(&base, "urn:board", None, None, &[]).unwrap();
+    let query = crate::backend::SeedQuery {
+        assignee: Some("reader".into()),
+        statuses: Some(["open".into()].into()),
+        ..Default::default()
+    };
+    assert!(backend
+        .owner_seed_query_pattern("urn:board", &query)
+        .is_err());
+    assert!(backend
+        .owner_seed_query_pattern("urn:board", &query)
+        .unwrap()
+        .unwrap()
+        .contains("FILTER NOT EXISTS"));
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1], requests[2]);
+}
+
+#[test]
+fn owned_write_invalidates_status_default_observation() {
+    let (base, worker) = server(vec![
+        (200, "ok"),
+        (200, r#"{"boolean":false}"#),
+        (200, "updated"),
+        (200, r#"{"boolean":true}"#),
+    ]);
+    let backend = RemoteBackend::connect(&base, "urn:board", None, None, &[]).unwrap();
+    let query = crate::backend::SeedQuery {
+        assignee: Some("reader".into()),
+        statuses: Some(["open".into()].into()),
+        ..Default::default()
+    };
+    assert!(!backend
+        .owner_seed_query_pattern("urn:board", &query)
+        .unwrap()
+        .unwrap()
+        .contains("FILTER NOT EXISTS"));
+    backend
+        .post(
+            "/update",
+            "application/sparql-update",
+            "private fixture write",
+            true,
+        )
+        .unwrap();
+    assert!(backend
+        .owner_seed_query_pattern("urn:board", &query)
+        .unwrap()
+        .unwrap()
+        .contains("FILTER NOT EXISTS"));
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[2].starts_with("POST /update"));
+    assert_eq!(requests[1], requests[3]);
+}

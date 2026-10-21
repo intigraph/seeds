@@ -46,6 +46,7 @@ use crate::vocab::{self, term};
 pub mod acquisition;
 #[cfg(test)]
 mod gateway_tests;
+mod owner_query;
 mod summary;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
@@ -143,6 +144,8 @@ pub struct RemoteBackend {
     /// before the ASK existed, so a stale `true` costs an empty read and never
     /// a missed or phantom seed. "Empty" is never remembered (aegis-r7k).
     ephemeral_seen: std::cell::Cell<bool>,
+    /// Status-default existence observations, scoped to this backend and graph.
+    status_defaults: std::cell::RefCell<BTreeMap<String, bool>>,
     /// Refuse, unsent, a write request larger than this many bytes.
     /// Scoped to one full-search call; never a cached readiness observation.
     require_substring: std::cell::Cell<bool>,
@@ -284,6 +287,7 @@ impl RemoteBackend {
             graph_registered: false,
             ephemeral_registered: false,
             ephemeral_seen: std::cell::Cell::new(false),
+            status_defaults: std::cell::RefCell::new(BTreeMap::new()),
             require_substring: std::cell::Cell::new(false),
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
@@ -342,6 +346,11 @@ impl RemoteBackend {
         body: &str,
         auth: bool,
     ) -> std::result::Result<String, (bool, SdError)> {
+        if auth {
+            // Every owned mutation, including an uncertain outcome, invalidates
+            // the process-local negative status-default observation.
+            self.status_defaults.borrow_mut().clear();
+        }
         let url = format!("{}{path}", self.base);
         let request = self.agent.post(&url);
         let request = if path == "/query" && !auth {
@@ -1409,11 +1418,14 @@ impl Backend for RemoteBackend {
     /// graph, then read by subject. An unconstrained query is a whole
     /// snapshot.
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {
-        let Some(pattern) = vocab::seed_query_pattern(q) else {
+        if vocab::seed_query_pattern(q).is_none() {
             return self.snapshot(None);
-        };
+        }
         let mut subjects = BTreeSet::new();
         for graph in self.both_graphs() {
+            let pattern = self
+                .owner_seed_query_pattern(&graph, q)?
+                .expect("constrained seed query retains a pattern");
             subjects.extend(self.subjects_where(&graph, &pattern, None)?);
         }
         self.snapshot_of(&subjects)

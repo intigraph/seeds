@@ -180,6 +180,15 @@ succeeds and says the response was lost; if not, it exits **8
 (INDETERMINATE)** and names the ids to check, because the write may still
 land and a retried `create` would mint a second seed.
 
+Owner-filtered lists start from an open-family status index when one is
+selected; closed and unconstrained owner lists retain the owner index first.
+For default-open matching, the remote backend checks once per graph and process
+whether every item has a canonical status. It omits the missing-status branch
+only after a valid negative answer. Missing or irregular values still match
+open when present; foreign status strings conservatively keep the branch on,
+with exact membership decided by decoding. A failed check fails the read.
+Owned writes clear this observation. A new CLI invocation always checks afresh.
+
 **Provenance.** quipu records the caller's declared `actor` and `source` on
 `/update` transactions; these declarations are separate from the authenticated
 principal. An omitted actor is unknown, and an omitted source defaults to

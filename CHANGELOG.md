@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.5] - 2026-10-21
+
+### Documentation
+
+- Clarify Bobbin and Yupana stack descriptions (#179) ([aead072](https://github.com/scbrown/seeds/commit/aead0722da829f91ef5f99c0bf2ad2ef410d2d23))
+
 ## [0.6.4] - 2026-10-21
 
 ### Miscellaneous

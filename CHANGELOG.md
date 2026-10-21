@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.4] - 2026-10-21
+
+### Miscellaneous
+
+- Relicense under Apache-2.0 (#178) ([bd03a34](https://github.com/scbrown/seeds/commit/bd03a343ad63e25e8492ffdd994c45f27bda9b07))
+
 ## [0.6.3] - 2026-10-21
 
 ### CI/CD

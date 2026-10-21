@@ -33,9 +33,14 @@ class Publication(unittest.TestCase):
         self.stage = self.root / "stage"
         self.stage.mkdir()
         recipe = {"model": "model.onnx", "model_sha256": "a" * 64, "tokenizer_sha256": "b" * 64, "dimension": 384}
-        (self.stage / "manifest.json").write_text(json.dumps({"embedding": recipe}))
-        for name in ("export.nt", "manifest.ttl", "shapes.ttl", "queries.ttl"):
+        for name in ("export.nt", "manifest.ttl", "shapes.ttl", "queries.ttl", "alignments.ttl"):
             (self.stage / name).write_text("# synthetic fixture only\n")
+        self.manifest = {
+            "embedding": recipe,
+            "files": {"alignments": "alignments.ttl"},
+            "alignments_hash": "sha256:" + publisher.digest(self.stage / "alignments.ttl"),
+        }
+        (self.stage / "manifest.json").write_text(json.dumps(self.manifest))
         self.archive = self.root / "seeds-seeds-ai-v1.2.3-repository.pendant.tar.gz"
         self.revision = "1" * 40
 
@@ -70,8 +75,21 @@ class Publication(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required nonempty"):
             publisher.check_share(self.stage)
         (self.stage / "queries.ttl").write_text("# query")
-        (self.stage / "manifest.json").write_text("{}")
+        (self.stage / "manifest.json").write_text(json.dumps({**self.manifest, "embedding": None}))
         with self.assertRaisesRegex(ValueError, "provider-byte"):
+            publisher.check_share(self.stage)
+
+    def test_alignment_carrier_must_be_declared_sealed_and_present(self):
+        publisher.check_share(self.stage)
+        undeclared = {k: v for k, v in self.manifest.items() if k not in ("files", "alignments_hash")}
+        mis_hashed = {**self.manifest, "alignments_hash": "sha256:" + "0" * 64}
+        for label, manifest in [("undeclared", undeclared), ("hash mismatch", mis_hashed)]:
+            (self.stage / "manifest.json").write_text(json.dumps(manifest))
+            with self.subTest(label), self.assertRaisesRegex(ValueError, "alignment carrier"):
+                publisher.check_share(self.stage)
+        (self.stage / "manifest.json").write_text(json.dumps(self.manifest))
+        (self.stage / "alignments.ttl").unlink()
+        with self.assertRaisesRegex(ValueError, "alignment carrier"):
             publisher.check_share(self.stage)
 
     def test_text_line_span_and_private_members_refuse(self):

@@ -161,7 +161,7 @@ def alignment_carrier(source):
     ):
         raise ValueError("unreviewed or corrupt alignment carrier")
     # Only declarations/comments are permitted in the explicit-empty profile.
-    # The native data validator below still parses the complete Turtle input.
+    # `quipu share --alignments` still parses the complete Turtle input.
     for line in data.decode().splitlines():
         if (
             line.strip()
@@ -171,6 +171,25 @@ def alignment_carrier(source):
         ):
             raise ValueError("empty alignment profile contains mapping data")
     return data.decode()
+
+
+def sealed_carrier(stage, expected):
+    """The engine must have sealed the exact reviewed carrier bytes as a member.
+
+    An engine that predates the member, or drops or alters it, refuses here:
+    a missing member, different bytes or an undeclared hash.
+    """
+    stage = Path(stage)
+    member = stage / "alignments.ttl"
+    manifest = json.loads((stage / "manifest.json").read_text())
+    files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    if (
+        not member.is_file()
+        or member.read_bytes() != expected
+        or files.get("alignments") != "alignments.ttl"
+        or manifest.get("alignments_hash") != "sha256:" + hashlib.sha256(expected).hexdigest()
+    ):
+        raise ValueError("engine did not seal the reviewed alignment carrier")
 
 
 def build(revision, source, tooling, binary, bobbin, output):
@@ -271,18 +290,20 @@ batch_size = 64
     )
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
+    carrier = alignment_carrier(source).encode()
     records = json.loads(registry_path.read_text())["records"]
     labels = indexed_labels(binary, database, sorted({record["subject"] for record in records}))
-    knowledge.write_text(
-        generator.render(source, revision, lambda subject: labels.get(subject)) + "\n" + alignment_carrier(source)
-    )
+    knowledge.write_text(generator.render(source, revision, lambda subject: labels.get(subject)))
     run([binary, "validate", "--shapes", constraints, "--data", knowledge])
     run([binary, "shapes", "load", "repository-knowledge", constraints, "--db", database])
     run([binary, "knot", knowledge, "--db", database])
     register_queries(binary, database, json.loads(queries.read_text()))
     query = (source / "queries/repository-share-seeds.rq").read_text()
     stage = private / "share"
-    run([binary, "share", "--construct", query, "--turtle", "--output", stage, "--db", database])
+    run(
+        [binary, "share", "--construct", query, "--turtle", "--alignments", alignments, "--output", stage, "--db", database]
+    )
+    sealed_carrier(stage, carrier)
     if not (stage / "shapes.ttl").is_file() or (stage / "shapes.ttl").stat().st_size == 0:
         raise ValueError("repository share omitted receiver shapes")
     receiver = private / "receiver.db"

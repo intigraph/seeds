@@ -87,6 +87,28 @@ class AlignmentCarrier(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "mapping data"):
                 builder.alignment_carrier(root)
 
+    def test_engine_must_seal_the_exact_reviewed_carrier(self):
+        import hashlib
+
+        expected = (ROOT / "docs/knowledge/alignments.ttl").read_bytes()
+        sealed = {"files": {"alignments": "alignments.ttl"}, "alignments_hash": "sha256:" + hashlib.sha256(expected).hexdigest()}
+        with tempfile.TemporaryDirectory() as folder:
+            stage = Path(folder)
+            (stage / "alignments.ttl").write_bytes(expected)
+            (stage / "manifest.json").write_text(json.dumps(sealed))
+            builder.sealed_carrier(stage, expected)
+            # An engine that predates the member writes neither field nor file.
+            (stage / "manifest.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "did not seal"):
+                builder.sealed_carrier(stage, expected)
+            (stage / "manifest.json").write_text(json.dumps(sealed))
+            (stage / "alignments.ttl").write_bytes(expected + b"# altered\n")
+            with self.assertRaisesRegex(ValueError, "did not seal"):
+                builder.sealed_carrier(stage, expected)
+            (stage / "alignments.ttl").unlink()
+            with self.assertRaisesRegex(ValueError, "did not seal"):
+                builder.sealed_carrier(stage, expected)
+
 
 class Knowledge(unittest.TestCase):
     def setUp(self):

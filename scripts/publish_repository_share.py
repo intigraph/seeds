@@ -15,7 +15,8 @@ import tarfile
 import tempfile
 
 REPOSITORY = "scbrown/seeds"
-MEMBERS = {"export.nt", "export.ttl", "payload.nq", "manifest.json", "manifest.ttl", "shapes.ttl", "queries.ttl"}
+ALIGNMENTS = "alignments.ttl"
+MEMBERS = {"export.nt", "export.ttl", "payload.nq", "manifest.json", "manifest.ttl", "shapes.ttl", "queries.ttl", ALIGNMENTS}
 
 
 def command(args):
@@ -37,7 +38,18 @@ def check_share(stage):
     for name in ("export.nt", "manifest.json", "manifest.ttl", "shapes.ttl", "queries.ttl"):
         if not (stage / name).is_file() or not (stage / name).stat().st_size:
             raise ValueError("required nonempty share member missing: " + name)
-    recipe = json.loads((stage / "manifest.json").read_text()).get("embedding")
+    manifest = json.loads((stage / "manifest.json").read_text())
+    # The carrier is a sealed engine member, not text appended to graph data: the
+    # manifest must declare it and its hash, which also enters share_id.
+    declared = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    carrier = stage / ALIGNMENTS
+    if (
+        not carrier.is_file()
+        or declared.get("alignments") != ALIGNMENTS
+        or manifest.get("alignments_hash") != "sha256:" + digest(carrier)
+    ):
+        raise ValueError("share omitted or mis-sealed the alignment carrier")
+    recipe = manifest.get("embedding")
     if (
         not isinstance(recipe, dict)
         or not isinstance(recipe.get("model"), str)

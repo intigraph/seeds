@@ -36,11 +36,16 @@ not establish public asset availability, live loading or service acceptance.
 
 ## Current delivery boundary
 
-This source profile validates the explicit empty alignment carrier, but the
-current native share transport has no sealed `alignments.ttl` member. The
-repository release pendant is not content-complete until the native engine
-supports that member and its verification contract is wired here. An empty
-source file or successful fixture is not proof that the archive carries it.
-Do not enable this repository's trusted publication while that requirement
-is unresolved. Provider-byte embedding recipes and real release assets also
-require independent native-engine and publication acceptance.
+The builder passes the reviewed empty carrier to `quipu share --alignments`,
+which seals it as the `alignments.ttl` member. The manifest declares it in
+`files.alignments` and `alignments_hash`, and both enter `share_id`. The builder
+refuses unless the staged member's bytes equal the reviewed source. The
+publisher and the hosted verifier refuse an archive whose member is missing,
+undeclared or mis-hashed. The carrier is never appended to graph data.
+
+That contract needs a Quipu engine with the sealed alignment member
+(scbrown/quipu#691). An older pinned engine has no such member, so the build
+refuses rather than publishing without it. Do not enable this repository's
+trusted publication until the trusted host pins an engine that includes it.
+Provider-byte embedding recipes and real release assets also require
+independent native-engine and publication acceptance.

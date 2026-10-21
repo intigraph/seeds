@@ -15,6 +15,34 @@ QUERY = (Path(__file__).resolve().parents[1] / "queries/repository-share-seeds.r
 
 
 class RepositoryQuery(unittest.TestCase):
+    def test_public_receiver_catalogue_survives_without_private_policy(self):
+        source = Graph()
+        public = Namespace("https://quipu.dev/knowledge/publication-policy/")
+        expected = {(DOC["README.md"], A.filePath, Literal("README.md"))}
+        for name in ("access-tokens", "private-keys", "user-directories", "demo-private-domain"):
+            rule = public[name]
+            expected.update({
+                (rule, RDF.type, A.InternalIdentifierPattern),
+                (rule, RDFS.label, Literal(name)),
+                (rule, A.regex, Literal("fixture-" + name)),
+                (rule, A.enforcementTier, Literal("block")),
+            })
+        for triple in expected:
+            source.add(triple)
+        private = URIRef("urn:fixture:private-policy")
+        for predicate, value in ((RDF.type, A.InternalIdentifierPattern),
+                                 (RDFS.label, Literal("private policy")),
+                                 (A.regex, Literal("private-pattern")),
+                                 (A.enforcementTier, Literal("block"))):
+            source.add((private, predicate, value))
+        # The public namespace is not permission to export arbitrary fields.
+        source.add((public["access-tokens"], A.content, Literal("not public")))
+        source.add((URIRef("https://quipu.dev/knowledge/unrelated"), RDFS.label, Literal("other")))
+        result = set(source.query(QUERY).graph)
+        self.assertEqual(result, expected)
+        self.assertEqual(len({s for s, p, o in result
+                              if p == RDF.type and o == A.InternalIdentifierPattern}), 4)
+
     def test_pointer_corpus_and_private_boundaries(self):
         source = Graph()
         doc, chunk = DOC["README.md"], URIRef(str(A) + "chunk/seeds/README.md#C1")

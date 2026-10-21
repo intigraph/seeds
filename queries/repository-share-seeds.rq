@@ -37,6 +37,13 @@ WHERE {
   }
   UNION
   {
+    # Carry the public receiver catalogue, never the producer's private rules.
+    ?s ?p ?o .
+    FILTER(STRSTARTS(STR(?s), "https://quipu.dev/knowledge/publication-policy/"))
+    VALUES ?p { rdf:type rdfs:label aegis:regex aegis:enforcementTier }
+  }
+  UNION
+  {
     ?s ?p ?o .
     { ?s a sssom:MappingSet } UNION { ?s a owl:Axiom }
     VALUES ?p {

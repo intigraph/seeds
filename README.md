@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"/></a>
   <a href="https://github.com/scbrown/seeds/actions/workflows/ci.yml"><img src="https://github.com/scbrown/seeds/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/scbrown/caboodle"><img src="https://img.shields.io/badge/stack-quipu-8B5E3C.svg" alt="Part of the caboodle stack"/></a>
 </p>
@@ -244,7 +244,7 @@ just ci      # what CI runs
 
 ## 📜 License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
 
 <p align="center">
   <img src="assets/footer.svg" width="100%" alt="Animated footer: a cord runs across with colored seeds sliding along it and small knots at even intervals"/>

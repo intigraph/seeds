@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.2] - 2026-10-21
+
+### Added
+
+- *(pendant)* Repository-owned Seeds pendant with sealed alignment carrier (#171) ([f362d85](https://github.com/scbrown/seeds/commit/f362d85f10b13994df6ba89a8d18881dbe072316))
+
+### Fixed
+
+- *(release)* Compare API rustdoc with committed dependency locks (#168) ([b6d27c3](https://github.com/scbrown/seeds/commit/b6d27c3e945ea55d004a296f65f6479b343e3738))
+- *(ready)* A lapsed deferral is ready again without reopening it (#172) ([db703a5](https://github.com/scbrown/seeds/commit/db703a579c74c2f1c82ba30f297242a542a76528))
+
 ## [0.6.1] - 2026-10-19
 
 ### Documentation

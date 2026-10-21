@@ -430,10 +430,35 @@ jobs:
           expected-version: ${{ steps.want.outputs.version }}
           dry-run: ${{ inputs.dry_run == true && 'true' || 'false' }}
 
+  # The pendant is produced by a trusted host publisher that must be ADMITTED for
+  # seeds before this verification can pass (aegis-ro425e.16; sattler ruling
+  # 2026-10-21, option B). Admission is the reviewed repository variable
+  # SEEDS_PENDANT_PUBLICATION=enabled; unset is "not admitted". The state is
+  # recorded on every release, never reported as a passed verification.
+  repository-pendant-admission:
+    name: Record repository pendant admission
+    needs: [release-plz, release]
+    if: always() && needs.release.result == 'success' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    env:
+      ADMISSION: ${{ vars.SEEDS_PENDANT_PUBLICATION }}
+    steps:
+      - name: Record admission state
+        run: |
+          if [ "$ADMISSION" = enabled ]; then
+            state="admitted: the trusted host publisher must deliver and Verify repository pendant runs"
+          else
+            state="NOT ADMITTED: no trusted publisher is enabled for seeds, so no pendant is expected and Verify repository pendant is skipped by its condition (not a pass; aegis-ro425e.16)"
+          fi
+          echo "repository pendant publication: $state"
+          echo "Repository pendant publication: $state" >> "$GITHUB_STEP_SUMMARY"
+
   repository-pendant:
     name: Verify repository pendant
     needs: [release-plz, release]
-    if: always() && needs.release.result == 'success' && inputs.dry_run != true
+    if: always() && needs.release.result == 'success' && inputs.dry_run != true && vars.SEEDS_PENDANT_PUBLICATION == 'enabled'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

@@ -25,6 +25,39 @@ publisher = load("publisher_test", ROOT / "publish_repository_share.py")
 verifier = load("verifier_test", ROOT / "verify-repository-share.py")
 
 
+class PendantAdmission(unittest.TestCase):
+    """aegis-ro425e.16 option B: verify only an ADMITTED publisher; record the state always."""
+
+    def jobs(self):
+        import yaml
+        return yaml.safe_load((ROOT.parent / ".github/workflows/release.yml").read_text())["jobs"]
+
+    def test_verify_runs_only_when_publication_is_admitted(self):
+        verify = self.jobs()["repository-pendant"]
+        condition = verify["if"]
+        for part in ("needs.release.result == 'success'", "inputs.dry_run != true",
+                     "vars.SEEDS_PENDANT_PUBLICATION == 'enabled'"):
+            self.assertIn(part, condition)
+        # The verification itself is unchanged, not removed or softened.
+        self.assertTrue(any("verify-repository-share.py" in step.get("run", "") for step in verify["steps"]))
+        self.assertEqual(verify["timeout-minutes"], 45)
+
+    def test_admission_state_is_recorded_and_unset_means_not_admitted(self):
+        import os
+        import subprocess
+        job = self.jobs()["repository-pendant-admission"]
+        self.assertEqual(job["if"], self.jobs()["repository-pendant"]["if"].rsplit(" && vars.", 1)[0])
+        self.assertEqual(job["permissions"], {})
+        script = job["steps"][0]["run"]
+        for value, expected in (("", "NOT ADMITTED"), ("disabled", "NOT ADMITTED"), ("enabled", "admitted:")):
+            with tempfile.NamedTemporaryFile() as summary:
+                out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True,
+                                     env={**os.environ, "ADMISSION": value, "GITHUB_STEP_SUMMARY": summary.name}).stdout
+                self.assertIn(expected, out)
+                self.assertIn(expected, Path(summary.name).read_text())
+                self.assertNotIn("verified", out.lower())  # a recorded state is never a pass
+
+
 class Publication(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

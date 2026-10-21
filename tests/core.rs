@@ -788,6 +788,61 @@ fn deferred_seeds_are_not_ready_until_the_date() {
 }
 
 #[test]
+fn a_lapsed_sd_defer_is_ready_again_without_reopening() {
+    // `sd defer` sets status `deferred`; nothing ever sets it back to open, so
+    // before this a lapsed deferral hid its work from every reader of `ready`.
+    let mut b = backend();
+    let dated = mk(&mut b, "dated", 1);
+    let parked = mk(&mut b, "parked", 1);
+    let blocked = mk(&mut b, "blocked", 1);
+    let blocker = mk(&mut b, "blocker", 1);
+    engine::dep_add(&mut b, &ctx(2), &blocked, &blocker, "blocks").unwrap();
+    engine::defer(
+        &mut b,
+        &ctx(3),
+        &[dated.clone(), blocked.clone()],
+        Some("2026-10-01"),
+    )
+    .unwrap();
+    engine::defer(&mut b, &ctx(3), std::slice::from_ref(&parked), None).unwrap();
+    let before = ready_ids(&b, 4);
+    assert!(!before.contains(&dated) && !before.contains(&parked) && !before.contains(&blocked));
+
+    let later = Ctx {
+        now: "2026-10-01T09:00:00Z".into(),
+        ..ctx(0)
+    };
+    let after: Vec<String> = engine::ready(&b, &later, &ReadyReq::default(), None)
+        .unwrap()
+        .issues
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+    assert!(after.contains(&dated), "a lapsed deferral is ready again");
+    assert!(
+        !after.contains(&parked),
+        "a deferral with no date is parked"
+    );
+    assert!(
+        !after.contains(&blocked),
+        "a lapsed deferral that is still blocked stays out"
+    );
+
+    // Status and date are untouched: the deferral's history is kept.
+    let snap = b.snapshot(None).unwrap();
+    let s = snap.get(&dated).unwrap();
+    assert_eq!(
+        (s.status.as_str(), s.defer_until.as_deref()),
+        ("deferred", Some("2026-10-01"))
+    );
+    // And the two ready definitions still agree.
+    assert_eq!(
+        sorted(after),
+        sorted(engine::ready_by_model(&snap, &later.now))
+    );
+}
+
+#[test]
 fn ready_is_not_truncated_by_default_and_says_so_when_limited() {
     let mut b = backend();
     for i in 0..7 {

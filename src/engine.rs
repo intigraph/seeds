@@ -2110,9 +2110,11 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         if let Some(id) = ready_ids.iter().find(|id| !snap.seeds.contains_key(*id)) {
             return Err(missed_at_canonical_iri(b, id)?);
         }
-        if req.include_deferred {
+        {
             // Every deferred seed, and what it is blocked on, so the
-            // unblocked ones are found below exactly as in a snapshot.
+            // unblocked ones are found below exactly as in a snapshot. Read
+            // even without --include-deferred: a deferral whose date has
+            // passed is ready again, and nothing else returns it to open.
             let deferred = SeedQuery {
                 statuses: Some(["deferred".to_string()].into()),
                 ..query.clone()
@@ -2143,16 +2145,16 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         None => None,
     };
     let mut ids = ready_ids;
-    if req.include_deferred {
-        // Status `deferred` is not open, so the backend's ready query never
-        // returns it; the unblocked ones are added here.
-        ids.extend(
-            snap.seeds
-                .values()
-                .filter(|s| s.status == "deferred" && snap.open_blockers(s).is_empty())
-                .map(|s| s.id.clone()),
-        );
-    }
+    // Status `deferred` is not open, so the backend's ready query never
+    // returns it; the unblocked ones are added here. Without
+    // --include-deferred only those whose date has passed are ready.
+    ids.extend(
+        snap.seeds
+            .values()
+            .filter(|s| s.status == "deferred" && snap.open_blockers(s).is_empty())
+            .filter(|s| req.include_deferred || lapsed_deferral(s, &ctx.now))
+            .map(|s| s.id.clone()),
+    );
     let mut seeds: Vec<Seed> = ids
         .iter()
         .filter_map(|id| snap.seeds.get(id))
@@ -2236,7 +2238,9 @@ fn descendants(snap: &Snapshot, root: &str) -> BTreeSet<String> {
 pub fn ready_by_model(snap: &Snapshot, now: &str) -> Vec<String> {
     snap.seeds
         .values()
-        .filter(|s| s.status == "open" && snap.open_blockers(s).is_empty())
+        .filter(|s| {
+            (s.status == "open" || lapsed_deferral(s, now)) && snap.open_blockers(s).is_empty()
+        })
         .filter(|s| !is_deferred(s, now))
         // Ephemeral seeds are never ready (br); the SPARQL definition gets
         // this by reading only the project graph.
@@ -2250,6 +2254,13 @@ fn is_deferred(s: &Seed, now: &str) -> bool {
     // defer ("2026-10-01") sorts before that day's instants, so it releases at
     // the start of the day.
     s.defer_until.as_deref().is_some_and(|d| d > now)
+}
+
+/// A `deferred` seed whose date has passed. It is ready again without anyone
+/// reopening it; the status and date stay as they were, so the deferral's
+/// history is kept. A deferral with no date is parked and never lapses.
+fn lapsed_deferral(s: &Seed, now: &str) -> bool {
+    s.status == "deferred" && s.defer_until.as_deref().is_some_and(|d| d <= now)
 }
 
 /// `sd count`.

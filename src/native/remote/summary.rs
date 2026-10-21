@@ -307,12 +307,18 @@ impl RemoteBackend {
             // filter still decide membership, defaults, ordering and totals.
             format!("?s <{predicate}> ?text_candidate . FILTER(isLiteral(?text_candidate) && sameTerm(?text_candidate, STR(?text_candidate)) && CONTAINS(LCASE(STR(?text_candidate)), {}))", literal(&text.to_lowercase()))
         } else {
-            vocab::seed_query_pattern(&q).unwrap_or_else(|| format!("?s a <{}>", term::work_item()))
+            String::new()
         };
         let mut subjects = BTreeSet::new();
         if req.filter.ids.is_empty() {
             for graph in self.both_graphs() {
-                subjects.extend(self.subjects_where(&graph, &pattern, None)?);
+                let scoped = if pattern.is_empty() {
+                    self.owner_seed_query_pattern(&graph, &q)?
+                        .unwrap_or_else(|| format!("?s a <{}>", term::work_item()))
+                } else {
+                    pattern.clone()
+                };
+                subjects.extend(self.subjects_where(&graph, &scoped, None)?);
             }
         } else {
             subjects.extend(req.filter.ids.iter().map(|id| vocab::item_iri(id)));

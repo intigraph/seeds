@@ -180,6 +180,14 @@ succeeds and says the response was lost; if not, it exits **8
 (INDETERMINATE)** and names the ids to check, because the write may still
 land and a retried `create` would mint a second seed.
 
+Owner-filtered lists start regular open-family status arms from the status
+index; closed and unconstrained owner lists retain the owner index first.
+Default-open matching stays in the discovery query. The remote graph is shared
+and mutable: another writer may add an item or remove its status between a
+presence check and discovery, even within one CLI invocation. Without an
+immutable revision binding those reads, seeds never caches absence or omits
+the missing/irregular-status branch. Decoding still decides exact membership.
+
 **Provenance.** quipu records the caller's declared `actor` and `source` on
 `/update` transactions; these declarations are separate from the authenticated
 principal. An omitted actor is unknown, and an omitted source defaults to

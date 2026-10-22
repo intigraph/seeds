@@ -159,3 +159,59 @@ fn new_ask_classification_and_deferred_creates_refuse_but_technical_defers_work(
         .unwrap();
     }
 }
+
+#[test]
+fn historical_hidden_ask_allows_notes_without_backfill_but_refuses_redefer() {
+    use seeds::backend::{SeedWrite, WriteBatch};
+    for (title, labels) in cases() {
+        let mut b = QuipuBackend::in_memory("https://example.invalid/ask-test").unwrap();
+        let id = make(&mut b, title, labels);
+        let mut historical = b.snapshot(None).unwrap().get(&id).unwrap().clone();
+        let revision = historical.revision;
+        historical.status = "deferred".into();
+        historical.revision += 1;
+        // Reconstruct a pre-policy record in this private in-memory fixture.
+        b.commit(
+            &WriteBatch {
+                seeds: vec![SeedWrite {
+                    seed: historical,
+                    expected_revision: Some(revision),
+                }],
+                ..Default::default()
+            },
+            &context(),
+        )
+        .unwrap();
+        engine::update(
+            &mut b,
+            &context(),
+            std::slice::from_ref(&id),
+            &UpdateReq {
+                notes: Some("Retained historical finding".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let snapshot = b.snapshot(None).unwrap();
+        let after = snapshot.get(&id).unwrap();
+        assert_eq!(after.status, "deferred");
+        assert!(!after
+            .extra
+            .iter()
+            .any(|(p, _)| p == &seeds::vocab::seeds("deferredAt")
+                || p == &seeds::vocab::seeds("deferredBy")));
+        assert!(engine::defer(&mut b, &context(), std::slice::from_ref(&id), None).is_err());
+        assert!(engine::update(
+            &mut b,
+            &context(),
+            std::slice::from_ref(&id),
+            &UpdateReq {
+                status: Some("deferred".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(b.snapshot(None).unwrap().tx, snapshot.tx);
+        engine::undefer(&mut b, &context(), std::slice::from_ref(&id)).unwrap();
+    }
+}

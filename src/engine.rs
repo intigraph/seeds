@@ -2707,7 +2707,12 @@ pub fn update(
         if requesting_deferral {
             refuse_ask_deferral(before)?;
         }
-        ensure_ask_visible(&s)?;
+        // Historical hidden ASK items remain alarm findings. Unrelated notes
+        // must still be editable; refuse a new deferral or newly introduced
+        // hidden ASK classification, rather than migrating old state here.
+        if !is_ask(before) || (before.status != "deferred" && before.defer_until.is_none()) {
+            ensure_ask_visible(&s)?;
+        }
         if requesting_deferral {
             stamp_deferral(&mut s, ctx)?;
         }

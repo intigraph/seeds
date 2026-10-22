@@ -2086,7 +2086,15 @@ impl RemoteBackend {
             }
             _ => Vec::new(),
         };
-        let ids: Vec<&str> = batch.seeds.iter().map(|w| w.seed.id.as_str()).collect();
+        let mut ids: Vec<String> = batch.seeds.iter().map(|w| w.seed.id.clone()).collect();
+        // A comment-only batch has no seeds: name the comments, or the refusal
+        // reads "for ;" and says nothing about what was lost (aegis-epi).
+        ids.extend(
+            batch
+                .comments
+                .iter()
+                .map(|c| format!("comment {} on {}", c.index, c.seed)),
+        );
         let detail = if holders.is_empty() {
             format!("for {}", ids.join(", "))
         } else {

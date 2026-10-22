@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.7] - 2026-10-22
+
+### Perf
+
+- *(remote)* Read a seed and its comments in one query (#182) ([82d746a](https://github.com/scbrown/seeds/commit/82d746aecbdbd54793f38000e0aee3ebb74e3b7e))
+
 ## [0.6.6] - 2026-10-22
 
 ### Added

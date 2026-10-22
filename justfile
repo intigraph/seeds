@@ -68,3 +68,8 @@ remote-test:
 # Opt-in synthetic acquisition controls: independent pinned producer, one driver.
 acquisition-fixture-test:
     bash tests/run-acquisition-fixture.sh
+
+# Verify the standalone installer using private release fixtures.
+installer-check:
+    sh -n install.sh
+    python3 scripts/test-install-release.py

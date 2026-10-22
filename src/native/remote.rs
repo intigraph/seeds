@@ -98,6 +98,72 @@ static FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Facts grouped by subject IRI.
 type Facts = BTreeMap<String, Vec<Fact>>;
 
+/// One combined read of some seeds and all of their comments, in the project
+/// graph and its ephemeral graph (aegis-83l). `subjects` is every subject the
+/// read found; a comment of one of `items` that it did not find does not
+/// exist, because the read selected every subject whose `comment_on` names
+/// that item.
+#[derive(Debug, Default)]
+struct ItemRead {
+    items: BTreeSet<String>,
+    subjects: BTreeSet<String>,
+    main: Facts,
+    eph: Facts,
+}
+
+impl ItemRead {
+    /// Whether this read answers for `subject`: it was read, or it is a
+    /// comment of a seed whose comments were all read.
+    fn covers(&self, subject: &str) -> bool {
+        self.subjects.contains(subject)
+            || subject
+                .rsplit_once("/comment/")
+                .is_some_and(|(item, index)| {
+                    index.parse::<u64>().is_ok() && self.items.contains(item)
+                })
+    }
+
+    /// The facts of exactly `subjects`, if this read answers for every one of
+    /// them; the shape [`RemoteBackend::subjects_facts`] returns.
+    fn facts_of(&self, subjects: &BTreeSet<String>) -> Option<(Facts, Facts)> {
+        if !subjects.iter().all(|s| self.covers(s)) {
+            return None;
+        }
+        let pick = |facts: &Facts| -> Facts {
+            subjects
+                .iter()
+                .filter_map(|s| facts.get(s).map(|f| (s.clone(), f.clone())))
+                .collect()
+        };
+        Some((pick(&self.main), pick(&self.eph)))
+    }
+}
+
+/// A read of `items` and every comment pointing at them, in both `graphs`:
+/// per graph and item, one bound pattern for the item and one
+/// `?s <comment_on> <item>` join for its comments, joined by `UNION`. `?g`
+/// says which graph a row came from ("0" the project graph, "1" its
+/// ephemeral graph). Measured on aegis-g51c (139 subjects, 845 facts): one
+/// 0.07-0.16 s read, the same facts as the 17 reads it replaces.
+fn item_family_query(graphs: &[String; 2], items: &[&String]) -> String {
+    let parent = term::comment_on();
+    let mut branches = Vec::new();
+    for (gi, g) in graphs.iter().enumerate() {
+        for item in items {
+            branches.push(format!(
+                "{{ BIND(\"{gi}\" AS ?g) BIND(<{item}> AS ?s) GRAPH <{g}> {{ <{item}> ?p ?o }} }}"
+            ));
+            branches.push(format!(
+                "{{ BIND(\"{gi}\" AS ?g) GRAPH <{g}> {{ ?s <{parent}> <{item}> . ?s ?p ?o }} }}"
+            ));
+        }
+    }
+    format!(
+        "SELECT ?g ?s ?p ?o WHERE {{ {} }} LIMIT {ROW_CAP}",
+        branches.join(" UNION ")
+    )
+}
+
 /// Every subject a write's checks read: the seeds it writes or removes, the
 /// seeds their new edges point at (the dangling-edge check), the seeds its
 /// comments and comment removals hang off (which graph each lives in), and
@@ -144,6 +210,10 @@ pub struct RemoteBackend {
     /// before the ASK existed, so a stale `true` costs an empty read and never
     /// a missed or phantom seed. "Empty" is never remembered (aegis-r7k).
     ephemeral_seen: std::cell::Cell<bool>,
+    /// What the last [`Backend::snapshot_items`] read in one combined query,
+    /// kept for the commit that follows it in the same command (see
+    /// [`ItemRead`]). A commit takes it; it is never read twice.
+    last_items: std::cell::RefCell<Option<ItemRead>>,
     /// Refuse, unsent, a write request larger than this many bytes.
     /// Scoped to one full-search call; never a cached readiness observation.
     require_substring: std::cell::Cell<bool>,
@@ -285,6 +355,7 @@ impl RemoteBackend {
             graph_registered: false,
             ephemeral_registered: false,
             ephemeral_seen: std::cell::Cell::new(false),
+            last_items: std::cell::RefCell::new(None),
             require_substring: std::cell::Cell::new(false),
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
@@ -534,6 +605,57 @@ impl RemoteBackend {
             self.ephemeral_seen.set(true);
         }
         Ok(holds)
+    }
+
+    /// `items` and their comments the long way: find the comments in each
+    /// graph, then read every subject [`FACT_SUBJECTS_PER_READ`] at a time,
+    /// halving any read quipu truncates or gives up on.
+    fn snapshot_items_bounded(&self, items: &BTreeSet<String>) -> Result<Snapshot> {
+        let mut subjects = items.clone();
+        for graph in self.both_graphs() {
+            subjects.extend(self.subjects_pointing_at(&graph, &[term::comment_on()], items)?);
+        }
+        self.snapshot_of(&subjects)
+    }
+
+    /// `items` and all their comments in one read ([`item_family_query`]), or
+    /// `None` when that read is not the right one: more items than one facts
+    /// read holds, or an answer quipu truncated or gave up on. The caller then
+    /// reads them the long way, which bounds and halves its reads.
+    fn item_families(&self, items: &BTreeSet<String>) -> Result<Option<ItemRead>> {
+        if items.is_empty() || items.len() > FACT_SUBJECTS_PER_READ {
+            return Ok(None);
+        }
+        let graphs = self.both_graphs();
+        let all: Vec<&String> = items.iter().collect();
+        let (rows, truncated) = match self.select_marked(&item_family_query(&graphs, &all), None) {
+            Err(e) if is_query_timeout(&e) => return Ok(None),
+            other => other?,
+        };
+        if truncated || rows.len() >= ROW_CAP {
+            return Ok(None);
+        }
+        let mut read = ItemRead {
+            items: items.clone(),
+            ..ItemRead::default()
+        };
+        for mut r in rows {
+            if let (Some(Obj::Str(g)), Some(Obj::Iri(s)), Some(Obj::Iri(p)), Some(o)) =
+                (r.remove("g"), r.remove("s"), r.remove("p"), r.remove("o"))
+            {
+                let facts = if g == "1" {
+                    &mut read.eph
+                } else {
+                    &mut read.main
+                };
+                facts.entry(s.clone()).or_default().push((p, o));
+                read.subjects.insert(s);
+            }
+        }
+        if !read.eph.is_empty() {
+            self.ephemeral_seen.set(true);
+        }
+        Ok(Some(read))
     }
 
     /// A [`Snapshot`] of exactly `subjects` (plus nothing), current state,
@@ -1395,11 +1517,13 @@ impl Backend for RemoteBackend {
 
     fn snapshot_items(&self, ids: &[String]) -> Result<Snapshot> {
         let items: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
-        let mut subjects = items.clone();
-        for graph in self.both_graphs() {
-            subjects.extend(self.subjects_pointing_at(&graph, &[term::comment_on()], &items)?);
+        if let Some(read) = self.item_families(&items)? {
+            let snapshot = Snapshot::from_graphs(&read.main, &read.eph);
+            *self.last_items.borrow_mut() = Some(read);
+            return Ok(snapshot);
         }
-        self.snapshot_of(&subjects)
+        *self.last_items.borrow_mut() = None;
+        self.snapshot_items_bounded(&items)
     }
 
     fn snapshot_seeds(&self, ids: &[String]) -> Result<Snapshot> {
@@ -1597,8 +1721,21 @@ impl Backend for RemoteBackend {
         if batch.is_empty() {
             return Ok(0);
         }
-        // Validate first, against the server's current state.
-        let (current, current_eph) = self.subjects_facts(&batch_subjects(batch))?;
+        // Validate first, against the server's current state. When this
+        // command's snapshot_items just read exactly what the batch touches,
+        // that read is the current state: reading it again costs a second
+        // round of reads and decides nothing more, because the update's WHERE
+        // clause (revision guards, absence filters) is what makes the write
+        // atomic, here as before (aegis-83l).
+        let subjects = batch_subjects(batch);
+        let reused = self
+            .last_items
+            .take()
+            .and_then(|read| read.facts_of(&subjects));
+        let (current, current_eph) = match reused {
+            Some(facts) => facts,
+            None => self.subjects_facts(&subjects)?,
+        };
         let in_eph = |id: &str| current_eph.contains_key(&vocab::item_iri(id));
         validate::validate_batch(batch, &mut |id| {
             let iri = vocab::item_iri(id);
@@ -1646,7 +1783,24 @@ impl Backend for RemoteBackend {
                 cur.map(|s| s.revision),
             )?;
         }
-        self.register_graph(!eph.is_empty())?;
+        // A batch that only replaces seeds this commit just found in the
+        // project graph writes into a project that exists, so it skips the
+        // registry listing (GET /graphs lists every graph on the server: 5 s
+        // measured, the largest read of an update; aegis-83l). Its graphs were
+        // registered by the project's first write. Measured on quipu: an
+        // /update into a graph that is not registered still commits and
+        // registers it as committed (with no creation actor), so the skip
+        // never loses a write. Creates, deletions and ephemeral writes still
+        // register first.
+        let existing_only = eph.is_empty()
+            && batch.delete_seeds.is_empty()
+            && !batch.seeds.is_empty()
+            && batch.seeds.iter().all(|w| {
+                w.expected_revision.is_some() && current.contains_key(&vocab::item_iri(&w.seed.id))
+            });
+        if !existing_only {
+            self.register_graph(!eph.is_empty())?;
+        }
 
         let main_graph = self.graph.clone();
         let eph_graph = crate::vocab::ephemeral_graph(&main_graph);
@@ -2800,6 +2954,200 @@ mod tests {
             })
             .map(|l| l.rsplit_once(' ').unwrap().1.parse::<u64>().unwrap())
             .sum()
+    }
+
+    fn seeds_requests(base: &str, endpoint: &str) -> u64 {
+        let text = ureq::get(&format!("{base}/metrics"))
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap();
+        text.lines()
+            .filter(|l| {
+                l.starts_with("quipu_http_client_requests_total{")
+                    && l.contains("client=\"seeds\"")
+                    && l.contains(&format!("endpoint=\"{endpoint}\""))
+            })
+            .map(|l| l.rsplit_once(' ').unwrap().1.parse::<u64>().unwrap())
+            .sum()
+    }
+
+    fn ctx83l() -> Ctx {
+        Ctx {
+            now: "2026-10-22T13:00:00Z".into(),
+            actor: "tester".into(),
+            prefix: "f".into(),
+            claims: Default::default(),
+        }
+    }
+
+    /// A seed with `comments` comments, created through the engine so its
+    /// facts are exactly what sd writes.
+    fn seed_with_comments(b: &mut RemoteBackend, title: &str, comments: usize) -> String {
+        let (s, _) = crate::engine::create(
+            b,
+            &ctx83l(),
+            &crate::engine::CreateReq {
+                title: title.into(),
+                ..crate::engine::CreateReq::default()
+            },
+        )
+        .unwrap();
+        for n in 0..comments {
+            crate::engine::comment_add(b, &ctx83l(), &s.id, &format!("note {n}"), None).unwrap();
+        }
+        s.id
+    }
+
+    // aegis-83l: one combined read of some seeds and all their comments, in
+    // both graphs, answers exactly what the bounded long read does: more
+    // comments than one facts read holds, a seed with none, an absent id, and
+    // another seed's comments that must not leak in.
+    #[test]
+    fn an_item_family_read_equals_the_bounded_read() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
+            return;
+        };
+        let graph = "https://seeds.local/project/f83l";
+        let mut remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        remote.register_graph(true).unwrap();
+        let many = seed_with_comments(&mut remote, "many", 23);
+        let none = seed_with_comments(&mut remote, "none", 0);
+        let other = seed_with_comments(&mut remote, "other", 4);
+        for ids in [
+            vec![many.clone()],
+            vec![none.clone()],
+            vec![many.clone(), none.clone()],
+            vec!["f-absent".to_string()],
+        ] {
+            let items: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
+            let read = remote.item_families(&items).unwrap().expect("one read");
+            let bounded = remote.snapshot_items_bounded(&items).unwrap();
+            let combined = Snapshot::from_graphs(&read.main, &read.eph);
+            assert_eq!(
+                format!("{:?}", (&combined.seeds, &combined.comments)),
+                format!("{:?}", (&bounded.seeds, &bounded.comments)),
+                "{ids:?}"
+            );
+            let mut subjects = items.clone();
+            for g in remote.both_graphs() {
+                subjects.extend(
+                    remote
+                        .subjects_pointing_at(&g, &[term::comment_on()], &items)
+                        .unwrap(),
+                );
+            }
+            let (main, eph) = remote.subjects_facts(&subjects).unwrap();
+            assert_eq!(
+                (sorted(read.main), sorted(read.eph)),
+                (sorted(main), sorted(eph))
+            );
+            assert!(!read
+                .subjects
+                .iter()
+                .any(|s| s.starts_with(&vocab::item_iri(&other))));
+        }
+        let many_snapshot = remote.snapshot_items(std::slice::from_ref(&many)).unwrap();
+        assert_eq!(
+            many_snapshot
+                .comments
+                .iter()
+                .filter(|c| c.seed == many)
+                .count(),
+            23
+        );
+    }
+
+    // aegis-83l: an update reads its seed once. The commit reuses that read
+    // (no second facts read, no registry listing), yet the update's WHERE
+    // guard still refuses a write that another writer overtook in between.
+    #[test]
+    fn an_update_reads_once_and_its_guard_still_holds() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
+            return;
+        };
+        let graph = "https://seeds.local/project/u83l";
+        let mut remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let id = seed_with_comments(&mut remote, "target", 12);
+        let add = |label: &str| crate::engine::UpdateReq {
+            add_labels: vec![label.into()],
+            ..crate::engine::UpdateReq::default()
+        };
+
+        let bare = seed_with_comments(&mut remote, "bare", 0);
+        // The reads one update costs, from a backend that has read nothing.
+        let cost = |id: &str| {
+            let mut fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+            let (q0, g0) = (
+                seeds_queries(&server.base),
+                seeds_requests(&server.base, "/graphs"),
+            );
+            crate::engine::update(&mut fresh, &ctx83l(), &[id.to_string()], &add("one")).unwrap();
+            (
+                seeds_queries(&server.base) - q0,
+                seeds_requests(&server.base, "/graphs") - g0,
+            )
+        };
+        let (with_comments, listed) = cost(&id);
+        let (without, _) = cost(&bare);
+        // One combined read before the write, on every server. A server older
+        // than quipu#411 answers /update with no report, so seeds reads the
+        // seed back to decide landed or lost (two more reads): never more.
+        assert_eq!(
+            with_comments, without,
+            "comments cost reads: {with_comments} with 12, {without} with none"
+        );
+        assert!(with_comments <= 3, "{with_comments} reads for one update");
+        assert_eq!(listed, 0, "no registry listing for an existing seed");
+        let mut fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let after = fresh.snapshot_items(std::slice::from_ref(&id)).unwrap();
+        let seed = after.get(&id).unwrap();
+        assert!(seed.labels.contains("one"));
+        assert_eq!(
+            after.comments.iter().filter(|c| c.seed == id).count(),
+            12,
+            "the update kept every comment"
+        );
+
+        // A transition comment numbers itself after the 12 it read.
+        let mut req = add("two");
+        req.transition_comment = Some("why".into());
+        crate::engine::update(&mut fresh, &ctx83l(), std::slice::from_ref(&id), &req).unwrap();
+        let after = fresh.snapshot_items(std::slice::from_ref(&id)).unwrap();
+        assert_eq!(after.comments.iter().filter(|c| c.seed == id).count(), 13);
+
+        // Read, then another writer moves the seed on, then commit: refused.
+        let mut slow = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let snap = slow.snapshot_items(std::slice::from_ref(&id)).unwrap();
+        let mut stale = snap.get(&id).unwrap().clone();
+        crate::engine::update(
+            &mut remote,
+            &ctx83l(),
+            std::slice::from_ref(&id),
+            &add("three"),
+        )
+        .unwrap();
+        stale.labels.insert("lost".into());
+        stale.revision += 1;
+        let expected = Some(snap.get(&id).unwrap().revision);
+        let err = slow
+            .commit(
+                &WriteBatch {
+                    seeds: vec![crate::backend::SeedWrite {
+                        seed: stale,
+                        expected_revision: expected,
+                    }],
+                    source: "test".into(),
+                    ..WriteBatch::default()
+                },
+                &ctx83l(),
+            )
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict, "{}", err.message);
+        let last = remote.snapshot_items(std::slice::from_ref(&id)).unwrap();
+        assert!(!last.get(&id).unwrap().labels.contains("lost"));
     }
 
     // aegis-r7k: a backend remembers that its ephemeral graph holds facts, and

@@ -131,8 +131,9 @@ fn probe(extra: &[(&str, &str)]) -> Vec<Headers> {
     let result = seen.lock().unwrap().clone();
     assert_eq!(
         result.len(),
-        8,
-        "health and seven queries: one combined preflight replaces two guards"
+        5,
+        "health and four queries: one combined item-and-comments read replaces the comment \
+         discovery, the facts reads and the ephemeral existence check (aegis-83l)"
     );
     for headers in &result {
         assert_eq!(headers["x-quipu-client"], "seeds");
@@ -183,7 +184,7 @@ fn explicit_and_known_harness_context_cross_real_transport() {
 }
 
 #[test]
-fn outer_st_command_crosses_all_eight_actual_cli_requests() {
+fn outer_st_command_crosses_all_five_actual_cli_requests() {
     for headers in probe(&[("QUIPU_SOURCE", "st-anchor"), ("QUIPU_OPERATION", "show")]) {
         assert_eq!(headers["x-quipu-source"], "st-anchor");
         assert_eq!(headers["x-quipu-operation"], "show");

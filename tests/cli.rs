@@ -3305,3 +3305,44 @@ fn decimal_rank_cli_roundtrip_and_single_item_move() {
     );
     assert_eq!(s.json(&["show", moved_id])[0]["rank"], "-1");
 }
+
+#[test]
+fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
+    let s = Sandbox::new("ask-no-defer");
+    for label in [
+        "needs-stiwi",
+        "blocked:human",
+        "desk",
+        "decision-needed",
+        "title",
+    ] {
+        let mut args = vec![
+            "create",
+            if label == "title" {
+                "ASK Stiwi: choose"
+            } else {
+                "Technical control"
+            },
+        ];
+        if label != "title" {
+            args.extend(["--labels", label]);
+        }
+        let item = s.json(&args);
+        let id = item["id"].as_str().unwrap();
+        let before = s.json(&["show", id]);
+        for args in [
+            vec!["defer", id, "--until", "2027-01-01"],
+            vec!["update", id, "--status", "deferred"],
+            vec!["update", id, "--defer", "2027-01-01"],
+        ] {
+            let result = s.run(&args);
+            assert_eq!(code(&result), 5);
+            assert!(String::from_utf8_lossy(&result.stderr).contains("Brief's Later"));
+            assert_eq!(s.json(&["show", id]), before);
+        }
+    }
+    let normal = s.json(&["create", "Technical control", "--labels", "security"]);
+    let id = normal["id"].as_str().unwrap();
+    s.ok(&["defer", id, "--until", "2027-01-01"]);
+    assert_eq!(s.json(&["show", id])[0]["status"], "deferred");
+}

@@ -182,6 +182,7 @@ fn new_seed(
         seed.status = "deferred".into();
         seed.defer_until = Some(parse_until(d, &ctx.now)?);
     }
+    ensure_ask_visible(&seed)?;
     Ok(seed)
 }
 
@@ -2698,6 +2699,12 @@ pub fn update(
         {
             clear_deferral(&mut s);
         }
+        let requesting_deferral = status.as_deref() == Some("deferred")
+            || req.defer.as_deref().is_some_and(|d| !d.trim().is_empty());
+        if requesting_deferral {
+            refuse_ask_deferral(before)?;
+        }
+        ensure_ask_visible(&s)?;
         if s == *before {
             continue;
         }
@@ -2894,11 +2901,37 @@ pub type Transitions = (Vec<Transition>, Vec<Skipped>, u64);
 
 /// Apply one transition to every named seed in one transaction. `skip` says
 /// why a seed is left alone; `apply` changes the rest. Unknown ids write nothing.
+const ASK_LABELS: [&str; 4] = ["needs-stiwi", "blocked:human", "desk", "decision-needed"];
+const ASK_DEFER_REFUSAL: &str = "Stiwi bsf8: ASK-class items must stay visible and cannot be deferred; use Brief's Later choice, recorded by Stiwi, not by an agent";
+
+fn is_ask(seed: &Seed) -> bool {
+    seed.title.starts_with("ASK Stiwi")
+        || ASK_LABELS.iter().any(|label| seed.labels.contains(*label))
+}
+
+fn refuse_ask_deferral(seed: &Seed) -> Result<()> {
+    if is_ask(seed) {
+        return Err(SdError::refused(format!(
+            "{}: {ASK_DEFER_REFUSAL}",
+            seed.id
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_ask_visible(seed: &Seed) -> Result<()> {
+    if seed.status == "deferred" || seed.defer_until.is_some() {
+        refuse_ask_deferral(seed)?;
+    }
+    Ok(())
+}
+
 fn transition(
     b: &mut dyn Backend,
     ctx: &Ctx,
     ids: &[String],
     source: &str,
+    validate: impl Fn(&Seed) -> Result<()>,
     skip: impl Fn(&Seed) -> Option<String>,
     apply: impl Fn(&mut Seed),
     comment: Option<&str>,
@@ -2915,6 +2948,9 @@ fn transition(
     let (mut writes, mut done, mut skipped, mut comments) = (vec![], vec![], vec![], vec![]);
     for id in &ids {
         let before = snap.get(id)?;
+        // Validate every member before the batch commit: an ASK must refuse
+        // the command, not become an exit-zero skip beside partial writes.
+        validate(before)?;
         if let Some(reason) = skip(before) {
             skipped.push(Skipped {
                 id: id.clone(),
@@ -2985,6 +3021,7 @@ pub fn reopen(
         ctx,
         ids,
         "seeds:reopen",
+        |_| Ok(()),
         |s| match s.status.as_str() {
             "closed" => None,
             model::TOMBSTONE => Some("deleted (not reopenable)".into()),
@@ -3022,6 +3059,7 @@ pub fn defer_with(
         ctx,
         ids,
         "seeds:defer",
+        refuse_ask_deferral,
         |s| match s.status.as_str() {
             "closed" => Some("cannot defer closed issue".to_string()),
             model::TOMBSTONE => Some("cannot defer a deleted seed".to_string()),
@@ -3052,6 +3090,7 @@ pub fn undefer_with(
         ctx,
         ids,
         "seeds:undefer",
+        |_| Ok(()),
         |s| (s.status != "deferred").then(|| format!("not deferred (status: {})", s.status)),
         |s| {
             s.status = "open".into();

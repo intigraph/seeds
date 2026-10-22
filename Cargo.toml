@@ -1,9 +1,9 @@
 [package]
 name = "seeds-ai"
-version = "0.6.1"
+version = "0.6.5"
 edition = "2021"
 description = "A beads-compatible issue tracker for AI agents that stores work items as facts in a quipu knowledge graph"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/scbrown/seeds"
 # 1.89 for `std::fs::File::lock`, the cross-process write lock the native
 # store takes (see src/native/store.rs). quipu-ai itself needs 1.85.

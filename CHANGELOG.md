@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.5] - 2026-10-21
+
+### Documentation
+
+- Clarify Bobbin and Yupana stack descriptions (#179) ([aead072](https://github.com/scbrown/seeds/commit/aead0722da829f91ef5f99c0bf2ad2ef410d2d23))
+
+## [0.6.4] - 2026-10-21
+
+### Miscellaneous
+
+- Relicense under Apache-2.0 (#178) ([bd03a34](https://github.com/scbrown/seeds/commit/bd03a343ad63e25e8492ffdd994c45f27bda9b07))
+
+## [0.6.3] - 2026-10-21
+
+### CI/CD
+
+- *(release)* Verify the repository pendant only for an admitted publisher (#174) ([5090d08](https://github.com/scbrown/seeds/commit/5090d08b6f8f01a2f53c57d91b340cad5b04326d))
+
+### Perf
+
+- *(query)* Reduce repeated owner status discovery joins (#173) ([ad427d2](https://github.com/scbrown/seeds/commit/ad427d213f13a9c7f1ab167677b44a43922eab6c))
+
+## [0.6.2] - 2026-10-21
+
+### Added
+
+- *(pendant)* Repository-owned Seeds pendant with sealed alignment carrier (#171) ([f362d85](https://github.com/scbrown/seeds/commit/f362d85f10b13994df6ba89a8d18881dbe072316))
+
+### Fixed
+
+- *(release)* Compare API rustdoc with committed dependency locks (#168) ([b6d27c3](https://github.com/scbrown/seeds/commit/b6d27c3e945ea55d004a296f65f6479b343e3738))
+- *(ready)* A lapsed deferral is ready again without reopening it (#172) ([db703a5](https://github.com/scbrown/seeds/commit/db703a579c74c2f1c82ba30f297242a542a76528))
+
 ## [0.6.1] - 2026-10-19
 
 ### Documentation

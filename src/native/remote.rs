@@ -46,6 +46,7 @@ use crate::vocab::{self, term};
 pub mod acquisition;
 #[cfg(test)]
 mod gateway_tests;
+mod owner_query;
 mod summary;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
@@ -1409,11 +1410,14 @@ impl Backend for RemoteBackend {
     /// graph, then read by subject. An unconstrained query is a whole
     /// snapshot.
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {
-        let Some(pattern) = vocab::seed_query_pattern(q) else {
+        if vocab::seed_query_pattern(q).is_none() {
             return self.snapshot(None);
-        };
+        }
         let mut subjects = BTreeSet::new();
         for graph in self.both_graphs() {
+            let pattern = self
+                .owner_seed_query_pattern(&graph, q)?
+                .expect("constrained seed query retains a pattern");
             subjects.extend(self.subjects_where(&graph, &pattern, None)?);
         }
         self.snapshot_of(&subjects)

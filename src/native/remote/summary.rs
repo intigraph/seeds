@@ -613,6 +613,13 @@ impl RemoteBackend {
     }
 
     pub(super) fn count_summary(&self, req: &CountReq) -> Result<Count> {
+        if let Some(count) = self.projection_count(req)? {
+            return Ok(count);
+        }
+        self.sparql_count_summary(req)
+    }
+
+    pub(super) fn sparql_count_summary(&self, req: &CountReq) -> Result<Count> {
         let mut fields = self.filter_fields(&req.filter)?;
         if req.filter.status.is_none() {
             fields += " FILTER(?status != \"tombstone\")";

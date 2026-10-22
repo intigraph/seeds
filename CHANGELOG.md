@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.6] - 2026-10-22
+
+### Added
+
+- Add verified installer and concise stack guide (#170) ([41b1810](https://github.com/scbrown/seeds/commit/41b1810500e9561e4c1dff7e4a704926ed651bab))
+
 ## [0.6.5] - 2026-10-21
 
 ### Documentation

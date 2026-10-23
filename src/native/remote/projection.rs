@@ -2,6 +2,7 @@
 //! normalized Seeds model: prove compatibility on each call, never cache it.
 use super::*;
 use crate::engine::{Count, CountReq, Filter};
+mod scoped;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum CountSource {
@@ -48,6 +49,46 @@ impl RemoteBackend {
             )),
             Err(ureq::Error::Transport(t)) => Err(transport(&url, &t)),
         }
+    }
+
+    #[cfg(all(test, feature = "projection-contract-tests"))]
+    fn original_projection_guard(&self, required: &BTreeSet<&str>) -> Result<bool> {
+        let st = term::status();
+        let id = term::identifier();
+        let action = term::work_item();
+        let plain = |v: &str| format!("isLiteral({v}) && sameTerm({v}, STR({v}))");
+        let mut anomalies = vec![
+            format!("{{ ?s <{st}> ?v FILTER(!({})) }}",plain("?v")),
+            format!("{{ ?s <{st}> ?v FILTER NOT EXISTS {{ ?s a <{action}> ; <{id}> ?id FILTER({}) }} }}",plain("?id")),
+            format!("{{ ?s a <{action}> ; <{id}> ?id FILTER({}) FILTER NOT EXISTS {{ ?s <{st}> ?v }} }}",plain("?id")),
+            format!("{{ ?s a <{action}> ; <{id}> ?id . ?other a <{action}> ; <{id}> ?id FILTER(?s != ?other && {}) }}",plain("?id")),
+            format!("{{ ?s <{st}> ?v ; <{id}> ?a, ?b FILTER(!sameTerm(?a, ?b)) }}"),
+        ];
+        for name in required {
+            let (predicate, valid) = match *name {
+                "priority" => (
+                    term::priority(),
+                    format!("{} && ?v <= 255", summary::nonnegative_integer_guard("?v")),
+                ),
+                "type" => (term::issue_type(), plain("?v")),
+                _ => (
+                    term::assigned_to(),
+                    format!(
+                        "{} || (isIRI(?v) && STRSTARTS(STR(?v), \"{}principal/\"))",
+                        plain("?v"),
+                        vocab::SEEDS_BASE
+                    ),
+                ),
+            };
+            anomalies.push(format!(
+                "{{ ?s <{st}> ?status ; <{predicate}> ?bad FILTER NOT EXISTS {{ ?s <{predicate}> ?v FILTER(sameTerm(?bad, ?v) && ({valid})) }} }}"
+            ));
+        }
+        let body = self.post("/query", "application/json", &json!({"query":format!("ASK {{ GRAPH <{}> {{ {} }} }}",self.graph,anomalies.join(" UNION "))}).to_string(), false)?;
+        if ask_answer(&self.graph, &body)? {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     pub(super) fn projection_count(&self, req: &CountReq) -> Result<Option<Count>> {
@@ -193,43 +234,10 @@ impl RemoteBackend {
         if self.ephemeral_may_hold_facts()? {
             return Ok(None);
         }
-        // Projection membership is status-based; Seeds membership additionally
-        // needs Action + plain unique ID and defaults missing status to open.
-        let st = term::status();
-        let id = term::identifier();
-        let action = term::work_item();
-        let plain = |v: &str| format!("isLiteral({v}) && sameTerm({v}, STR({v}))");
-        let mut anomalies = vec![
-            format!("{{ ?s <{st}> ?v FILTER(!({})) }}",plain("?v")),
-            format!("{{ ?s <{st}> ?v FILTER NOT EXISTS {{ ?s a <{action}> ; <{id}> ?id FILTER({}) }} }}",plain("?id")),
-            format!("{{ ?s a <{action}> ; <{id}> ?id FILTER({}) FILTER NOT EXISTS {{ ?s <{st}> ?v }} }}",plain("?id")),
-            format!("{{ ?s a <{action}> ; <{id}> ?id . ?other a <{action}> ; <{id}> ?id FILTER(?s != ?other && {}) }}",plain("?id")),
-            format!("{{ ?s <{st}> ?v ; <{id}> ?a, ?b FILTER(!sameTerm(?a, ?b)) }}"),
-        ];
-        for name in &required {
-            let (predicate, valid) = match *name {
-                "priority" => (
-                    term::priority(),
-                    format!("{} && ?v <= 255", summary::nonnegative_integer_guard("?v")),
-                ),
-                "type" => (term::issue_type(), plain("?v")),
-                _ => (
-                    term::assigned_to(),
-                    format!(
-                        "{} || (isIRI(?v) && STRSTARTS(STR(?v), \"{}principal/\"))",
-                        plain("?v"),
-                        vocab::SEEDS_BASE
-                    ),
-                ),
-            };
-            anomalies.push(format!(
-                "{{ ?s <{st}> ?status ; <{predicate}> ?bad FILTER NOT EXISTS {{ ?s <{predicate}> ?v FILTER(sameTerm(?bad, ?v) && ({valid})) }} }}"
-            ));
-        }
-        let body = self.post("/query", "application/json", &json!({"query":format!("ASK {{ GRAPH <{}> {{ {} }} }}",self.graph,anomalies.join(" UNION "))}).to_string(), false)?;
-        if ask_answer(&self.graph, &body)? {
+        let Some(expected_total) = self.projection_scope(req, &required, &predicates, &keys)?
+        else {
             return Ok(None);
-        }
+        };
         // Compare watermarks around ALL compatibility reads. A concurrent
         // commit (including an ephemeral write) discards the optimization.
         let group = if by == "status" || keys.is_empty() {
@@ -290,7 +298,7 @@ impl RemoteBackend {
             };
             *groups.entry(key).or_default() += n;
         }
-        if projected_total != after_total {
+        if projected_total != after_total || (!keys.is_empty() && after_total != expected_total) {
             return Err(invalid());
         }
         Ok(Some(Count {
@@ -544,6 +552,17 @@ predicate="https://schema.org/agent"
             }
         }
         assert_eq!(cases, 128);
+        let broad_range = CountReq {
+            by: Some("status".into()),
+            filter: Filter {
+                assignee: Some("reader".into()),
+                priority_min: Some("3".into()),
+                ..Filter::default()
+            },
+            ..CountReq::default()
+        };
+        assert_eq!(parity(&remote, &broad_range), CountSource::Projection);
+
         let scoped = CountReq {
             by: Some("status".into()),
             filter: Filter {
@@ -572,7 +591,12 @@ predicate="https://schema.org/agent"
         ] {
             let g = format!("{graph}-{name}");
             let b = RemoteBackend::connect(&server.base, &g, None, None, &[]).unwrap();
-            update(&b, &g, &seed("bad", "open", &extra));
+            let selected = format!(
+                "; <{}> 1 ; <{}> \"reader\" {extra}",
+                term::priority(),
+                term::assigned_to()
+            );
+            update(&b, &g, &seed("bad", "open", &selected));
             assert_eq!(parity(&b, &scoped), CountSource::Sparql, "{name}");
         }
         update(
@@ -581,7 +605,186 @@ predicate="https://schema.org/agent"
             &seed("where-0", "closed", ""),
         );
         assert_eq!(parity(&remote, &scoped), CountSource::Sparql);
-        eprintln!("COUNT_WHERE source=projection parity_cases={cases} semantic_fallbacks=5");
+        eprintln!(
+            "COUNT_WHERE source=projection parity_cases={cases} broad_range=1 semantic_fallbacks=5"
+        );
+    }
+
+    #[cfg(feature = "projection-contract-tests")]
+    #[test]
+    fn projection_count_scoped_guard_negatives() {
+        let bin = std::env::var("SEEDS_TEST_PROJECTIONS_SERVER")
+            .expect("real projection server required");
+        let server = super::super::tests::quipu_server_config(&bin, Some(CONFIG));
+        let req = CountReq {
+            by: Some("status".into()),
+            filter: Filter {
+                assignee: Some("reader".into()),
+                priority: Some("1".into()),
+                ..Filter::default()
+            },
+            ..CountReq::default()
+        };
+        let p = format!(
+            "; <{}> 1 ; <{}> <{}>",
+            term::priority(),
+            term::assigned_to(),
+            vocab::principal_iri("reader")
+        );
+        let subject = "<https://seeds.local/item/bad>";
+        let cases = vec![
+            ("missing-action", format!("DELETE DATA {{ GRAPH <G> {{ {subject} a <{}> }} }}",term::work_item())),
+            ("missing-id", format!("DELETE DATA {{ GRAPH <G> {{ {subject} <{}> \"bad\" }} }}",term::identifier())),
+            ("missing-status", format!("DELETE DATA {{ GRAPH <G> {{ {subject} <{}> \"open\" }} }}",term::status())),
+            ("status-language", format!("INSERT DATA {{ GRAPH <G> {{ {subject} <{}> \"open\"@en }} }}",term::status())),
+            ("multiple-id", format!("INSERT DATA {{ GRAPH <G> {{ {subject} <{}> \"other\" }} }}",term::identifier())),
+            ("duplicate-outside-filter", format!("INSERT DATA {{ GRAPH <G> {{ <urn:other-owner> a <{}> ; <{}> \"bad\" ; <{}> 2 }} }}",term::work_item(),term::identifier(),term::priority())),
+            ("priority-arithmetic-error", format!("INSERT DATA {{ GRAPH <G> {{ {subject} <{}> \"high\" }} }}",term::priority())),
+            ("priority-decimal", format!("INSERT DATA {{ GRAPH <G> {{ {subject} <{}> \"1.5\"^^<http://www.w3.org/2001/XMLSchema#decimal> }} }}",term::priority())),
+            ("assignee-foreign-iri", format!("INSERT DATA {{ GRAPH <G> {{ {subject} <{}> <urn:foreign-person> }} }}",term::assigned_to())),
+            ("id-language", format!("INSERT DATA {{ GRAPH <G> {{ {subject} <{}> \"bad\"@en }} }}",term::identifier())),
+        ];
+        for (name, mutation) in cases {
+            let graph = format!("https://seeds.local/project/scoped-{name}");
+            let remote = RemoteBackend::connect(&server.base, &graph, None, None, &[]).unwrap();
+            update(&remote, &graph, &seed("bad", "open", &p));
+            assert!(
+                remote
+                    .original_projection_guard(&BTreeSet::from(["assignee", "priority"]))
+                    .unwrap(),
+                "{name} before"
+            );
+            let mutation = mutation.replace("<G>", &format!("<{graph}>"));
+            remote
+                .post(
+                    "/update",
+                    "application/x-www-form-urlencoded",
+                    &format!("update={}", form_encode(&mutation)),
+                    true,
+                )
+                .unwrap();
+            assert!(
+                !remote
+                    .original_projection_guard(&BTreeSet::from(["assignee", "priority"]))
+                    .unwrap(),
+                "{name} original"
+            );
+            assert!(
+                remote.projection_count(&req).unwrap().is_none(),
+                "{name} scoped"
+            );
+            assert_eq!(
+                parity(&remote, &req),
+                CountSource::Sparql,
+                "{name} canonical"
+            );
+        }
+        // An anomaly outside the selected roots must not poison an otherwise
+        // normalized count. Its duplicate ID owners would still be checked.
+        let graph = "https://seeds.local/project/scoped-outside";
+        let remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        update(
+            &remote,
+            graph,
+            &(seed("bad", "open", &p)
+                + &format!(
+                    "<urn:unrelated> a <{}> ; <{}> \"outside\" .",
+                    term::work_item(),
+                    term::identifier()
+                )),
+        );
+        assert!(!remote
+            .original_projection_guard(&BTreeSet::from(["assignee", "priority"]))
+            .unwrap());
+        assert_eq!(parity(&remote, &req), CountSource::Projection);
+        // Missing priority P2 and unassigned cannot use positive-only roots.
+        let defaults = CountReq {
+            filter: Filter {
+                unassigned: true,
+                priority: Some("2".into()),
+                ..Filter::default()
+            },
+            ..CountReq::default()
+        };
+        assert_eq!(parity(&remote, &defaults), CountSource::Sparql);
+        eprintln!("SCOPED_GUARDS original_negative_cases=10 outside_scope=1 default_guard=1");
+    }
+
+    #[test]
+    fn projection_count_scoped_rejects_incomplete_or_malformed_reads() {
+        let req = CountReq::default();
+        for (code, body, error) in [
+            (403, "refused", true),
+            (408, "timeout", true),
+            (200, r#"{"boolean":false}"#, true),
+            (
+                200,
+                r#"{"results":{"bindings":[{"s":{"type":"literal","value":"not-iri"}}]}}"#,
+                true,
+            ),
+            (200, r#"{"results":{"bindings":[{}]}}"#, true),
+            (
+                200,
+                r#"{"truncated":true,"results":{"bindings":[]}}"#,
+                false,
+            ),
+        ] {
+            let (base, worker) =
+                super::super::gateway_tests::server(vec![(200, "ok"), (code, body)]);
+            let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
+            let result =
+                remote.projection_scope(&req, &BTreeSet::new(), &serde_json::Map::new(), &[]);
+            if error {
+                assert!(result.is_err(), "{code}/{body}");
+            } else {
+                assert!(result.unwrap().is_none());
+            }
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn projection_count_scoped_full_limit_is_not_an_empty_answer() {
+        let rows = vec![json!({"s":{"type":"uri","value":"urn:seed"}}); ROW_CAP];
+        let body = json!({"results":{"bindings":rows}}).to_string();
+        let (base, worker) = super::super::gateway_tests::server(vec![
+            (200, "ok"),
+            (200, Box::leak(body.into_boxed_str())),
+        ]);
+        let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
+        assert!(remote
+            .projection_scope(
+                &CountReq::default(),
+                &BTreeSet::new(),
+                &serde_json::Map::new(),
+                &[]
+            )
+            .unwrap()
+            .is_none());
+        worker.join().unwrap();
+    }
+
+    fn scope_responses(filtered: bool) -> Vec<(u16, String)> {
+        let uri = |value: &str| json!({"type":"uri","value":value});
+        let lit = |value: &str| json!({"type":"literal","value":value});
+        let s = uri("urn:seed");
+        let mut rows = vec![
+            json!({"s":s}),
+            json!({"s":s}),
+            json!({"s":s,"o":uri(&term::work_item())}),
+        ];
+        if filtered {
+            rows.push(json!({"s":s,"o":uri(&vocab::principal_iri("reader"))}));
+        }
+        rows.push(json!({"s":s,"o":lit("a")}));
+        if filtered {
+            rows.push(json!({"s":s,"o":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"1"}}));
+        }
+        rows.push(json!({"s":s,"o":lit("open")}));
+        rows.push(json!({"id":lit("a"),"owner":s}));
+        rows.into_iter()
+            .map(|row| (200, json!({"results":{"bindings":[row]}}).to_string()))
+            .collect()
     }
 
     #[test]
@@ -629,20 +832,25 @@ predicate="https://schema.org/agent"
             assert_eq!(requests.len(), 4);
             assert!(requests[3].contains("\"where\":{\"key\":[]}"));
         }
-        let (base, worker) = super::super::gateway_tests::server(vec![
-            (200, "ok"),
-            (200, LIST),
-            (200, BEFORE),
-            (200, EMPTY),
-            (200, r#"{"boolean":false}"#),
-            (200, r#"{"boolean":false}"#),
-            (200, BEFORE),
-        ]);
+        let mut replies = vec![
+            (200, "ok".to_string()),
+            (200, LIST.into()),
+            (200, BEFORE.into()),
+            (200, EMPTY.into()),
+            (200, r#"{"boolean":false}"#.into()),
+        ];
+        replies.extend(scope_responses(true));
+        replies.push((200, BEFORE.into()));
+        let refs = replies
+            .into_iter()
+            .map(|(code, body)| (code, &*Box::leak(body.into_boxed_str())))
+            .collect();
+        let (base, worker) = super::super::gateway_tests::server(refs);
         let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
         assert_eq!(remote.projection_count(&req).unwrap().unwrap().total, 1);
         let requests = worker.join().unwrap();
-        assert_eq!(requests.len(), 7);
-        let body: Json = serde_json::from_str(requests[6].split_once("\r\n").unwrap().1).unwrap();
+        assert_eq!(requests.len(), 14);
+        let body: Json = serde_json::from_str(requests[13].split_once("\r\n").unwrap().1).unwrap();
         assert_eq!(body["where"]["priority"], json!([1]));
         assert_eq!(
             body["where"]["assignee"],
@@ -732,21 +940,26 @@ predicate="https://schema.org/agent"
         const LIST: &str = r#"{"declared":[{"name":"board","key":"https://seeds.local/ontology/status","columns":[]}] }"#;
         const BEFORE: &str = r#"{"tx":1,"total":1,"truncated":false,"multi_valued_rows":0,"groups":[{"value":"open","n":1}]}"#;
         const AFTER: &str = r#"{"tx":2,"total":1,"truncated":false,"multi_valued_rows":0,"groups":[{"value":"open","n":1}]}"#;
-        let (base, worker) = super::super::gateway_tests::server(vec![
-            (200, "ok"),
-            (200, LIST),
-            (200, BEFORE),
-            (200, r#"{"boolean":false}"#),
-            (200, r#"{"boolean":false}"#),
-            (200, AFTER),
-        ]);
+        let mut replies = vec![
+            (200, "ok".to_string()),
+            (200, LIST.into()),
+            (200, BEFORE.into()),
+            (200, r#"{"boolean":false}"#.into()),
+        ];
+        replies.extend(scope_responses(false));
+        replies.push((200, AFTER.into()));
+        let refs = replies
+            .into_iter()
+            .map(|(code, body)| (code, &*Box::leak(body.into_boxed_str())))
+            .collect();
+        let (base, worker) = super::super::gateway_tests::server(refs);
         let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
         assert!(remote
             .projection_count(&CountReq::default())
             .unwrap()
             .is_none());
         let requests = worker.join().unwrap();
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 11);
         assert!(requests[2].contains("urn:projection"));
         assert!(requests[3].contains("ASK"));
     }

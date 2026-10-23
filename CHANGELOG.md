@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2026-10-23
+
+### Documentation
+
+- Synchronize the canonical stack overview (#191) ([d96f6a0](https://github.com/scbrown/seeds/commit/d96f6a063e768fae505693f1a464bb5608cee312))
+
+### Fixed
+
+- *(search)* Include descriptions in default search (#161) ([02feead](https://github.com/scbrown/seeds/commit/02feead38d71ccb3ca1128195c547eb590482226))
+
 ## [0.7.0] - 2026-10-23
 
 ### Added

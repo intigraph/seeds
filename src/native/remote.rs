@@ -360,11 +360,14 @@ impl RemoteBackend {
         signer: Option<super::attest::Signer>,
         plain_http_ok: &[String],
     ) -> Result<Self> {
-        if token.is_some() && !secure_enough(base) && !plain_http_allowed(base, plain_http_ok) {
+        if (token.is_some() || signer.is_some())
+            && !secure_enough(base)
+            && !plain_http_allowed(base, plain_http_ok)
+        {
             return Err(SdError::new(
                 ErrorKind::Config,
                 format!(
-                    "refusing to send a bearer token to {base} over plain http; use https (or a \
+                    "refusing to send authentication evidence to {base} over plain http; use https (or a \
                      localhost server), or, if you trust the network path to it, add its host to \
                      [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
                 ),
@@ -389,13 +392,17 @@ impl RemoteBackend {
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
         };
-        match retry_read(|| {
-            quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
-                .call()
-                .map_err(Box::new)
-        })
-        .map_err(|error| *error)
-        {
+        let health = if b.signer.is_some() {
+            b.signed_request("GET", "/health", "", b"")?.call()
+        } else {
+            retry_read(|| {
+                quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .map_err(|e| *e)
+        };
+        match health {
             Ok(_) => Ok(b),
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
@@ -404,6 +411,51 @@ impl RemoteBackend {
                 &r.into_string().unwrap_or_default(),
             )),
         }
+    }
+
+    fn signed_request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<ureq::Request> {
+        let request = self.agent.request(method, &format!("{}{path}", self.base));
+        let mut req = super::provenance::apply_signed(request.set("X-Quipu-Client", "seeds"))
+            .set("Content-Type", content_type);
+        if let Some(signer) = &self.signer {
+            req = req.set(
+                super::attest::HEADER,
+                &signer.header_now(method, path, content_type, body)?,
+            );
+        }
+        Ok(req)
+    }
+
+    /// Identity returned by the protected binding selected by our signing key.
+    /// No environment-provided actor participates in this request or decision.
+    pub fn authenticated_identity(&self) -> Result<Json> {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| SdError::refused("identity requires an enrolled signing key"))?;
+        let value: Json =
+            serde_json::from_str(&self.post("/identity", "application/json", "{}", true)?)
+                .map_err(|_| SdError::refused("invalid authenticated identity response"))?;
+        let principal = value["principal"]
+            .as_str()
+            .filter(|p| !p.is_empty() && p.len() <= 2048 && !p.chars().any(char::is_control));
+        if value["authenticated"] != true
+            || value["auth_class"] != "attested_session"
+            || value["key_id"] != signer.key_id()
+            || value["session"] != signer.session
+            || principal.is_none()
+        {
+            return Err(SdError::refused(
+                "identity response does not match the signing key/session",
+            ));
+        }
+        Ok(value)
     }
 
     /// The server URL.
@@ -444,7 +496,10 @@ impl RemoteBackend {
     ) -> std::result::Result<String, (bool, SdError)> {
         let url = format!("{}{path}", self.base);
         let request = self.agent.post(&url);
-        let request = if path == "/query" && !auth {
+        let request = if self.signer.is_some() {
+            self.signed_request("POST", path, content_type, body.as_bytes())
+                .map_err(|e| (false, e))?
+        } else if path == "/query" && !auth {
             quipu_read_request(request, "query")
         } else {
             quipu_request(request)
@@ -456,7 +511,7 @@ impl RemoteBackend {
         if require_substring {
             req = req.set("X-Quipu-Require-Substring", "v6");
         }
-        if auth {
+        if auth && self.signer.is_none() {
             match &self.signer {
                 // A signed write carries the attestation and never the bearer.
                 Some(s) if super::attest::SIGNED_PATHS.contains(&path) => {
@@ -472,7 +527,7 @@ impl RemoteBackend {
                 }
             }
         }
-        let response = if path == "/query" && !auth {
+        let response = if path == "/query" && !auth && self.signer.is_none() {
             retry_read(|| req.clone().send_string(body).map_err(Box::new)).map_err(|error| *error)
         } else {
             req.send_string(body)
@@ -1028,9 +1083,6 @@ impl RemoteBackend {
                 // A server older than signed /graph/create refuses the signed
                 // request. Creating a graph is idempotent, so retry once with
                 // the bearer when one is configured.
-                Err(_) if self.signer.is_some() && self.token.is_some() => {
-                    self.send_bearer("/graph/create", "application/json", &body)?;
-                }
                 Err(e) => return Err(e),
             }
         }
@@ -1039,37 +1091,23 @@ impl RemoteBackend {
         Ok(())
     }
 
-    /// POST with the bearer even when a signer is configured.
-    fn send_bearer(&self, path: &str, content_type: &str, body: &str) -> Result<String> {
-        let mut req = quipu_request(self.agent.post(&format!("{}{path}", self.base)))
-            .set("Content-Type", content_type);
-        if let Some(t) = &self.token {
-            req = req.set("Authorization", &format!("Bearer {t}"));
-        }
-        match req.send_string(body) {
-            Ok(r) => r
-                .into_string()
-                .map_err(|e| SdError::failed(format!("quipu {path}: reading the response: {e}"))),
-            Err(ureq::Error::Transport(t)) => Err(transport(&self.base, &t)),
-            Err(ureq::Error::Status(code, r)) => Err(status_error(
-                path,
-                code,
-                &r.into_string().unwrap_or_default(),
-            )),
-        }
-    }
-
     /// The server's registered graph IRIs, or `None` if it would not say (an
     /// older server, or any failure): then every graph is created, as before.
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
-        let text = retry_read(|| {
-            quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+        let response = if self.signer.is_some() {
+            self.signed_request("GET", "/graphs", "", b"")
+                .ok()?
                 .call()
-                .map_err(Box::new)
-        })
-        .ok()?
-        .into_string()
-        .ok()?;
+                .ok()?
+        } else {
+            retry_read(|| {
+                quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .ok()?
+        };
+        let text = response.into_string().ok()?;
         let v: Json = serde_json::from_str(&text).ok()?;
         Some(
             v["graphs"]
@@ -2506,7 +2544,7 @@ mod tests {
     }
 
     // aegis-1jh5en: every request seeds sends to quipu (the health check,
-    // the graph listing, a signed-or-bearer POST and a bearer-only POST)
+    // the graph listing, a signed-or-bearer POST and a graph-create POST)
     // carries the client label and the appropriate read/write declarations.
     #[test]
     fn every_quipu_request_carries_the_provenance_headers() {
@@ -2526,7 +2564,7 @@ mod tests {
             )
             .unwrap();
         remote
-            .send_bearer("/graph/create", "application/json", "{}")
+            .post("/graph/create", "application/json", "{}", true)
             .unwrap();
 
         let expected = super::super::provenance::headers();

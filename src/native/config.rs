@@ -139,6 +139,8 @@ pub struct QuipuSection {
     pub signing_session: Option<String>,
     /// The introducer that registered it (`quipu attest register --introducer`).
     pub signing_introducer: Option<String>,
+    /// User-level strict policy: refuse writes without a verified remote key identity.
+    pub require_identity: Option<bool>,
 }
 
 /// `[project]`.
@@ -196,6 +198,7 @@ pub struct Resolved {
     pub selected_credential: Option<super::credentials::Selected>,
     /// The signing key file, session and introducer, if configured.
     pub signing: Option<Signing>,
+    pub require_identity: bool,
     /// The largest write request to send a quipu server, in bytes
     /// (`SEEDS_MAX_WRITE_BYTES`, default [`DEFAULT_MAX_WRITE_BYTES`]). A larger
     /// sync is pushed in batches; a larger single write is refused unsent.
@@ -483,6 +486,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             || p.quipu.signing_key_file.is_some()
             || p.quipu.signing_session.is_some()
             || p.quipu.signing_introducer.is_some()
+            || p.quipu.require_identity.is_some()
         {
             return Err(config_error(format!(
                 "{} sets [quipu] token_file, trusted_hosts, allow_plain_http_hosts or signing_*; only your \
@@ -632,6 +636,10 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         token: inputs.env_token.clone(),
         token_file,
         signing,
+        require_identity: user
+            .as_ref()
+            .and_then(|u| u.quipu.require_identity)
+            .unwrap_or(false),
         max_write_bytes,
         max_write_clauses,
     })

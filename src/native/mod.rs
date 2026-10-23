@@ -157,6 +157,7 @@ pub fn run(cli: &Cli) -> Outcome {
             Command::Key { command } => key_outcome(cli.json, &inputs, &cfg, command),
             // Reads only the configuration: never creates a project id or a store.
             Command::Where => Ok(where_outcome(cli.json, &cfg)),
+            Command::Identity => identity_outcome(cli.json, &cfg),
             _ => run_with(cli, &cfg),
         });
     match result {
@@ -1185,6 +1186,14 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         Command::Info(args) if args.exact_comments => Some(store::lock_search(true)?),
         _ => None,
     };
+    if cfg.require_identity
+        && cli.command.writes()
+        && (cfg.signing.is_none() || !matches!(cfg.location, Location::Url(_)))
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
     let ctx = Ctx {
         now: now(),
         actor: actor(cli),
@@ -1478,6 +1487,45 @@ fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
     o
 }
 
+fn require_actor_match(claim: Option<&str>, principal: &str) -> Result<()> {
+    if claim.is_some_and(|claim| claim != principal) {
+        return Err(SdError::refused(
+            "--actor/SEEDS_ACTOR differs from the authenticated principal",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod key_actor_tests {
+    use super::*;
+    #[test]
+    fn actor_is_selected_by_verified_key_not_user_or_environment_claim() {
+        assert!(require_actor_match(None, "synthetic-owner").is_ok());
+        assert!(require_actor_match(Some("synthetic-owner"), "synthetic-owner").is_ok());
+        assert!(require_actor_match(Some("synthetic-other"), "synthetic-owner").is_err());
+        assert!(require_actor_match(Some(""), "synthetic-owner").is_err());
+    }
+}
+
+fn identity_outcome(json: bool, cfg: &Resolved) -> Result<Outcome> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::refused(
+            "authenticated identity requires a configured Quipu server",
+        ));
+    };
+    let remote = remote::RemoteBackend::connect(
+        url,
+        cfg.graph(),
+        None,
+        signer(cfg, url, cfg.location_from_project)?,
+        &cfg.allow_plain_http_hosts,
+    )?;
+    let value = remote.authenticated_identity()?;
+    let text = value["principal"].as_str().unwrap_or_default().to_owned();
+    Ok(ok(json, value, text, vec![]))
+}
+
 fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome> {
     // pendant_of currently assembles an unpinned snapshot in a local scratch
     // store. Do not silently turn a historical export into a current one.
@@ -1496,6 +1544,21 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    let authenticated_ctx;
+    let ctx = if cfg.signing.is_some() && cli.command.writes() {
+        let identity = remote.authenticated_identity()?;
+        let principal = identity["principal"].as_str().expect("identity validated");
+        require_actor_match(cli.actor.as_deref(), principal)?;
+        authenticated_ctx = Ctx {
+            now: ctx.now.clone(),
+            actor: principal.to_owned(),
+            prefix: ctx.prefix.clone(),
+            claims: ctx.claims.clone(),
+        };
+        &authenticated_ctx
+    } else {
+        ctx
+    };
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
         refuse_old_vocabulary(&ledger_label(cfg), &remote)?;
     }
@@ -3374,6 +3437,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         | Command::Version(_)
         | Command::Completions(_)
         | Command::Init(_)
+        | Command::Identity
         | Command::Where
         | Command::Schema { .. }
         | Command::Capabilities { .. }

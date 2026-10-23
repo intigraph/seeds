@@ -4094,7 +4094,22 @@ pub fn dep_list(b: &dyn Backend, id: &str, up: bool, at: Option<u64>) -> Result<
 
 // ---------------------------------------------------------------- comments
 
+/// How many times `sd comments add` numbers its comment before giving up.
+///
+/// A comment's index is the next one free when it was READ, and its write is
+/// guarded on that index still being free. Two writers that read the same
+/// count collide on it, and the loser's write commits nothing (aegis-epi:
+/// quipu answers 200 with nothing asserted, which sd reports as a conflict).
+/// A lost round means another comment LANDED, so every round makes progress
+/// and N concurrent writers need at most N attempts.
+const COMMENT_INDEX_ATTEMPTS: usize = 16;
+
 /// `sd comments add`.
+///
+/// Comments are append-only, so losing the index to a concurrent comment is
+/// not a conflict with this one: it re-reads and takes the next free index.
+/// That is safe because a lost guard wrote nothing. Any other failure, and a
+/// race still lost after [`COMMENT_INDEX_ATTEMPTS`], is returned as it is.
 pub fn comment_add(
     b: &mut dyn Backend,
     ctx: &Ctx,
@@ -4105,36 +4120,52 @@ pub fn comment_add(
     if text.trim().is_empty() {
         return Err(SdError::usage("a comment needs non-empty text"));
     }
-    let snap = b.snapshot_items(&[id.to_string()])?;
-    snap.get(id)?;
-    let index = snap
-        .comments_on(id)
-        .iter()
-        .map(|c| c.index)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let comment = Comment {
-        seed: id.into(),
-        index,
-        author: author
-            .map(str::to_string)
-            .filter(|a| !a.trim().is_empty())
-            .unwrap_or_else(|| ctx.actor.clone()),
-        text: text.to_string(),
-        created_at: ctx.now.clone(),
-        extra: Default::default(),
-    };
-    let tx = b.commit(
-        &WriteBatch {
-            seeds: vec![],
-            comments: vec![comment.clone()],
-            source: "seeds:comment".into(),
-            ..WriteBatch::default()
-        },
-        ctx,
-    )?;
-    Ok((comment, tx))
+    let mut attempt = 1;
+    loop {
+        let snap = b.snapshot_items(&[id.to_string()])?;
+        snap.get(id)?;
+        let index = snap
+            .comments_on(id)
+            .iter()
+            .map(|c| c.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let comment = Comment {
+            seed: id.into(),
+            index,
+            author: author
+                .map(str::to_string)
+                .filter(|a| !a.trim().is_empty())
+                .unwrap_or_else(|| ctx.actor.clone()),
+            text: text.to_string(),
+            created_at: ctx.now.clone(),
+            extra: Default::default(),
+        };
+        let written = b.commit(
+            &WriteBatch {
+                seeds: vec![],
+                comments: vec![comment.clone()],
+                source: "seeds:comment".into(),
+                ..WriteBatch::default()
+            },
+            ctx,
+        );
+        match written {
+            Ok(tx) => return Ok((comment, tx)),
+            Err(e) if e.kind == ErrorKind::Conflict && attempt < COMMENT_INDEX_ATTEMPTS => {
+                attempt += 1;
+            }
+            Err(e) if e.kind == ErrorKind::Conflict => {
+                return Err(SdError::conflict(format!(
+                    "comment {index} on {id} was taken by a concurrent comment {attempt} times \
+                     running; nothing was written ({}). Re-read before retrying.",
+                    e.message
+                )));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// `sd comments list <id>`, as of `at`.

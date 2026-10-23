@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-10-23
+
+### Added
+
+- Derive signed write actors from authenticated identity (reland #167) (#190) ([fbacbde](https://github.com/scbrown/seeds/commit/fbacbde827e9cad269a6a986943683c5ab4151d2))
+
+## [0.6.7] - 2026-10-22
+
+### Perf
+
+- *(remote)* Read a seed and its comments in one query (#182) ([82d746a](https://github.com/scbrown/seeds/commit/82d746aecbdbd54793f38000e0aee3ebb74e3b7e))
+
+## [0.6.6] - 2026-10-22
+
+### Added
+
+- Add verified installer and concise stack guide (#170) ([41b1810](https://github.com/scbrown/seeds/commit/41b1810500e9561e4c1dff7e4a704926ed651bab))
+
+## [0.6.5] - 2026-10-21
+
+### Documentation
+
+- Clarify Bobbin and Yupana stack descriptions (#179) ([aead072](https://github.com/scbrown/seeds/commit/aead0722da829f91ef5f99c0bf2ad2ef410d2d23))
+
+## [0.6.4] - 2026-10-21
+
+### Miscellaneous
+
+- Relicense under Apache-2.0 (#178) ([bd03a34](https://github.com/scbrown/seeds/commit/bd03a343ad63e25e8492ffdd994c45f27bda9b07))
+
+## [0.6.3] - 2026-10-21
+
+### CI/CD
+
+- *(release)* Verify the repository pendant only for an admitted publisher (#174) ([5090d08](https://github.com/scbrown/seeds/commit/5090d08b6f8f01a2f53c57d91b340cad5b04326d))
+
+### Perf
+
+- *(query)* Reduce repeated owner status discovery joins (#173) ([ad427d2](https://github.com/scbrown/seeds/commit/ad427d213f13a9c7f1ab167677b44a43922eab6c))
+
+## [0.6.2] - 2026-10-21
+
+### Added
+
+- *(pendant)* Repository-owned Seeds pendant with sealed alignment carrier (#171) ([f362d85](https://github.com/scbrown/seeds/commit/f362d85f10b13994df6ba89a8d18881dbe072316))
+
+### Fixed
+
+- *(release)* Compare API rustdoc with committed dependency locks (#168) ([b6d27c3](https://github.com/scbrown/seeds/commit/b6d27c3e945ea55d004a296f65f6479b343e3738))
+- *(ready)* A lapsed deferral is ready again without reopening it (#172) ([db703a5](https://github.com/scbrown/seeds/commit/db703a579c74c2f1c82ba30f297242a542a76528))
+
+## [0.6.1] - 2026-10-19
+
+### Documentation
+
+- Verify the apt signing key before trusting it (#157) ([a7bcf94](https://github.com/scbrown/seeds/commit/a7bcf94a290dc70b1e8c8002827fc6591c1fea7d))
+
+## [0.6.0] - 2026-10-17
+
+### Added
+
+- *(rank)* Order work within priority without changing deadlines (#158) ([e760c8b](https://github.com/scbrown/seeds/commit/e760c8b3fd8f871c0681a97b91b23a3f546233e3))
+- Accept command-scoped credential descriptors (#163) ([5e62930](https://github.com/scbrown/seeds/commit/5e6293036c83ca43c0c57968744cdec7133cad4e))
+- Admit credential providers before native execution (#164) ([fcc6388](https://github.com/scbrown/seeds/commit/fcc63882193495631b8c094a02eaf7018353cb5c))
+
+### Documentation
+
+- Describe current storage and provenance behavior (#162) ([fcc06c4](https://github.com/scbrown/seeds/commit/fcc06c4d1c59b59e3d8254185f20753114c5de25))
+
+### Fixed
+
+- *(docs)* Keep demo artifacts outside ignored log paths (#159) ([f997e13](https://github.com/scbrown/seeds/commit/f997e13e88dafe8bde9b6e6a4dcf23aebab771e6))
+
 ## [0.5.0] - 2026-10-17
 
 ### Added

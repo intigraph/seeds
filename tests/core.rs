@@ -82,6 +82,107 @@ fn comment_reader() -> (CommentReads, String, String, u64) {
     )
 }
 
+/// A concurrent writer that wins the comment index: before each of the first
+/// `wins` comment writes reaches the store, a rival comment takes the same
+/// index, as when two writers read the same count (aegis-epi). The loser's
+/// write then fails the store's own guard, exactly as it does in production.
+struct Racing {
+    inner: QuipuBackend,
+    wins: usize,
+    rivals: usize,
+    commits: usize,
+}
+
+impl Backend for Racing {
+    fn snapshot(&self, at: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.inner.snapshot(at)
+    }
+    fn snapshot_items(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.inner.snapshot_items(ids)
+    }
+    fn ready_ids(&self, at: Option<u64>) -> seeds::error::Result<Vec<String>> {
+        self.inner.ready_ids(at)
+    }
+    fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+        self.inner.claims_of(id)
+    }
+    fn commit(&mut self, batch: &WriteBatch, ctx: &Ctx) -> seeds::error::Result<u64> {
+        self.commits += 1;
+        if self.rivals < self.wins {
+            if let [c] = batch.comments.as_slice() {
+                self.rivals += 1;
+                let mut rival = c.clone();
+                rival.text = format!("rival {}", self.rivals);
+                rival.author = "rival".into();
+                let race = WriteBatch {
+                    comments: vec![rival],
+                    source: "seeds:comment".into(),
+                    ..WriteBatch::default()
+                };
+                self.inner.commit(&race, ctx)?;
+            }
+        }
+        self.inner.commit(batch, ctx)
+    }
+}
+
+fn racing(wins: usize) -> (Racing, String) {
+    let mut inner = backend();
+    let id = mk(&mut inner, "contended item", 1);
+    engine::comment_add(&mut inner, &ctx(2), &id, "before", None).unwrap();
+    let b = Racing {
+        inner,
+        wins,
+        rivals: 0,
+        commits: 0,
+    };
+    (b, id)
+}
+
+#[test]
+fn a_comment_that_loses_its_index_takes_the_next_one() {
+    let (mut b, id) = racing(3);
+    let (c, _) = engine::comment_add(&mut b, &ctx(3), &id, "mine", None).unwrap();
+    assert_eq!(c.index, 5, "1 before + 3 rivals, so mine is fifth");
+    assert_eq!(b.commits, 4, "three lost rounds and one that landed");
+    let all = engine::comment_list(&b.inner, &id, None).unwrap();
+    let indexes: Vec<u64> = all.iter().map(|c| c.index).collect();
+    assert_eq!(indexes, vec![1, 2, 3, 4, 5]);
+    assert_eq!(all.iter().filter(|c| c.text == "mine").count(), 1);
+    assert_eq!(all.iter().filter(|c| c.author == "rival").count(), 3);
+}
+
+#[test]
+fn a_comment_that_never_wins_is_a_conflict_that_wrote_nothing() {
+    let (mut b, id) = racing(usize::MAX);
+    let e = engine::comment_add(&mut b, &ctx(3), &id, "mine", None).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Conflict);
+    assert!(
+        e.message.contains("taken by a concurrent comment") && e.message.contains(&id),
+        "{}",
+        e.message
+    );
+    assert_eq!(b.commits, 16, "bounded: it gives up rather than spinning");
+    let all = engine::comment_list(&b.inner, &id, None).unwrap();
+    assert!(
+        all.iter().all(|c| c.text != "mine"),
+        "a lost race wrote nothing"
+    );
+}
+
+#[test]
+fn a_comment_on_a_missing_item_is_not_retried() {
+    let mut b = Racing {
+        inner: backend(),
+        wins: usize::MAX,
+        rivals: 0,
+        commits: 0,
+    };
+    let e = engine::comment_add(&mut b, &ctx(3), "sd-absent", "mine", None).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::NotFound);
+    assert_eq!(b.commits, 0);
+}
+
 #[test]
 fn comment_list_reads_only_the_named_current_item() {
     let (reader, id, other, _) = comment_reader();
@@ -785,6 +886,77 @@ fn deferred_seeds_are_not_ready_until_the_date() {
     };
     let p = engine::ready(&b, &later, &ReadyReq::default(), None).unwrap();
     assert_eq!(p.issues.len(), 1);
+}
+
+#[test]
+fn a_lapsed_sd_defer_is_ready_again_without_reopening() {
+    // `sd defer` sets status `deferred`; nothing ever sets it back to open, so
+    // before this a lapsed deferral hid its work from every reader of `ready`.
+    let mut b = backend();
+    let dated = mk(&mut b, "dated", 1);
+    let parked = mk(&mut b, "parked", 1);
+    let blocked = mk(&mut b, "blocked", 1);
+    let blocker = mk(&mut b, "blocker", 1);
+    let ephemeral = engine::create(
+        &mut b,
+        &ctx(1),
+        &CreateReq {
+            title: "ephemeral".into(),
+            ephemeral: true,
+            ..CreateReq::default()
+        },
+    )
+    .unwrap()
+    .0
+    .id;
+    engine::dep_add(&mut b, &ctx(2), &blocked, &blocker, "blocks").unwrap();
+    engine::defer(
+        &mut b,
+        &ctx(3),
+        &[dated.clone(), blocked.clone(), ephemeral.clone()],
+        Some("2026-10-01"),
+    )
+    .unwrap();
+    engine::defer(&mut b, &ctx(3), std::slice::from_ref(&parked), None).unwrap();
+    let before = ready_ids(&b, 4);
+    assert!(!before.contains(&dated) && !before.contains(&parked) && !before.contains(&blocked));
+
+    let later = Ctx {
+        now: "2026-10-01T09:00:00Z".into(),
+        ..ctx(0)
+    };
+    let after: Vec<String> = engine::ready(&b, &later, &ReadyReq::default(), None)
+        .unwrap()
+        .issues
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+    assert!(after.contains(&dated), "a lapsed deferral is ready again");
+    assert!(
+        !after.contains(&parked),
+        "a deferral with no date is parked"
+    );
+    assert!(
+        !after.contains(&blocked),
+        "a lapsed deferral that is still blocked stays out"
+    );
+    assert!(
+        !after.contains(&ephemeral),
+        "an ephemeral seed is never ready, even once its deferral lapses"
+    );
+
+    // Status and date are untouched: the deferral's history is kept.
+    let snap = b.snapshot(None).unwrap();
+    let s = snap.get(&dated).unwrap();
+    assert_eq!(
+        (s.status.as_str(), s.defer_until.as_deref()),
+        ("deferred", Some("2026-10-01"))
+    );
+    // And the two ready definitions still agree.
+    assert_eq!(
+        sorted(after),
+        sorted(engine::ready_by_model(&snap, &later.now))
+    );
 }
 
 #[test]

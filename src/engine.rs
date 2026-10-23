@@ -2108,9 +2108,11 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         if let Some(id) = ready_ids.iter().find(|id| !snap.seeds.contains_key(*id)) {
             return Err(missed_at_canonical_iri(b, id)?);
         }
-        if req.include_deferred {
+        {
             // Every deferred seed, and what it is blocked on, so the
-            // unblocked ones are found below exactly as in a snapshot.
+            // unblocked ones are found below exactly as in a snapshot. Read
+            // even without --include-deferred: a deferral whose date has
+            // passed is ready again, and nothing else returns it to open.
             let deferred = SeedQuery {
                 statuses: Some(["deferred".to_string()].into()),
                 ..query.clone()
@@ -2141,16 +2143,18 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         None => None,
     };
     let mut ids = ready_ids;
-    if req.include_deferred {
-        // Status `deferred` is not open, so the backend's ready query never
-        // returns it; the unblocked ones are added here.
-        ids.extend(
-            snap.seeds
-                .values()
-                .filter(|s| s.status == "deferred" && snap.open_blockers(s).is_empty())
-                .map(|s| s.id.clone()),
-        );
-    }
+    // Status `deferred` is not open, so the backend's ready query never
+    // returns it; the unblocked ones are added here. Without
+    // --include-deferred only those whose date has passed are ready.
+    ids.extend(
+        snap.seeds
+            .values()
+            .filter(|s| s.status == "deferred" && snap.open_blockers(s).is_empty())
+            // Ephemeral seeds are never ready (br), even once their deferral
+            // lapses; the backend's ready query never returns them either.
+            .filter(|s| req.include_deferred || (lapsed_deferral(s, &ctx.now) && !s.ephemeral))
+            .map(|s| s.id.clone()),
+    );
     let mut seeds: Vec<Seed> = ids
         .iter()
         .filter_map(|id| snap.seeds.get(id))
@@ -2234,7 +2238,9 @@ fn descendants(snap: &Snapshot, root: &str) -> BTreeSet<String> {
 pub fn ready_by_model(snap: &Snapshot, now: &str) -> Vec<String> {
     snap.seeds
         .values()
-        .filter(|s| s.status == "open" && snap.open_blockers(s).is_empty())
+        .filter(|s| {
+            (s.status == "open" || lapsed_deferral(s, now)) && snap.open_blockers(s).is_empty()
+        })
         .filter(|s| !is_deferred(s, now))
         // Ephemeral seeds are never ready (br); the SPARQL definition gets
         // this by reading only the project graph.
@@ -2248,6 +2254,13 @@ fn is_deferred(s: &Seed, now: &str) -> bool {
     // defer ("2026-10-01") sorts before that day's instants, so it releases at
     // the start of the day.
     s.defer_until.as_deref().is_some_and(|d| d > now)
+}
+
+/// A `deferred` seed whose date has passed. It is ready again without anyone
+/// reopening it; the status and date stay as they were, so the deferral's
+/// history is kept. A deferral with no date is parked and never lapses.
+fn lapsed_deferral(s: &Seed, now: &str) -> bool {
+    s.status == "deferred" && s.defer_until.as_deref().is_some_and(|d| d <= now)
 }
 
 /// `sd count`.
@@ -4079,7 +4092,22 @@ pub fn dep_list(b: &dyn Backend, id: &str, up: bool, at: Option<u64>) -> Result<
 
 // ---------------------------------------------------------------- comments
 
+/// How many times `sd comments add` numbers its comment before giving up.
+///
+/// A comment's index is the next one free when it was READ, and its write is
+/// guarded on that index still being free. Two writers that read the same
+/// count collide on it, and the loser's write commits nothing (aegis-epi:
+/// quipu answers 200 with nothing asserted, which sd reports as a conflict).
+/// A lost round means another comment LANDED, so every round makes progress
+/// and N concurrent writers need at most N attempts.
+const COMMENT_INDEX_ATTEMPTS: usize = 16;
+
 /// `sd comments add`.
+///
+/// Comments are append-only, so losing the index to a concurrent comment is
+/// not a conflict with this one: it re-reads and takes the next free index.
+/// That is safe because a lost guard wrote nothing. Any other failure, and a
+/// race still lost after [`COMMENT_INDEX_ATTEMPTS`], is returned as it is.
 pub fn comment_add(
     b: &mut dyn Backend,
     ctx: &Ctx,
@@ -4090,36 +4118,52 @@ pub fn comment_add(
     if text.trim().is_empty() {
         return Err(SdError::usage("a comment needs non-empty text"));
     }
-    let snap = b.snapshot_items(&[id.to_string()])?;
-    snap.get(id)?;
-    let index = snap
-        .comments_on(id)
-        .iter()
-        .map(|c| c.index)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let comment = Comment {
-        seed: id.into(),
-        index,
-        author: author
-            .map(str::to_string)
-            .filter(|a| !a.trim().is_empty())
-            .unwrap_or_else(|| ctx.actor.clone()),
-        text: text.to_string(),
-        created_at: ctx.now.clone(),
-        extra: Default::default(),
-    };
-    let tx = b.commit(
-        &WriteBatch {
-            seeds: vec![],
-            comments: vec![comment.clone()],
-            source: "seeds:comment".into(),
-            ..WriteBatch::default()
-        },
-        ctx,
-    )?;
-    Ok((comment, tx))
+    let mut attempt = 1;
+    loop {
+        let snap = b.snapshot_items(&[id.to_string()])?;
+        snap.get(id)?;
+        let index = snap
+            .comments_on(id)
+            .iter()
+            .map(|c| c.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let comment = Comment {
+            seed: id.into(),
+            index,
+            author: author
+                .map(str::to_string)
+                .filter(|a| !a.trim().is_empty())
+                .unwrap_or_else(|| ctx.actor.clone()),
+            text: text.to_string(),
+            created_at: ctx.now.clone(),
+            extra: Default::default(),
+        };
+        let written = b.commit(
+            &WriteBatch {
+                seeds: vec![],
+                comments: vec![comment.clone()],
+                source: "seeds:comment".into(),
+                ..WriteBatch::default()
+            },
+            ctx,
+        );
+        match written {
+            Ok(tx) => return Ok((comment, tx)),
+            Err(e) if e.kind == ErrorKind::Conflict && attempt < COMMENT_INDEX_ATTEMPTS => {
+                attempt += 1;
+            }
+            Err(e) if e.kind == ErrorKind::Conflict => {
+                return Err(SdError::conflict(format!(
+                    "comment {index} on {id} was taken by a concurrent comment {attempt} times \
+                     running; nothing was written ({}). Re-read before retrying.",
+                    e.message
+                )));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// `sd comments list <id>`, as of `at`.

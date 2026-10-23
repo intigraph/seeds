@@ -26,7 +26,7 @@ the storage; the core never touches a file or the network, which keeps it
 
 ## The pendant
 
-A **pendant** is quipu's share artifact (formerly called a qpack), used as is.
+A **pendant** is quipu's share artifact, used as is.
 seeds does not have a file format of its own:
 
 | file | what it is |
@@ -160,18 +160,15 @@ back and compares; a mismatch is a conflict (exit 4), never a success. Four
 simultaneous `--claim`s against one server leave exactly one winner
 (`tests/modes.rs`).
 
-Two things found while building this, which anyone running mode 2 should know:
+quipu evaluates `/update` over a slice containing the facts the update can
+match or write when its planner can identify that slice. Unsupported update
+forms use the full-store evaluation path. When its configured fact limit is
+enabled, exceeding that limit refuses the update. Write cost therefore depends
+on the update's scope and evaluation path, not just the size of the project graph.
 
-- **quipu's `/update` evaluates `WHERE` only over registered named graphs.**
-  Against an unregistered graph a precondition matches nothing, so a
-  `FILTER NOT EXISTS` guard passes vacuously and a second create writes a
-  duplicate (reproduced against quipu-server 0.9.1). seeds registers the
-  project graph (`POST /graph/create`) before its first write.
-- **`/update` copies the whole store into memory on every call**, so its cost
-  grows with the server's store. A seeds project on a dedicated quipu server is
-  fine; a large shared knowledge graph makes every write as slow as that graph
-  is big. An expected-value precondition on quipu's cheaper write paths would
-  remove this.
+Named graphs written by `/update` are registered after the transaction commits,
+so subsequent updates include their facts in the evaluation dataset. seeds also
+registers its project graph (`POST /graph/create`) before its first write.
 
 A configured server that cannot be reached is exit 7. seeds never falls back to
 a local store, because two stores would then hold two ledgers.
@@ -183,10 +180,26 @@ succeeds and says the response was lost; if not, it exits **8
 (INDETERMINATE)** and names the ids to check, because the write may still
 land and a retried `create` would mint a second seed.
 
-**Provenance.** quipu records every `/update` as the same anonymous
-"sparql-update", so seeds writes its own record of each write (actor, source,
-time, seeds touched) into a side graph, `<project graph>#seeds-provenance`,
-which exports and snapshots never read.
+Owner-filtered lists start regular open-family status arms from the status
+index; closed and unconstrained owner lists retain the owner index first.
+Default-open matching stays in the discovery query. The remote graph is shared
+and mutable: another writer may add an item or remove its status between a
+presence check and discovery, even within one CLI invocation. Without an
+immutable revision binding those reads, seeds never caches absence or omits
+the missing/irregular-status branch. Decoding still decides exact membership.
+
+**Provenance.** quipu records the caller's declared `actor` and `source` on
+`/update` transactions; these declarations are separate from the authenticated
+principal. An omitted actor is unknown, and an omitted source defaults to
+`sparql-update`.
+
+seeds also writes a `seeds:Write` record into a side graph. It links each item
+version (`id@revision`) produced by the write to the caller's declared agent,
+harness, model and session claims. This per-item version mapping is distinct
+from transaction-level attribution. The side graph is
+`<project graph>#seeds-provenance`, or `<project graph>-seeds-provenance` when the
+project graph already contains `#`. Exports and snapshots read the project
+ledger, not this side graph.
 
 **Tokens.** The bearer goes only where you chose to send it: a token (from
 `SEEDS_QUIPU_TOKEN`, `SEEDS_QUIPU_TOKEN_FILE` or your user config's
@@ -194,6 +207,76 @@ which exports and snapshots never read.
 project file only if your user config lists its host in `trusted_hosts`, and
 never over plain `http://` except to localhost or to a host your user config
 lists in `allow_plain_http_hosts`.
+
+### Explicit command-scoped credentials (native Unix)
+
+A trusted launcher can opt in by setting both
+`SEEDS_QUIPU_CREDENTIAL_PRINCIPAL` (a nonsecret declaration) and
+`SEEDS_QUIPU_TOKEN_FD` (an inherited descriptor number, at least 3). The
+selected descriptor wins over ambient `SEEDS_QUIPU_TOKEN` and
+`SEEDS_QUIPU_TOKEN_FILE`; neither ambient credential is read. There is no
+`QUIPU_AUTH_TOKEN_FILE` alias. Project configuration cannot select a descriptor
+or executable resolver. The launcher must clear inherited Seeds token inputs
+in the child only, clear both selection variables for unselected children, and
+must not copy bearer bytes into environment, arguments,
+persistent configuration or logs.
+
+The descriptor must refer to an anonymous/unlinked, user-owned regular file,
+private to its owner, containing 1–4096 printable ASCII bytes without whitespace.
+An inherited anonymous file works on Linux and macOS; other platforms refuse
+this selection. Destination trust and transport policy are checked **before**
+reading it. The backend reads a bounded duplicate at offset zero and closes that
+duplicate; the launcher owns and closes its original descriptor. Provider output
+must remain private and stable until the child has read it. Pipes and linked
+files are refused. Selection resolves at command/backend creation, not on every
+HTTP request.
+
+An unavailable, malformed or denied selected credential refuses the command;
+there is no same-command retry using a shared credential. Blank, whitespace-only
+or non-Unicode selection metadata is invalid; only both variables being absent
+means deselection. To explicitly override
+or return to shared defaults, remove **both** selection variables before starting
+the next command and deliberately set that command's normal token inputs. Seeds
+cannot infer whether an inherited environment variable was intentionally set.
+A principal declaration is not proof of the principal authenticated by the
+server. SDK callers explicitly construct the same native selection contract;
+the core library does not import process environment or resolve providers. A
+selected bearer cannot be combined with a signing identity: signed requests
+authenticate the signing key instead of the selected bearer.
+
+#### Launcher admission before provider access
+
+Append `--credential-admission` to the intended command, using the same working
+directory, arguments and sanitized child environment. Seeds resolves its normal
+configuration but does not execute the operation, open a store, read a token
+file/descriptor, create a project id, or make a network request. Even `init` and
+other early-exit commands cannot run under this flag. Only a remote destination
+admitted by the native trust/transport policy and compatible with bearer
+authentication returns JSON:
+
+```json
+{"contract":"seeds-credential-admission/v1","admitted":true,"destination":"https://example.org","destination_binding":true}
+```
+
+Local stores, untrusted project destinations, unsafe transport, signing
+identities, and URLs with credentials/query/fragment or malformed authority
+refuse. The launcher must refuse an unsupported CLI or malformed proof **before**
+accessing its provider; it must not interpret an open health response as this
+admission contract.
+
+After fetching its selected credential, the launcher supplies the returned URL
+unchanged as `SEEDS_QUIPU_CREDENTIAL_DESTINATION`, alongside the principal and
+descriptor metadata. Native code checks this exact destination again before
+reading the descriptor, so an intervening configuration change cannot retarget
+the bearer. This optional binding does not change existing explicit descriptor
+callers, but a strict provider adapter requires it. Destination metadata without
+both selection fields is invalid. Clear all three fields on explicit
+deselection; no provider error or server refusal triggers a shared retry.
+
+This is a source protocol, not an installed launcher or authenticated SDK
+receipt. Providers and launchers remain outside the native CLI; their delivery,
+private descriptor lifetime, sanitation and authenticated attribution require
+separate controls.
 
 ## Mode 3: sync
 

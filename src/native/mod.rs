@@ -11,6 +11,7 @@ pub mod attest;
 pub mod cli;
 mod command_context;
 pub mod config;
+pub mod credentials;
 mod cutover;
 pub mod provenance;
 pub mod remote;
@@ -46,6 +47,18 @@ pub struct Outcome {
 /// Run a parsed command against the configuration in the environment.
 pub fn run(cli: &Cli) -> Outcome {
     let _command_context = command_context::Scope::new(&cli.command);
+    // This must precede even init/merge-driver and the other early exits.
+    // A launcher may ask about a mutating command, but admission never runs it.
+    if cli.credential_admission {
+        let result =
+            config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
+                .and_then(|i| config::resolve(&i))
+                .and_then(|cfg| credential_admission(&cfg));
+        return match result {
+            Ok(value) => ok(true, value.clone(), value.to_string(), vec![]),
+            Err(e) => error_outcome(true, &e, vec![]),
+        };
+    }
     if let Some(f) = cli.format.as_deref() {
         if !matches!(f, "text" | "json" | "csv") {
             let e = SdError::usage(format!(
@@ -144,6 +157,7 @@ pub fn run(cli: &Cli) -> Outcome {
             Command::Key { command } => key_outcome(cli.json, &inputs, &cfg, command),
             // Reads only the configuration: never creates a project id or a store.
             Command::Where => Ok(where_outcome(cli.json, &cfg)),
+            Command::Identity => identity_outcome(cli.json, &cfg),
             _ => run_with(cli, &cfg),
         });
     match result {
@@ -296,10 +310,14 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
         ),
         (
             "quipu.token",
-            serde_json::json!(match (&cfg.token, &cfg.token_file) {
-                (Some(_), _) => "(set: SEEDS_QUIPU_TOKEN)",
-                (None, Some(_)) => "(set: token_file)",
-                (None, None) => "(unset)",
+            serde_json::json!(if cfg.selected_credential.is_some() {
+                "(set: selected descriptor)"
+            } else {
+                match (&cfg.token, &cfg.token_file) {
+                    (Some(_), _) => "(set: SEEDS_QUIPU_TOKEN)",
+                    (None, Some(_)) => "(set: token_file)",
+                    (None, None) => "(unset)",
+                }
             }),
         ),
         ("quipu.token_file", path(&cfg.token_file)),
@@ -1168,6 +1186,14 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         Command::Info(args) if args.exact_comments => Some(store::lock_search(true)?),
         _ => None,
     };
+    if cfg.require_identity
+        && cli.command.writes()
+        && (cfg.signing.is_none() || !matches!(cfg.location, Location::Url(_)))
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
     let ctx = Ctx {
         now: now(),
         actor: actor(cli),
@@ -1227,7 +1253,60 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
 /// The bearer for writes to `url`, if one is configured AND may go there: a
 /// token is never sent to a server URL that came from a project file unless
 /// the user's own config lists its host in `trusted_hosts`.
+fn admit_selected_destination(cfg: &Resolved, url: &str, from_project: bool) -> Result<()> {
+    if cfg.signing.is_some() {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "selected bearer cannot be combined with a signing identity",
+        ));
+    }
+    let valid_url = url::Url::parse(url).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https")
+            && u.has_host()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && !url.chars().any(char::is_whitespace)
+    });
+    if !valid_url
+        || !cfg.token_allowed(url, from_project)
+        || (!remote::secure_enough(url)
+            && !remote::plain_http_allowed(url, &cfg.allow_plain_http_hosts))
+    {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "selected credential destination is not admitted",
+        ));
+    }
+    Ok(())
+}
+
+fn credential_admission(cfg: &Resolved) -> Result<Json> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "named credentials require a remote destination",
+        ));
+    };
+    admit_selected_destination(cfg, url, cfg.location_from_project)?;
+    Ok(
+        json!({"contract": "seeds-credential-admission/v1", "admitted": true,
+              "destination": url, "destination_binding": true}),
+    )
+}
+
 fn token(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<String>> {
+    if let Some(selected) = &cfg.selected_credential {
+        admit_selected_destination(cfg, url, from_project)?;
+        if !selected.permits_destination(url) {
+            return Err(SdError::new(
+                ErrorKind::Config,
+                "selected credential destination changed after admission",
+            ));
+        }
+        return selected.read().map(Some);
+    }
     if !cfg.token_allowed(url, from_project) {
         if cfg.token.is_some() || cfg.token_file.is_some() {
             eprintln!(
@@ -1408,6 +1487,45 @@ fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
     o
 }
 
+fn require_actor_match(claim: Option<&str>, principal: &str) -> Result<()> {
+    if claim.is_some_and(|claim| claim != principal) {
+        return Err(SdError::refused(
+            "--actor/SEEDS_ACTOR differs from the authenticated principal",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod key_actor_tests {
+    use super::*;
+    #[test]
+    fn actor_is_selected_by_verified_key_not_user_or_environment_claim() {
+        assert!(require_actor_match(None, "synthetic-owner").is_ok());
+        assert!(require_actor_match(Some("synthetic-owner"), "synthetic-owner").is_ok());
+        assert!(require_actor_match(Some("synthetic-other"), "synthetic-owner").is_err());
+        assert!(require_actor_match(Some(""), "synthetic-owner").is_err());
+    }
+}
+
+fn identity_outcome(json: bool, cfg: &Resolved) -> Result<Outcome> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::refused(
+            "authenticated identity requires a configured Quipu server",
+        ));
+    };
+    let remote = remote::RemoteBackend::connect(
+        url,
+        cfg.graph(),
+        None,
+        signer(cfg, url, cfg.location_from_project)?,
+        &cfg.allow_plain_http_hosts,
+    )?;
+    let value = remote.authenticated_identity()?;
+    let text = value["principal"].as_str().unwrap_or_default().to_owned();
+    Ok(ok(json, value, text, vec![]))
+}
+
 fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome> {
     // pendant_of currently assembles an unpinned snapshot in a local scratch
     // store. Do not silently turn a historical export into a current one.
@@ -1426,6 +1544,21 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    let authenticated_ctx;
+    let ctx = if cfg.signing.is_some() && cli.command.writes() {
+        let identity = remote.authenticated_identity()?;
+        let principal = identity["principal"].as_str().expect("identity validated");
+        require_actor_match(cli.actor.as_deref(), principal)?;
+        authenticated_ctx = Ctx {
+            now: ctx.now.clone(),
+            actor: principal.to_owned(),
+            prefix: ctx.prefix.clone(),
+            claims: ctx.claims.clone(),
+        };
+        &authenticated_ctx
+    } else {
+        ctx
+    };
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
         refuse_old_vocabulary(&ledger_label(cfg), &remote)?;
     }
@@ -3304,6 +3437,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         | Command::Version(_)
         | Command::Completions(_)
         | Command::Init(_)
+        | Command::Identity
         | Command::Where
         | Command::Schema { .. }
         | Command::Capabilities { .. }
@@ -3872,5 +4006,68 @@ mod vocabulary_check_tests {
         let (r, calls, _) = run(vec![Ok(false)]);
         assert!(r.is_ok());
         assert_eq!(calls, 1);
+    }
+}
+
+#[cfg(test)]
+mod selected_credential_tests {
+    use super::*;
+
+    fn config() -> Resolved {
+        config::resolve(&config::Inputs {
+            cwd: std::env::temp_dir(),
+            env_credential_principal: Some("test-principal".into()),
+            env_token_fd: Some("2147483647".into()),
+            env_token: Some("foreign-inline-fixture".into()),
+            env_token_file: Some("missing-foreign-file".into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn selected_failure_never_uses_inherited_token_or_file() {
+        let mut cfg = config();
+        let e = token(&cfg, "https://example.org", false).unwrap_err();
+        assert!(e.to_string().contains("selected credential unavailable"));
+        cfg.token = None;
+        assert!(token(&cfg, "https://example.org", false).is_err());
+        cfg.token_file = None;
+        assert!(token(&cfg, "https://example.org", false).is_err());
+        cfg.signing = Some(config::Signing {
+            key_file: "unread-signing-key".into(),
+            session: "fixture".into(),
+            introducer: "fixture".into(),
+        });
+        assert!(token(&cfg, "https://example.org", false)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be combined"));
+        cfg.signing = None;
+        cfg.selected_credential = None;
+        cfg.token = Some("shared-next-command-fixture".into());
+        assert_eq!(
+            token(&cfg, "https://example.org", false)
+                .unwrap()
+                .as_deref(),
+            Some("shared-next-command-fixture")
+        );
+    }
+
+    #[test]
+    fn destination_admission_precedes_descriptor_access() {
+        let mut cfg = config();
+        for (url, from_project) in [
+            ("https://untrusted.example.org", true),
+            ("http://remote.example.org", false),
+        ] {
+            let e = token(&cfg, url, from_project).unwrap_err();
+            assert!(e.to_string().contains("destination is not admitted"));
+        }
+        cfg.trusted_hosts.push("untrusted.example.org".into());
+        assert!(token(&cfg, "https://untrusted.example.org", true)
+            .unwrap_err()
+            .to_string()
+            .contains("selected credential unavailable"));
     }
 }

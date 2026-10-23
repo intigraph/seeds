@@ -48,10 +48,12 @@ check:
     cargo clippy --locked --manifest-path tools/acquisition-verifier/Cargo.toml -- -D warnings
     cargo test
     cargo build --locked --bin sd
+    CREDENTIAL_SD="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/sd")')" python3 tests/credential_descriptor.py
     HISTORY_SD="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/sd")')" python3 tests/history_wire.py
     cargo test --no-default-features
     python3 tests/rank_migration.py
     bash scripts/ci/crates-publish-guard.sh --selftest
+    python3 -m unittest discover -s scripts/ci/tests -p 'test_locked_semver.py'
     mdbook build docs/book
 
 # The local CI equivalent: the native checks plus the wasm job
@@ -66,3 +68,8 @@ remote-test:
 # Opt-in synthetic acquisition controls: independent pinned producer, one driver.
 acquisition-fixture-test:
     bash tests/run-acquisition-fixture.sh
+
+# Verify the standalone installer using private release fixtures.
+installer-check:
+    sh -n install.sh
+    python3 scripts/test-install-release.py

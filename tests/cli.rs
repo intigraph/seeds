@@ -3302,3 +3302,18 @@ fn decimal_rank_cli_roundtrip_and_single_item_move() {
     );
     assert_eq!(s.json(&["show", moved_id])[0]["rank"], "-1");
 }
+
+#[test]
+fn strict_identity_refuses_unkeyed_local_write_before_opening_a_store() {
+    let s = Sandbox::new("strict-key-identity");
+    std::fs::create_dir_all(s.root.join("home/.config/seeds")).unwrap();
+    std::fs::write(
+        s.root.join("home/.config/seeds/config.toml"),
+        "[quipu]\nrequire_identity = true\n",
+    )
+    .unwrap();
+    let output = s.run(&["create", "Synthetic unsigned write"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("enrolled remote session key"));
+    assert!(!s.work().join(".seeds/seeds.db").exists());
+}

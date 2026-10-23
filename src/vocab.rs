@@ -329,10 +329,38 @@ pub(crate) fn seed_query_pattern_var(
     q: &crate::backend::SeedQuery,
     subject: &str,
 ) -> Option<String> {
+    seed_query_pattern_var_with_status_defaults(q, subject, true)
+}
+
+/// Explicit query-planning variant. Shared mutable remote graphs must include
+/// defaults: a separate presence check cannot establish a discovery snapshot.
+pub(crate) fn seed_query_pattern_var_with_status_defaults(
+    q: &crate::backend::SeedQuery,
+    subject: &str,
+    include_missing_status: bool,
+) -> Option<String> {
     use crate::validate::escape_literal;
     if let Some(owner) = &q.assignee {
         let mut rest = q.clone();
         rest.assignee = None;
+        let mut other_filters = rest.clone();
+        other_filters.statuses = None;
+        let simple_open_family = !include_missing_status
+            && !q.other_statuses
+            && other_filters.is_unconstrained()
+            && q.statuses.as_ref().is_some_and(|statuses| {
+                !statuses.is_empty() && statuses.iter().all(|status| open_family_status(status))
+            });
+        if simple_open_family {
+            // One status-driven BGP covers both supported owner encodings.
+            // Duplicating it in two UNION arms repeats the type/status join.
+            let owner_var = format!("{subject}_owner");
+            let scope = format!(
+                "{subject} <{}> {owner_var} ; a <{}> . FILTER(sameTerm({owner_var}, <{}>) || sameTerm({owner_var}, \"{}\")) ",
+                term::assigned_to(), term::work_item(), principal_iri(owner), escape_literal(owner),
+            );
+            return seed_query_pattern_scoped(&rest, &scope, subject, false);
+        }
         let owners = [
             format!("<{}>", principal_iri(owner)),
             format!("\"{}\"", escape_literal(owner)),
@@ -347,20 +375,28 @@ pub(crate) fn seed_query_pattern_var(
                 );
                 format!(
                     "{{ {} }}",
-                    seed_query_pattern_scoped(&rest, &scope, subject)
+                    seed_query_pattern_scoped(&rest, &scope, subject, include_missing_status)
                         .expect("owner scope is nonempty")
                 )
             })
             .collect::<Vec<_>>();
         return Some(branches.join(" UNION "));
     }
-    seed_query_pattern_scoped(q, "", subject)
+    seed_query_pattern_scoped(q, "", subject, include_missing_status)
+}
+
+fn open_family_status(status: &str) -> bool {
+    matches!(
+        status,
+        "open" | "in_progress" | "blocked" | "hooked" | "deferred"
+    )
 }
 
 fn seed_query_pattern_scoped(
     q: &crate::backend::SeedQuery,
     scope: &str,
     subject: &str,
+    include_missing_status: bool,
 ) -> Option<String> {
     use crate::validate::escape_literal;
     if q.is_unconstrained() {
@@ -414,9 +450,15 @@ fn seed_query_pattern_scoped(
         let p = term::status();
         let mut alts: Vec<String> = want
             .iter()
-            .map(|w| format!("{{ {scope}{subject} <{p}> {} }}", lit(w)))
+            .map(|w| {
+                if !scope.is_empty() && open_family_status(w) {
+                    format!("{{ {subject} <{p}> {} . {scope} }}", lit(w))
+                } else {
+                    format!("{{ {scope}{subject} <{p}> {} }}", lit(w))
+                }
+            })
             .collect();
-        if want.contains("open") {
+        if want.contains("open") && include_missing_status {
             let v = var();
             alts.push(missing(&p, v.clone(), plain(&v)));
         }
@@ -585,3 +627,7 @@ mod tests {
         assert_eq!(item_id(&comment_iri("sd-a", 1)), None);
     }
 }
+
+#[cfg(test)]
+#[path = "vocab/owner_query_tests.rs"]
+mod owner_query_tests;

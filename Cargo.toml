@@ -1,9 +1,9 @@
 [package]
 name = "seeds-ai"
-version = "0.5.0"
+version = "0.7.0"
 edition = "2021"
 description = "A beads-compatible issue tracker for AI agents that stores work items as facts in a quipu knowledge graph"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/scbrown/seeds"
 # 1.89 for `std::fs::File::lock`, the cross-process write lock the native
 # store takes (see src/native/store.rs). quipu-ai itself needs 1.85.
@@ -28,7 +28,7 @@ required-features = ["native"]
 # core, which builds for wasm32-unknown-unknown with `--no-default-features`
 # (see `just wasm`).
 default = ["native"]
-native = ["dep:clap", "dep:clap_complete", "dep:toml", "dep:ureq", "dep:ed25519-dalek", "dep:getrandom", "dep:base64", "dep:jiff", "dep:yaml-rust2", "shacl"]
+native = ["dep:libc", "dep:url", "dep:clap", "dep:clap_complete", "dep:toml", "dep:ureq", "dep:ed25519-dalek", "dep:getrandom", "dep:base64", "dep:jiff", "dep:yaml-rust2", "shacl"]
 # Validate every write against the WorkItem shapes (camayoc's, plus the seeds
 # shape). quipu's SHACL engine is not part of quipu's own wasm32 gate, so the
 # wasm build leaves it out and says so rather than claiming a check it did not
@@ -52,10 +52,12 @@ clap_complete = { version = "4.5", optional = true }
 toml = { version = "0.8", optional = true }
 # The shared-server backend (native only): quipu over HTTP.
 ureq = { version = "2", optional = true }
+url = { version = "2", optional = true }
 # Signed writes to quipu (native only): an Ed25519 key registered once with
 # `quipu attest`, a random nonce per write, base64url for the header.
 ed25519-dalek = { version = "2", optional = true }
 getrandom = { version = "0.2", optional = true }
+libc = { version = "0.2", optional = true }
 base64 = { version = "0.22", optional = true }
 # The local time zone (native only): a bare --due date means 09:00 local, as
 # br stores it. Unlicense OR MIT.

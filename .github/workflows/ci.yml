@@ -41,6 +41,8 @@ jobs:
       - run: cargo test --no-default-features
       - name: Publishing guard refuses what it must
         run: bash scripts/ci/crates-publish-guard.sh --selftest
+      - name: Locked semver baseline provenance controls
+        run: python3 -m unittest discover -s scripts/ci/tests -p 'test_locked_semver.py'
       - name: Prove the built binary round-trips create -> dep add -> ready -> close
         run: |
           set -euo pipefail
@@ -181,3 +183,20 @@ jobs:
         with:
           mdbook-version: '0.5.4'
       - run: mdbook build docs/book
+
+  repository-pendant-source:
+    name: Repository pendant source controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned RDF parser
+        run: python3 -m pip install rdflib==7.6.0
+      - name: Test pointer, knowledge and publication boundaries
+        run: |
+          python3 scripts/test-repository-share-query.py
+          python3 scripts/test-repository-knowledge.py
+          python3 scripts/test-repository-share-publication.py

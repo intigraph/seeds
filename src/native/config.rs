@@ -139,6 +139,8 @@ pub struct QuipuSection {
     pub signing_session: Option<String>,
     /// The introducer that registered it (`quipu attest register --introducer`).
     pub signing_introducer: Option<String>,
+    /// User-level strict policy: refuse writes without a verified remote key identity.
+    pub require_identity: Option<bool>,
 }
 
 /// `[project]`.
@@ -192,8 +194,11 @@ pub struct Resolved {
     pub token: Option<String>,
     /// A file to read the bearer token from, if configured.
     pub token_file: Option<PathBuf>,
+    /// Explicit command-scoped credential selection; ambient tokens cannot override it.
+    pub selected_credential: Option<super::credentials::Selected>,
     /// The signing key file, session and introducer, if configured.
     pub signing: Option<Signing>,
+    pub require_identity: bool,
     /// The largest write request to send a quipu server, in bytes
     /// (`SEEDS_MAX_WRITE_BYTES`, default [`DEFAULT_MAX_WRITE_BYTES`]). A larger
     /// sync is pushed in batches; a larger single write is refused unsent.
@@ -244,6 +249,9 @@ pub struct Inputs {
     pub env_token: Option<String>,
     /// `SEEDS_QUIPU_TOKEN_FILE`.
     pub env_token_file: Option<String>,
+    pub env_credential_principal: Option<String>,
+    pub env_token_fd: Option<String>,
+    pub env_credential_destination: Option<String>,
     /// `SEEDS_MAX_WRITE_BYTES`.
     pub env_max_write_bytes: Option<String>,
     /// `SEEDS_MAX_WRITE_CLAUSES`.
@@ -264,6 +272,26 @@ impl Inputs {
         flag_graph: Option<String>,
     ) -> Result<Self> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        // Presence is security-significant: invalid/blank selection must never
+        // be reinterpreted as deselection and restore an ambient bearer.
+        let selection_var = |key: &str| -> Result<Option<String>> {
+            std::env::var_os(key)
+                .map(|value| {
+                    value
+                        .into_string()
+                        .map_err(|_| config_error("invalid selected credential metadata".into()))
+                })
+                .transpose()
+        };
+        let principal = selection_var("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL")?;
+        let descriptor = selection_var("SEEDS_QUIPU_TOKEN_FD")?;
+        let destination = selection_var("SEEDS_QUIPU_CREDENTIAL_DESTINATION")?;
+        if destination.is_some() && (principal.is_none() || descriptor.is_none()) {
+            return Err(config_error(
+                "credential destination requires explicit selection".into(),
+            ));
+        }
+        let selected = principal.is_some() || descriptor.is_some();
         let home = var("HOME").map(PathBuf::from);
         let user_config_dir = var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -279,8 +307,11 @@ impl Inputs {
             env_prefix: var("SEEDS_PREFIX"),
             env_pendant: var("SEEDS_PENDANT_DIR"),
             env_sync_remote: var("SEEDS_SYNC_REMOTE"),
-            env_token: var("SEEDS_QUIPU_TOKEN"),
-            env_token_file: var("SEEDS_QUIPU_TOKEN_FILE"),
+            env_token: (!selected).then(|| var("SEEDS_QUIPU_TOKEN")).flatten(),
+            env_token_file: (!selected).then(|| var("SEEDS_QUIPU_TOKEN_FILE")).flatten(),
+            env_credential_principal: principal,
+            env_token_fd: descriptor,
+            env_credential_destination: destination,
             env_max_write_bytes: var("SEEDS_MAX_WRITE_BYTES"),
             env_max_write_clauses: var("SEEDS_MAX_WRITE_CLAUSES"),
             flag_store,
@@ -455,6 +486,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             || p.quipu.signing_key_file.is_some()
             || p.quipu.signing_session.is_some()
             || p.quipu.signing_introducer.is_some()
+            || p.quipu.require_identity.is_some()
         {
             return Err(config_error(format!(
                 "{} sets [quipu] token_file, trusted_hosts, allow_plain_http_hosts or signing_*; only your \
@@ -595,9 +627,19 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         allow_plain_http_hosts,
         pendant,
         sync_remote,
+        selected_credential: super::credentials::Selected::parse(
+            inputs.env_credential_principal.as_deref(),
+            inputs.env_token_fd.as_deref(),
+        )?
+        .map(|s| s.bind_destination(inputs.env_credential_destination.as_deref()))
+        .transpose()?,
         token: inputs.env_token.clone(),
         token_file,
         signing,
+        require_identity: user
+            .as_ref()
+            .and_then(|u| u.quipu.require_identity)
+            .unwrap_or(false),
         max_write_bytes,
         max_write_clauses,
     })

@@ -1,0 +1,120 @@
+{
+  "source_revision": "b6d27c3e945ea55d004a296f65f6479b343e3738",
+  "reviewed_at": "2026-10-21T00:08:22.968352Z",
+  "max_age_seconds": 2592000,
+  "records": [
+    {
+      "kind": "idea",
+      "source": "docs/book/src/why-facts.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fwhy-facts.md",
+      "summary": "Seeds versions individual work-item facts in Quipu transactions rather than treating the board as a sequence of whole database snapshots.",
+      "source_sha256": "3ede415ed6d441b53a218219eae65d635282966c91d53dc3aaa016505b4d09ae",
+      "type": "Concept"
+    },
+    {
+      "kind": "idea",
+      "source": "docs/book/src/storage-modes.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage-modes.md",
+      "summary": "The same work-item model supports embedded storage, a repository-local pendant, a remote server and synchronization; conflicts are reported rather than silently choosing a side.",
+      "source_sha256": "08c017df09cfbf57a1ca6e6f0ff0bb428c3e0bac8ea680b469a4a021c6b35aac",
+      "type": "Concept"
+    },
+    {
+      "kind": "interface",
+      "source": "src/native/cli.rs",
+      "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
+      "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
+      "source_sha256": "8ba2b08ab9419cb36f4e3db281b25e1ed824b4d30c5dd9d4d0ca1034b2e06144",
+      "properties": {
+        "interfaceKind": "CLI",
+        "publicName": "sd"
+      },
+      "depends_on": [
+        "http://aegis.gastown.local/ontology/code/quipu/src%2Flib.rs"
+      ]
+    },
+    {
+      "kind": "interface",
+      "source": "src/native/config.rs",
+      "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
+      "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
+      "source_sha256": "a4a5591e04ce7a7c6783fc96342f8d29339bb098d9e9f27ac61785e4d51fec8e",
+      "properties": {
+        "interfaceKind": "config",
+        "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"
+      }
+    },
+    {
+      "kind": "interface",
+      "source": "src/pendant.rs",
+      "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fpendant.rs",
+      "summary": "Seeds uses the Quipu share format for a ledger pendant: canonical exported facts, receiver shapes and manifests retain provenance and validate before loading.",
+      "source_sha256": "ab69a2e7f95651b5d1fe66417ed77d3a9e9c8bafbe72b0e703c581b2c8cc7922",
+      "properties": {
+        "interfaceKind": "file-format",
+        "publicName": "export.nt, shapes.ttl, manifest.json, manifest.ttl"
+      }
+    },
+    {
+      "kind": "interface",
+      "source": "src/lib.rs",
+      "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Flib.rs",
+      "summary": "The Rust library exposes the work-item model and backend abstraction independently of native process, file, clock and network integration.",
+      "source_sha256": "09379c3a29ed197d031114182529c7e35feaac56baacee3bed590d44bfebb965",
+      "properties": {
+        "interfaceKind": "library",
+        "publicName": "seeds Rust core"
+      }
+    },
+    {
+      "kind": "decision",
+      "source": "docs/book/src/storage.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage.md",
+      "summary": "One project is one named graph. A work item is a schema.org Action; public vocabulary and Quechua governance terms are preferred over tracker-specific terms.",
+      "source_sha256": "6321897260b6140bcf552fab25fc851d043630111cf229b1940e78f1a3b8681b",
+      "type": "DecisionRecord",
+      "properties": {
+        "status": "active",
+        "supersessionStatus": "not-recorded-in-source"
+      },
+      "see_also": [
+        "https://scbrown.github.io/quechua/ns#sourceKind",
+        "https://scbrown.github.io/quechua/ns#blockedOn"
+      ]
+    },
+    {
+      "kind": "start-here",
+      "source": "docs/book/src/why-facts.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fwhy-facts.md",
+      "summary": "Read the fact-level storage rationale before changing tracker semantics or mapping another tool\u2019s database surface.",
+      "source_sha256": "3ede415ed6d441b53a218219eae65d635282966c91d53dc3aaa016505b4d09ae",
+      "properties": {
+        "startHereOrder": 1,
+        "glossaryTerm": "https://scbrown.github.io/quechua/ns#sourceKind"
+      },
+      "see_also": [
+        "https://scbrown.github.io/quechua/ns#sourceKind"
+      ]
+    },
+    {
+      "kind": "start-here",
+      "source": "docs/book/src/reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Freference.md",
+      "summary": "Read the sd global options, verbs, JSON and exit-code contracts before changing a caller-facing behavior.",
+      "source_sha256": "97f5a52af7917b4e4550341ce397e4bbdfef0d3e710c25eb208719573910ad74",
+      "properties": {
+        "startHereOrder": 2
+      }
+    },
+    {
+      "kind": "start-here",
+      "source": "AGENTS.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/seeds/AGENTS.md",
+      "summary": "Contributions preserve the wasm-clean core, documented storage semantics, public-safe source and full just check quality gate.",
+      "source_sha256": "6d8e86de0683b473b0988f370d5bc3c0e2ef1dda3e9a55df2b2dda0c809250f2",
+      "properties": {
+        "startHereOrder": 3
+      }
+    }
+  ]
+}

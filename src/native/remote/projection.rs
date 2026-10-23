@@ -3,6 +3,12 @@
 use super::*;
 use crate::engine::{Count, CountReq, Filter};
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CountSource {
+    Projection,
+    Sparql,
+}
+
 fn invalid() -> SdError {
     SdError::failed("quipu returned an invalid board projection response")
 }
@@ -231,6 +237,7 @@ mod tests {
     use super::*;
     use crate::engine::Filter;
 
+    #[cfg(feature = "projection-contract-tests")]
     const CONFIG: &str = r#"
 [quipu.shacl]
 validate_on_write=false
@@ -266,19 +273,19 @@ predicate="https://schema.org/agent"
         format!("<https://seeds.local/item/{id}> a <{}> ; <{}> \"{id}\" ; <{}> \"{status}\" {priority} .",term::work_item(),term::identifier(),term::status())
     }
 
-    fn parity(remote: &RemoteBackend, req: &CountReq) {
-        let actual = remote.count_summary(req).unwrap();
+    fn parity(remote: &RemoteBackend, req: &CountReq) -> CountSource {
+        let (actual, source) = remote.count_summary_with_source(req).unwrap();
         let reference = remote.sparql_count_summary(req).unwrap();
         assert_eq!(actual.total, reference.total, "{req:?}");
         assert_eq!(actual.groups, reference.groups, "{req:?}");
+        source
     }
 
+    #[cfg(feature = "projection-contract-tests")]
     #[test]
     fn projection_count_real_parity_and_semantic_fallbacks() {
-        let Ok(bin) = std::env::var("SEEDS_TEST_PROJECTIONS_SERVER") else {
-            eprintln!("SKIPPED: set SEEDS_TEST_PROJECTIONS_SERVER to a projection-capable server");
-            return;
-        };
+        let bin = std::env::var("SEEDS_TEST_PROJECTIONS_SERVER")
+            .expect("projection contract requires SEEDS_TEST_PROJECTIONS_SERVER");
         let server = super::super::tests::quipu_server_config(&bin, Some(CONFIG));
         let graph = "https://seeds.local/project/projection-test";
         let remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
@@ -294,6 +301,7 @@ predicate="https://schema.org/agent"
             + &seed("d", "deferred", &p)
             + &seed("e", "open", "");
         update(&remote, graph, &data);
+        let mut cases = 0;
         for by in [
             None,
             Some("status"),
@@ -318,11 +326,12 @@ predicate="https://schema.org/agent"
                             ..Filter::default()
                         },
                     };
-                    assert!(remote.projection_count(&req).unwrap().is_some(), "{req:?}");
-                    parity(&remote, &req);
+                    assert_eq!(parity(&remote, &req), CountSource::Projection, "{req:?}");
+                    cases += 1;
                 }
             }
         }
+        assert_eq!(cases, 60);
         // Deferral dates do not turn deferred work into open work for count.
         update(
             &remote,
@@ -332,7 +341,10 @@ predicate="https://schema.org/agent"
                 term::defer_until()
             ),
         );
-        parity(&remote, &CountReq::default());
+        assert_eq!(
+            parity(&remote, &CountReq::default()),
+            CountSource::Projection
+        );
         let scoped = CountReq {
             filter: Filter {
                 assignee: Some("reader".into()),
@@ -342,8 +354,7 @@ predicate="https://schema.org/agent"
             by: Some("status".into()),
             ..CountReq::default()
         };
-        assert!(remote.projection_count(&scoped).unwrap().is_none());
-        parity(&remote, &scoped);
+        assert_eq!(parity(&remote, &scoped), CountSource::Sparql);
         assert_eq!(remote.count_summary(&scoped).unwrap().total, 2);
         // A plain status missing on a valid item must still default to open.
         update(
@@ -355,11 +366,7 @@ predicate="https://schema.org/agent"
                 term::identifier()
             ),
         );
-        assert!(remote
-            .projection_count(&CountReq::default())
-            .unwrap()
-            .is_none());
-        parity(&remote, &CountReq::default());
+        assert_eq!(parity(&remote, &CountReq::default()), CountSource::Sparql);
         // Isolated anomalous rows must not borrow the preceding missing-status fallback.
         for (suffix, extra, by) in [
             (
@@ -396,8 +403,7 @@ predicate="https://schema.org/agent"
                 by: Some(by.into()),
                 ..CountReq::default()
             };
-            assert!(b.projection_count(&req).unwrap().is_none(), "{suffix}");
-            parity(&b, &req);
+            assert_eq!(parity(&b, &req), CountSource::Sparql, "{suffix}");
         }
         // Ephemeral replaces the main identity, never adds a second count.
         update(
@@ -405,26 +411,59 @@ predicate="https://schema.org/agent"
             &vocab::ephemeral_graph(graph),
             &seed("a", "closed", &p),
         );
-        assert!(remote
-            .projection_count(&CountReq::default())
-            .unwrap()
-            .is_none());
-        parity(&remote, &CountReq::default());
+        assert_eq!(parity(&remote, &CountReq::default()), CountSource::Sparql);
+        eprintln!("COUNT_READER source=projection parity_cases={cases} semantic_fallbacks=6");
     }
 
     #[test]
-    fn projection_count_absent_declaration_keeps_sparql() {
+    fn projection_count_legacy_server_reports_sparql_fallback() {
         let Some(server) = super::super::tests::quipu_server() else {
             return;
         };
         let graph = "https://seeds.local/project/no-projection";
         let remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
-        update(&remote, graph, &seed("absent", "open", ""));
-        assert!(remote
-            .projection_count(&CountReq::default())
-            .unwrap()
-            .is_none());
-        parity(&remote, &CountReq::default());
+        update(
+            &remote,
+            graph,
+            &(seed("a", "open", "")
+                + &seed("b", "closed", "")
+                + &seed("c", "tombstone", "")
+                + &seed("d", "deferred", "")
+                + &seed("e", "open", "")),
+        );
+        let mut cases = 0;
+        for by in [
+            None,
+            Some("status"),
+            Some("priority"),
+            Some("type"),
+            Some("assignee"),
+        ] {
+            for status in [
+                None,
+                Some("open"),
+                Some("closed"),
+                Some("tombstone"),
+                Some("deferred"),
+                Some("blocked"),
+            ] {
+                for include_closed in [false, true] {
+                    let req = CountReq {
+                        by: by.map(str::to_string),
+                        include_closed,
+                        filter: Filter {
+                            status: status.map(str::to_string),
+                            ..Filter::default()
+                        },
+                    };
+                    assert_eq!(parity(&remote, &req), CountSource::Sparql, "{req:?}");
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 60);
+        assert_eq!(remote.count_summary(&CountReq::default()).unwrap().total, 3);
+        eprintln!("COUNT_READER source=sparql fallback=true parity_cases={cases}");
     }
     #[test]
     fn projection_count_route_absence_and_errors_are_distinct() {

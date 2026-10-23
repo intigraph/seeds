@@ -28,6 +28,9 @@ required-features = ["native"]
 # core, which builds for wasm32-unknown-unknown with `--no-default-features`
 # (see `just wasm`).
 default = ["native"]
+# Real projection parity is a separate released-server CI contract. Enabling
+# it requires SEEDS_TEST_PROJECTIONS_SERVER; missing fixtures fail the test.
+projection-contract-tests = ["native"]
 native = ["dep:libc", "dep:url", "dep:clap", "dep:clap_complete", "dep:toml", "dep:ureq", "dep:ed25519-dalek", "dep:getrandom", "dep:base64", "dep:jiff", "dep:yaml-rust2", "shacl"]
 # Validate every write against the WorkItem shapes (camayoc's, plus the seeds
 # shape). quipu's SHACL engine is not part of quipu's own wasm32 gate, so the

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-10-23
+
+### Added
+
+- Derive signed write actors from authenticated identity (reland #167) (#190) ([fbacbde](https://github.com/scbrown/seeds/commit/fbacbde827e9cad269a6a986943683c5ab4151d2))
+
 ## [0.6.7] - 2026-10-22
 
 ### Perf

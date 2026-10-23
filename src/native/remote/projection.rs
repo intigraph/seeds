@@ -51,10 +51,15 @@ impl RemoteBackend {
     }
 
     pub(super) fn projection_count(&self, req: &CountReq) -> Result<Option<Count>> {
-        // The API has no arbitrary column predicates or joins. Keep every
-        // unsupported scope on the existing normalized SPARQL path.
+        // Only declared scalar column filters are representable. Joins and
+        // all other scopes retain the normalized SPARQL path.
         let mut filter = req.filter.clone();
         filter.status = None;
+        filter.assignee = None;
+        filter.unassigned = false;
+        filter.priority = None;
+        filter.priority_min = None;
+        filter.priority_max = None;
         if filter != Filter::default() || req.by.as_deref() == Some("label") {
             return Ok(None);
         }
@@ -77,17 +82,56 @@ impl RemoteBackend {
             return Ok(None);
         }
         let def = boards[0];
+        let mut predicates = serde_json::Map::new();
+        if req.filter.assignee.is_some() && req.filter.unassigned {
+            return Ok(None);
+        }
+        if let Some(person) = &req.filter.assignee {
+            predicates.insert(
+                "assignee".into(),
+                json!([person, {"iri":vocab::principal_iri(person)}]),
+            );
+        } else if req.filter.unassigned {
+            predicates.insert("assignee".into(), json!([null]));
+        }
+        if req.filter.priority.is_some()
+            || req.filter.priority_min.is_some()
+            || req.filter.priority_max.is_some()
+        {
+            let parse =
+                |v: &Option<String>| v.as_deref().map(crate::model::parse_priority).transpose();
+            let exact = parse(&req.filter.priority)?;
+            let min = parse(&req.filter.priority_min)?.unwrap_or(0);
+            let max = parse(&req.filter.priority_max)?.unwrap_or(u8::MAX);
+            let mut values: Vec<Json> = (min..=max)
+                .filter(|p| exact.is_none_or(|e| *p == e))
+                .map(|p| json!(p))
+                .collect();
+            if values.is_empty() {
+                return Ok(None);
+            }
+            // Seeds defaults a missing priority to P2.
+            if values.contains(&json!(2)) {
+                values.push(Json::Null);
+            }
+            predicates.insert("priority".into(), json!(values));
+        }
+        let mut required = BTreeSet::new();
         if by != "status" {
-            let predicate = match by {
+            required.insert(by);
+        }
+        required.extend(predicates.keys().map(String::as_str));
+        for name in &required {
+            let predicate = match *name {
                 "priority" => term::priority(),
                 "type" => term::issue_type(),
                 _ => term::assigned_to(),
             };
             let columns = def["columns"].as_array().ok_or_else(invalid)?;
-            if columns.iter().filter(|c| c["name"] == by).count() != 1
+            if columns.iter().filter(|c| c["name"] == *name).count() != 1
                 || !columns
                     .iter()
-                    .any(|c| c["name"] == by && c["predicate"] == predicate)
+                    .any(|c| c["name"] == *name && c["predicate"] == predicate)
             {
                 return Ok(None);
             }
@@ -126,6 +170,26 @@ impl RemoteBackend {
         if sum != total {
             return Err(invalid());
         }
+        if !predicates.is_empty() {
+            // Older projection servers silently ignore unknown body fields.
+            // An empty IN must reject every row of a nonempty board. Prove
+            // this on every call, bracketed by the same transaction watermark.
+            if total == 0 {
+                return Ok(None);
+            }
+            let mut probe = request("key", &[]);
+            probe["where"] = json!({"key":[]});
+            let Some(proof) = self.projection_read(probe)? else {
+                return Ok(None);
+            };
+            let (proof_tx, proof_total) = aggregate(&proof)?;
+            if proof_tx != tx || proof_total != 0 {
+                return Ok(None);
+            }
+            if !proof["groups"].as_array().ok_or_else(invalid)?.is_empty() {
+                return Err(invalid());
+            }
+        }
         if self.ephemeral_may_hold_facts()? {
             return Ok(None);
         }
@@ -142,8 +206,8 @@ impl RemoteBackend {
             format!("{{ ?s a <{action}> ; <{id}> ?id . ?other a <{action}> ; <{id}> ?id FILTER(?s != ?other && {}) }}",plain("?id")),
             format!("{{ ?s <{st}> ?v ; <{id}> ?a, ?b FILTER(!sameTerm(?a, ?b)) }}"),
         ];
-        if by != "status" {
-            let (predicate, valid) = match by {
+        for name in &required {
+            let (predicate, valid) = match *name {
                 "priority" => (
                     term::priority(),
                     format!("{} && ?v <= 255", summary::nonnegative_integer_guard("?v")),
@@ -173,7 +237,11 @@ impl RemoteBackend {
         } else {
             by
         };
-        let Some(after) = self.projection_read(request(group, &keys))? else {
+        let mut body = request(group, &keys);
+        if !predicates.is_empty() {
+            body["where"] = json!(predicates);
+        }
+        let Some(after) = self.projection_read(body)? else {
             return Ok(None);
         };
         let (after_tx, after_total) = aggregate(&after)?;
@@ -354,7 +422,7 @@ predicate="https://schema.org/agent"
             by: Some("status".into()),
             ..CountReq::default()
         };
-        assert_eq!(parity(&remote, &scoped), CountSource::Sparql);
+        let scoped_source = parity(&remote, &scoped);
         assert_eq!(remote.count_summary(&scoped).unwrap().total, 2);
         // A plain status missing on a valid item must still default to open.
         update(
@@ -412,7 +480,174 @@ predicate="https://schema.org/agent"
             &seed("a", "closed", &p),
         );
         assert_eq!(parity(&remote, &CountReq::default()), CountSource::Sparql);
-        eprintln!("COUNT_READER source=projection parity_cases={cases} semantic_fallbacks=6");
+        let fallbacks = 5 + usize::from(scoped_source == CountSource::Sparql);
+        eprintln!(
+            "COUNT_READER source=projection parity_cases={cases} semantic_fallbacks={fallbacks}"
+        );
+    }
+
+    #[cfg(feature = "projection-contract-tests")]
+    #[test]
+    fn projection_count_where_real_parity() {
+        let bin = std::env::var("SEEDS_TEST_PROJECTIONS_SERVER")
+            .expect("where contract requires SEEDS_TEST_PROJECTIONS_SERVER");
+        let server = super::super::tests::quipu_server_config(&bin, Some(CONFIG));
+        let graph = "https://seeds.local/project/where-test";
+        let remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let mut data = String::new();
+        let mut index = 0;
+        for status in ["open", "in_progress", "closed", "tombstone", "deferred"] {
+            for priority in [Some(1), Some(2), None] {
+                for assignee in [
+                    Some(format!("<{}>", vocab::principal_iri("reader"))),
+                    Some("\"reader\"".into()),
+                    Some("\"other\"".into()),
+                    None,
+                ] {
+                    let mut fields = String::new();
+                    if let Some(p) = priority {
+                        fields += &format!("; <{}> {p}", term::priority());
+                    }
+                    if let Some(a) = assignee {
+                        fields += &format!("; <{}> {a}", term::assigned_to());
+                    }
+                    data += &seed(&format!("where-{index}"), status, &fields);
+                    index += 1;
+                }
+            }
+        }
+        update(&remote, graph, &data);
+        let mut cases = 0;
+        for assignee in [None, Some("reader"), Some("unknown"), Some("(unassigned)")] {
+            for priority in [None, Some("1"), Some("P2"), Some("range")] {
+                for status in [None, Some("open"), Some("closed"), Some("tombstone")] {
+                    for include_closed in [false, true] {
+                        let req = CountReq {
+                            by: Some("status".into()),
+                            include_closed,
+                            filter: Filter {
+                                assignee: assignee
+                                    .filter(|a| *a != "(unassigned)")
+                                    .map(str::to_string),
+                                unassigned: assignee == Some("(unassigned)"),
+                                priority: priority.filter(|p| *p != "range").map(str::to_string),
+                                priority_min: (priority == Some("range")).then(|| "1".into()),
+                                priority_max: (priority == Some("range")).then(|| "2".into()),
+                                status: status.map(str::to_string),
+                                ..Filter::default()
+                            },
+                        };
+                        assert_eq!(parity(&remote, &req), CountSource::Projection, "{req:?}");
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 128);
+        let scoped = CountReq {
+            by: Some("status".into()),
+            filter: Filter {
+                assignee: Some("reader".into()),
+                priority: Some("1".into()),
+                ..Filter::default()
+            },
+            ..CountReq::default()
+        };
+        assert_eq!(remote.count_summary(&scoped).unwrap().total, 6);
+        // Validation covers filtered columns even when grouping by status.
+        for (name, extra) in [
+            ("bad-priority", format!("; <{}> \"high\"", term::priority())),
+            (
+                "bad-assignee",
+                format!(
+                    "; <{}> <https://example.test/not-a-principal>",
+                    term::assigned_to()
+                ),
+            ),
+            ("multi-priority", format!("; <{}> 1, 2", term::priority())),
+            (
+                "multi-assignee",
+                format!("; <{}> \"reader\", \"other\"", term::assigned_to()),
+            ),
+        ] {
+            let g = format!("{graph}-{name}");
+            let b = RemoteBackend::connect(&server.base, &g, None, None, &[]).unwrap();
+            update(&b, &g, &seed("bad", "open", &extra));
+            assert_eq!(parity(&b, &scoped), CountSource::Sparql, "{name}");
+        }
+        update(
+            &remote,
+            &vocab::ephemeral_graph(graph),
+            &seed("where-0", "closed", ""),
+        );
+        assert_eq!(parity(&remote, &scoped), CountSource::Sparql);
+        eprintln!("COUNT_WHERE source=projection parity_cases={cases} semantic_fallbacks=5");
+    }
+
+    #[test]
+    fn projection_count_where_detects_ignored_fields_and_races() {
+        const LIST: &str = r#"{"declared":[{"name":"board","key":"https://seeds.local/ontology/status","columns":[{"name":"priority","predicate":"https://seeds.local/ontology/priority"},{"name":"assignee","predicate":"https://schema.org/agent"}]}]}"#;
+        const BEFORE: &str = r#"{"tx":1,"total":1,"truncated":false,"multi_valued_rows":0,"groups":[{"value":"open","n":1}]}"#;
+        const EMPTY: &str = r#"{"tx":1,"total":0,"truncated":false,"groups":[]}"#;
+        let req = CountReq {
+            by: Some("status".into()),
+            filter: Filter {
+                assignee: Some("reader".into()),
+                priority: Some("1".into()),
+                ..Filter::default()
+            },
+            ..CountReq::default()
+        };
+        for (code, proof, error) in [
+            (200, BEFORE, false), // Old projection route ignores where.
+            (
+                200,
+                r#"{"tx":2,"total":0,"truncated":false,"groups":[]}"#,
+                false,
+            ),
+            (408, "budget exceeded", true),
+            (
+                200,
+                r#"{"tx":1,"total":0,"truncated":false,"groups":[{}]}"#,
+                true,
+            ),
+        ] {
+            let (base, worker) = super::super::gateway_tests::server(vec![
+                (200, "ok"),
+                (200, LIST),
+                (200, BEFORE),
+                (code, proof),
+            ]);
+            let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
+            let result = remote.projection_count(&req);
+            if error {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().is_none());
+            }
+            let requests = worker.join().unwrap();
+            assert_eq!(requests.len(), 4);
+            assert!(requests[3].contains("\"where\":{\"key\":[]}"));
+        }
+        let (base, worker) = super::super::gateway_tests::server(vec![
+            (200, "ok"),
+            (200, LIST),
+            (200, BEFORE),
+            (200, EMPTY),
+            (200, r#"{"boolean":false}"#),
+            (200, r#"{"boolean":false}"#),
+            (200, BEFORE),
+        ]);
+        let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
+        assert_eq!(remote.projection_count(&req).unwrap().unwrap().total, 1);
+        let requests = worker.join().unwrap();
+        assert_eq!(requests.len(), 7);
+        let body: Json = serde_json::from_str(requests[6].split_once("\r\n").unwrap().1).unwrap();
+        assert_eq!(body["where"]["priority"], json!([1]));
+        assert_eq!(
+            body["where"]["assignee"],
+            json!(["reader", {"iri":vocab::principal_iri("reader")} ])
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "0facf7cb20b093a5330c03ad0bdc02ae9db0313a0d224c8bf74ce5c0236dd5ee",
+      "source_sha256": "8ba2b08ab9419cb36f4e3db281b25e1ed824b4d30c5dd9d4d0ca1034b2e06144",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "861ef88e40f9d8130437ef5f5c02f7c6eab72417d724a42b0cf5f86af1b797f7",
+      "source_sha256": "a4a5591e04ce7a7c6783fc96342f8d29339bb098d9e9f27ac61785e4d51fec8e",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"

@@ -256,7 +256,7 @@ fn is_query_timeout(e: &SdError) -> bool {
 }
 
 fn status_error(what: &str, code: u16, body: &str) -> SdError {
-    if let Some(verdict) = attestation_verdict(code, body) {
+    if let Some((verdict, reason)) = attestation_verdict(code, body) {
         let hint = match verdict.as_str() {
             "skew" => {
                 " This machine's clock is more than 5 minutes off the server's; fix the clock."
@@ -278,8 +278,11 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
             }
             _ => "",
         };
+        // The server says WHICH check refused; the verdict alone does not
+        // (aegis-wn3: "invalid" hid the #687 declared-identity check).
+        let reason = reason.map(|r| format!(": {r}")).unwrap_or_default();
         return SdError::failed(format!(
-            "quipu {what}: signed write refused ({verdict}).{hint}"
+            "quipu {what}: signed write refused ({verdict}){reason}.{hint}"
         ));
     }
     let hint = if code == 401 || code == 403 {
@@ -292,14 +295,39 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
     SdError::failed(format!("quipu {what} failed (HTTP {code}): {body}{hint}"))
 }
 
-/// The verdict of a refused signed write: quipu answers 401 with
-/// `{"reason":"attestation_refused","verdict":...}`.
-fn attestation_verdict(code: u16, body: &str) -> Option<String> {
+/// The longest server reason sd repeats, in characters.
+const REFUSAL_REASON_CHARS: usize = 200;
+
+/// The verdict of a refused signed write, and the server's reason when it
+/// gives one: quipu answers 401 with
+/// `{"reason":"attestation_refused","verdict":...,"message":...}`.
+///
+/// The reason is server text going to a terminal, so it is cut to one line of
+/// printable characters, at most [`REFUSAL_REASON_CHARS`].
+fn attestation_verdict(code: u16, body: &str) -> Option<(String, Option<String>)> {
     if code != 401 {
         return None;
     }
     let v: Json = serde_json::from_str(body).ok()?;
-    (v["reason"] == "attestation_refused").then(|| v["verdict"].as_str().unwrap_or("?").to_string())
+    if v["reason"] != "attestation_refused" {
+        return None;
+    }
+    let verdict = v["verdict"].as_str().unwrap_or("?").to_string();
+    let reason = v["message"]
+        .as_str()
+        .map(|m| {
+            m.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(REFUSAL_REASON_CHARS)
+                .collect::<String>()
+        })
+        .filter(|m| !m.is_empty());
+    Some((verdict, reason))
 }
 
 /// Retry only explicit transient gateway responses to idempotent reads.
@@ -2131,6 +2159,58 @@ mod scoped_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// quipu's 401 for a refused signed write, byte-for-byte as captured from a
+    /// real server on 2026-10-21 (aegis-m6o, the #687 incident).
+    const REFUSED_INVALID: &str = r#"{"credential_type":"attested_signature","error":"unauthorized: signed write refused (invalid)","expected_scope":"write","message":"declared identity differs from the authenticated session","provisioning":"Ask the identity introducer to register the client public key and bind its agent/session with allow_write; renew expired bindings. A rejected signature never falls back to bearer authentication.","reason":"attestation_refused","verdict":"invalid"}"#;
+
+    #[test]
+    fn a_refused_signed_write_says_why() {
+        // aegis-wn3: only "(invalid)" was printed. The reason that named the
+        // #687 check was in the body and sd dropped it.
+        let e = status_error("/update", 401, REFUSED_INVALID);
+        assert_eq!(
+            e.message,
+            "quipu /update: signed write refused (invalid): declared identity differs from \
+             the authenticated session."
+        );
+    }
+
+    #[test]
+    fn the_server_reason_keeps_the_verdict_hint() {
+        let body = r#"{"reason":"attestation_refused","verdict":"unbound","message":"no binding"}"#;
+        let e = status_error("/update", 401, body);
+        assert!(e
+            .message
+            .starts_with("quipu /update: signed write refused (unbound): no binding."));
+        assert!(e.message.contains("quipu attest register"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_refusal_without_a_reason_reads_as_before() {
+        let body = r#"{"reason":"attestation_refused","verdict":"invalid"}"#;
+        assert_eq!(
+            status_error("/update", 401, body).message,
+            "quipu /update: signed write refused (invalid)."
+        );
+        let blank = r#"{"reason":"attestation_refused","verdict":"invalid","message":"  "}"#;
+        assert_eq!(
+            status_error("/update", 401, blank).message,
+            "quipu /update: signed write refused (invalid)."
+        );
+    }
+
+    #[test]
+    fn the_server_reason_is_one_bounded_line() {
+        let long = "x\ny\u{1b}[31m".to_string() + &"z".repeat(1000);
+        let body = serde_json::json!({
+            "reason": "attestation_refused", "verdict": "invalid", "message": long,
+        })
+        .to_string();
+        let m = status_error("/update", 401, &body).message;
+        assert!(!m.contains('\n') && !m.contains('\u{1b}'), "{m:?}");
+        assert!(m.chars().count() < 400, "{}", m.chars().count());
+    }
 
     fn preflight_fixture(a: bool, b: bool, c: bool) -> Json {
         let mut rows = vec![json!({"probe":{"type":"literal","value":"complete"}})];

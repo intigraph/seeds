@@ -229,11 +229,11 @@ pub struct RemoteBackend {
 /// process's structured write provenance (`X-Quipu-Agent`, `-Harness`,
 /// `-Model`, `-Session`, `-Host`; see [`super::provenance`]).
 fn quipu_request(req: ureq::Request) -> ureq::Request {
-    super::provenance::apply(req.set("X-Quipu-Client", "seeds"))
+    super::provenance::apply(req)
 }
 
 fn quipu_read_request(req: ureq::Request, operation: &str) -> ureq::Request {
-    super::provenance::apply_read(req.set("X-Quipu-Client", "seeds"), operation)
+    super::provenance::apply_read(req, operation)
 }
 
 fn transport(url: &str, e: &ureq::Transport) -> SdError {
@@ -421,8 +421,7 @@ impl RemoteBackend {
         body: &[u8],
     ) -> Result<ureq::Request> {
         let request = self.agent.request(method, &format!("{}{path}", self.base));
-        let mut req = super::provenance::apply_signed(request.set("X-Quipu-Client", "seeds"))
-            .set("Content-Type", content_type);
+        let mut req = super::provenance::apply_signed(request).set("Content-Type", content_type);
         if let Some(signer) = &self.signer {
             req = req.set(
                 super::attest::HEADER,
@@ -2615,7 +2614,7 @@ mod tests {
                     .map(|(_, v)| v.as_str())
                     .collect::<Vec<_>>()
             };
-            assert_eq!(get("X-Quipu-Client"), ["seeds"], "{line}");
+            assert_eq!(get("X-Quipu-Client"), ["seeds/show"], "{line}");
             for (name, value) in expected {
                 assert_eq!(get(name), [value.as_str()], "{line}: {name}");
             }

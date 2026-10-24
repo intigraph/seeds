@@ -2,6 +2,7 @@
 use std::cell::Cell;
 
 thread_local! {
+    static CLIENT_COMMAND: Cell<Option<&'static str>> = const { Cell::new(None) };
     static SOURCE: Cell<&'static str> = const { Cell::new("seeds") };
 }
 
@@ -9,7 +10,19 @@ pub(super) fn source() -> &'static str {
     SOURCE.with(Cell::get)
 }
 
-pub(super) struct Scope(&'static str);
+/// The metric label uses only the parsed top-level command. Library calls
+/// outside a CLI scope retain the historical producer label.
+pub(super) fn client() -> String {
+    CLIENT_COMMAND.with(|slot| match slot.get() {
+        Some(command) => format!("seeds/{command}"),
+        None => "seeds".into(),
+    })
+}
+
+pub(super) struct Scope {
+    source: &'static str,
+    client: Option<&'static str>,
+}
 
 impl Scope {
     pub(super) fn new(command: &super::cli::Command) -> Self {
@@ -29,17 +42,31 @@ impl Scope {
             Command::Info(_) => "sd-info",
             _ => "sd-other",
         };
-        Self(SOURCE.with(|slot| {
+        let source = SOURCE.with(|slot| {
             let outer = slot.get();
             slot.set(if outer == "seeds" { source } else { outer });
             outer
-        }))
+        });
+        // Command::name is an exhaustive enum match of static names. No
+        // argument, subject, actor, raw argv or environment enters this label.
+        let command = command
+            .name()
+            .split_ascii_whitespace()
+            .next()
+            .expect("command name");
+        let client = CLIENT_COMMAND.with(|slot| {
+            let outer = slot.get();
+            slot.set(outer.or(Some(command)));
+            outer
+        });
+        Self { source, client }
     }
 }
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        SOURCE.with(|slot| slot.set(self.0));
+        SOURCE.with(|slot| slot.set(self.source));
+        CLIENT_COMMAND.with(|slot| slot.set(self.client));
     }
 }
 
@@ -47,6 +74,57 @@ impl Drop for Scope {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn metric_client_is_command_only_for_every_request_kind() {
+        let cli =
+            super::super::cli::Cli::try_parse_from(["sd", "show", "private-subject"]).unwrap();
+        assert_eq!(client(), "seeds");
+        {
+            let _scope = Scope::new(&cli.command);
+            assert_eq!(client(), "seeds/show");
+            let requests = [
+                super::super::provenance::apply(ureq::get("http://localhost/unused")),
+                super::super::provenance::apply_read(ureq::get("http://localhost/unused"), "query"),
+                super::super::provenance::apply_signed(ureq::get("http://localhost/unused")),
+            ];
+            for request in requests {
+                assert_eq!(request.header("X-Quipu-Client"), Some("seeds/show"));
+            }
+        }
+        assert_eq!(client(), "seeds");
+    }
+
+    #[test]
+    fn nested_command_labels_and_parallel_scopes_do_not_leak() {
+        let cli = super::super::cli::Cli::try_parse_from(["sd", "list"]).unwrap();
+        let _outer = Scope::new(&cli.command);
+        let inner = super::super::cli::Cli::try_parse_from(["sd", "show", "private-id"]).unwrap();
+        {
+            let _inner = Scope::new(&inner.command);
+            assert_eq!(client(), "seeds/list");
+        }
+        let other = std::thread::spawn(|| {
+            assert_eq!(client(), "seeds");
+            let cli = super::super::cli::Cli::try_parse_from(["sd", "ready"]).unwrap();
+            let _scope = Scope::new(&cli.command);
+            assert_eq!(client(), "seeds/ready");
+        });
+        other.join().unwrap();
+        assert_eq!(client(), "seeds/list");
+    }
+
+    #[test]
+    fn nested_verbs_share_one_bounded_top_level_label() {
+        for argv in [
+            vec!["sd", "comments", "add", "private-id", "private-body"],
+            vec!["sd", "comments", "list", "other-private-id"],
+        ] {
+            let cli = super::super::cli::Cli::try_parse_from(argv).unwrap();
+            let _scope = Scope::new(&cli.command);
+            assert_eq!(client(), "seeds/comments");
+        }
+    }
 
     #[test]
     fn demo_command_attribution_before_and_after() {

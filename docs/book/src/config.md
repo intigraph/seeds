@@ -208,6 +208,8 @@ Read the resolved host mode with `sd config get quipu.actor_principal_mode`.
 | `enforce` | Refuse before a destination write. |
 
 A project cannot set this host policy. Unknown mode names refuse configuration.
+Enforce also requires an enrolled remote signing key; local and unkeyed writes
+refuse before opening a store, even without `require_identity = true`.
 In observe and enforce, an omitted actor uses the verified principal. The
 signature still authenticates the key principal; a claimed actor is attribution,
 not proof that the named agent owns that key. Identity/signature errors remain

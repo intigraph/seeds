@@ -1191,7 +1191,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         Command::Info(args) if args.exact_comments => Some(store::lock_search(true)?),
         _ => None,
     };
-    if cfg.require_identity
+    if (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
         && cli.command.writes()
         && (cfg.signing.is_none() || !matches!(cfg.location, Location::Url(_)))
     {

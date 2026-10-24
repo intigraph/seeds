@@ -45,3 +45,6 @@ The stronger executable regression fixture is `tests/actor_principal.rs`:
 default observe, two actors under one key, positive counter, matching/mismatching
 enforce, off, corrupt/contended-counter UNKNOWN with a bounded lock wait, and
 bearer refusal before any HTTP request.
+
+`tests/cli.rs` also checks that explicit enforce refuses an unkeyed local write
+before a store is created.

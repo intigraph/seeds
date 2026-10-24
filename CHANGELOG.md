@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.2] - 2026-10-24
+
+### Added
+
+- *(shapes)* Govern optional deferral provenance (#185) ([8e35ce9](https://github.com/scbrown/seeds/commit/8e35ce9b768aa71896aaf8965705c97a8cab234f))
+
+### Fixed
+
+- *(work)* Keep ASK-class decisions visible (#184) ([e324b0c](https://github.com/scbrown/seeds/commit/e324b0c8d363ac95808fac22f3bb52f3dc55c4eb))
+
 ## [0.7.1] - 2026-10-23
 
 ### Documentation

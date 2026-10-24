@@ -20,3 +20,19 @@ can sum to more than the total.
 `--by-status`, `--by-priority`, `--by-type`, `--by-assignee` and `--by-label`
 are br's shorthands for `--by <x>` (one grouping at a time). `--priority`,
 `--title-contains` and `--unassigned` filter what is counted.
+
+For a current remote count, a compatible declared `board` projection can answer
+assignee and priority filters together with a grouping. The client verifies
+column meanings, normalized values and transaction consistency on every call.
+An older server that lacks column filtering keeps the SPARQL reader; missing
+priorities still mean P2, and `--unassigned` still selects missing assignees.
+Other filters and data that require normalization also keep SPARQL. A timeout,
+a refused request or a malformed response remains an error.
+
+Projection compatibility is checked over a complete, bounded candidate set using
+typed exact-subject fact reads. Candidates include missing-status items; only
+positive filters that cannot hide normalized defaults narrow discovery. Unique
+ID ownership is checked outside the selected filters. Incomplete reads fall back
+to SPARQL; malformed responses and refused reads remain errors. All compatibility
+reads stay inside the projection transaction bracket, including the check for
+any ephemeral facts. The validated candidate count must match the aggregate.

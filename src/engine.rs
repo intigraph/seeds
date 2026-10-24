@@ -2808,6 +2808,9 @@ pub fn label_change(
             status,
         });
         if changed {
+            if !is_ask(before) {
+                ensure_ask_visible(&s)?;
+            }
             s.updated_at = ctx.now.clone();
             s.revision = before.revision + 1;
             writes.push(SeedWrite {
@@ -2838,6 +2841,9 @@ pub fn label_rename(b: &mut dyn Backend, ctx: &Ctx, old: &str, new: &str) -> Res
         let mut s = before.clone();
         s.labels.remove(&old);
         s.labels.insert(new.clone());
+        if !is_ask(before) {
+            ensure_ask_visible(&s)?;
+        }
         s.updated_at = ctx.now.clone();
         s.revision = before.revision + 1;
         ids.push(s.id.clone());
@@ -2912,7 +2918,13 @@ pub type Transitions = (Vec<Transition>, Vec<Skipped>, u64);
 
 /// Apply one transition to every named seed in one transaction. `skip` says
 /// why a seed is left alone; `apply` changes the rest. Unknown ids write nothing.
-const ASK_LABELS: [&str; 4] = ["needs-stiwi", "blocked:human", "desk", "decision-needed"];
+const ASK_LABELS: [&str; 5] = [
+    "needs-stiwi",
+    "blocked:human",
+    "desk",
+    "decision-needed",
+    "decision-stiwi",
+];
 const ASK_DEFER_REFUSAL: &str = "Stiwi bsf8: ASK-class items must stay visible and cannot be deferred; use Brief's Later choice, recorded by Stiwi, not by an agent";
 
 fn is_ask(seed: &Seed) -> bool {

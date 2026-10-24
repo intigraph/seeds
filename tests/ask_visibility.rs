@@ -30,10 +30,16 @@ fn make(b: &mut QuipuBackend, title: &str, labels: Vec<String>) -> String {
     .id
 }
 fn cases() -> Vec<(&'static str, Vec<String>)> {
-    let mut out: Vec<_> = ["needs-stiwi", "blocked:human", "desk", "decision-needed"]
-        .into_iter()
-        .map(|label| ("Technical control", vec![label.into()]))
-        .collect();
+    let mut out: Vec<_> = [
+        "needs-stiwi",
+        "blocked:human",
+        "desk",
+        "decision-needed",
+        "decision-stiwi",
+    ]
+    .into_iter()
+    .map(|label| ("Technical control", vec![label.into()]))
+    .collect();
     out.push(("ASK Stiwi no colon required", vec![]));
     out
 }
@@ -213,5 +219,55 @@ fn historical_hidden_ask_allows_notes_without_backfill_but_refuses_redefer() {
         .is_err());
         assert_eq!(b.snapshot(None).unwrap().tx, snapshot.tx);
         engine::undefer(&mut b, &context(), std::slice::from_ref(&id)).unwrap();
+    }
+}
+
+#[test]
+fn labels_cannot_introduce_hidden_asks_and_batches_remain_atomic() {
+    for label in [
+        "decision-stiwi",
+        "desk",
+        "needs-stiwi",
+        "blocked:human",
+        "decision-needed",
+    ] {
+        for reverse in [false, true] {
+            let mut b = QuipuBackend::in_memory("https://example.invalid/ask-test").unwrap();
+            let open = make(&mut b, "Open technical", vec![]);
+            let deferred = make(&mut b, "Deferred technical", vec!["technical".into()]);
+            engine::defer(&mut b, &context(), std::slice::from_ref(&deferred), None).unwrap();
+            let ids = if reverse {
+                vec![deferred.clone(), open.clone()]
+            } else {
+                vec![open.clone(), deferred.clone()]
+            };
+            let before = b.snapshot(None).unwrap();
+            assert!(engine::label_change(&mut b, &context(), &ids, label, true).is_err());
+            assert_eq!(b.snapshot(None).unwrap().tx, before.tx);
+            assert_eq!(b.snapshot(None).unwrap().seeds, before.seeds);
+            assert!(engine::label_rename(&mut b, &context(), "technical", label).is_err());
+            assert_eq!(b.snapshot(None).unwrap().tx, before.tx);
+            engine::label_change(
+                &mut b,
+                &context(),
+                std::slice::from_ref(&deferred),
+                "other-technical",
+                true,
+            )
+            .unwrap();
+            engine::update(
+                &mut b,
+                &context(),
+                std::slice::from_ref(&deferred),
+                &UpdateReq {
+                    status: Some("open".into()),
+                    add_labels: vec![label.into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            engine::label_change(&mut b, &context(), std::slice::from_ref(&open), label, true)
+                .unwrap();
+        }
     }
 }

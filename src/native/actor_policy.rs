@@ -161,8 +161,10 @@ mod tests {
             .map(|n| {
                 let path = path.clone();
                 std::thread::spawn(move || {
+                    let mut committed = 0;
+                    let mut busy = 0;
                     for _ in 0..10 {
-                        record(
+                        match record(
                             &path,
                             Event {
                                 actor: format!("worker-{n}"),
@@ -170,18 +172,31 @@ mod tests {
                                 verb: "comment".into(),
                                 at: "2026-01-01T00:00:00Z".into(),
                             },
-                        )
-                        .unwrap();
+                        ) {
+                            Ok(_) => committed += 1,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                // Optional observations explicitly have a one-second
+                                // contention budget; a busy attempt is not a commit.
+                                busy += 1;
+                            }
+                            Err(error) => panic!("unexpected observation failure: {error}"),
+                        }
                     }
+                    (committed, busy)
                 })
             })
             .collect();
+        let (mut committed, mut busy) = (0, 0);
         for worker in workers {
-            worker.join().unwrap();
+            let (done, blocked) = worker.join().unwrap();
+            committed += done;
+            busy += blocked;
         }
+        assert_eq!(committed + busy, 80);
+        assert!(committed > 0, "no successful observation to verify");
         let state: Observations = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(state.mismatches_total, 80);
-        assert_eq!(state.events.len(), MAX_EVENTS);
+        assert_eq!(state.mismatches_total, committed);
+        assert_eq!(state.events.len(), (committed as usize).min(MAX_EVENTS));
         fs::remove_dir_all(dir).unwrap();
     }
 

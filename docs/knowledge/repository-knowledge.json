@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "a4a5591e04ce7a7c6783fc96342f8d29339bb098d9e9f27ac61785e4d51fec8e",
+      "source_sha256": "2f7703e3b1564800b616af1c907528e549ac4a38dce322370ae3d4dd6b1a301e",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"

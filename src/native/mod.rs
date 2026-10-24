@@ -6,6 +6,7 @@
 //! [`cli::Cli`] into calls on [`crate::engine`] and prints the result.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
+mod actor_policy;
 mod agent_context;
 pub mod attest;
 pub mod cli;
@@ -325,6 +326,10 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
         (
             "quipu.allow_plain_http_hosts",
             serde_json::json!(cfg.allow_plain_http_hosts),
+        ),
+        (
+            "quipu.actor_principal_mode",
+            serde_json::json!(cfg.actor_principal_mode),
         ),
         ("project.prefix", serde_json::json!(cfg.prefix)),
         ("project.graph", serde_json::json!(cfg.graph)),
@@ -1186,7 +1191,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         Command::Info(args) if args.exact_comments => Some(store::lock_search(true)?),
         _ => None,
     };
-    if cfg.require_identity
+    if (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
         && cli.command.writes()
         && (cfg.signing.is_none() || !matches!(cfg.location, Location::Url(_)))
     {
@@ -1487,24 +1492,24 @@ fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
     o
 }
 
-fn require_actor_match(claim: Option<&str>, principal: &str) -> Result<()> {
-    if claim.is_some_and(|claim| claim != principal) {
-        return Err(SdError::refused(
-            "--actor/SEEDS_ACTOR differs from the authenticated principal",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod key_actor_tests {
     use super::*;
     #[test]
     fn actor_is_selected_by_verified_key_not_user_or_environment_claim() {
-        assert!(require_actor_match(None, "synthetic-owner").is_ok());
-        assert!(require_actor_match(Some("synthetic-owner"), "synthetic-owner").is_ok());
-        assert!(require_actor_match(Some("synthetic-other"), "synthetic-owner").is_err());
-        assert!(require_actor_match(Some(""), "synthetic-owner").is_err());
+        let check = |claim| {
+            actor_policy::select(
+                config::ActorPrincipalMode::Enforce,
+                claim,
+                "synthetic-owner",
+                "comment",
+                "2026-01-01T00:00:00Z",
+            )
+        };
+        assert!(check(None).is_ok());
+        assert!(check(Some("synthetic-owner")).is_ok());
+        assert!(check(Some("synthetic-other")).is_err());
+        assert!(check(Some("")).is_err());
     }
 }
 
@@ -1535,23 +1540,47 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
             "remote pendant export does not support --at; no historical source receipt is available",
         ));
     }
+    let effective_signer = signer(cfg, url, cfg.location_from_project)?;
+    if cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
+        && effective_signer.is_none()
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
     let mut remote = remote::RemoteBackend::connect(
         url,
         cfg.graph(),
         token(cfg, url, cfg.location_from_project)?,
-        signer(cfg, url, cfg.location_from_project)?,
+        effective_signer,
         &cfg.allow_plain_http_hosts,
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
     let authenticated_ctx;
-    let ctx = if cfg.signing.is_some() && cli.command.writes() {
+    let ctx = if cfg.signing.is_some()
+        && cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode != config::ActorPrincipalMode::Off)
+    {
         let identity = remote.authenticated_identity()?;
         let principal = identity["principal"].as_str().expect("identity validated");
-        require_actor_match(cli.actor.as_deref(), principal)?;
+        // Strict authentication is independent of attribution. Off preserves
+        // the original actor and emits no observation after validating identity.
+        let actor = if cfg.actor_principal_mode == config::ActorPrincipalMode::Off {
+            ctx.actor.clone()
+        } else {
+            actor_policy::select(
+                cfg.actor_principal_mode,
+                cli.actor.as_deref(),
+                principal,
+                cli.command.name(),
+                &ctx.now,
+            )?
+        };
         authenticated_ctx = Ctx {
             now: ctx.now.clone(),
-            actor: principal.to_owned(),
+            actor,
             prefix: ctx.prefix.clone(),
             claims: ctx.claims.clone(),
         };

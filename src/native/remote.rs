@@ -215,7 +215,7 @@ pub struct RemoteBackend {
     /// [`ItemRead`]). A commit takes it; it is never read twice.
     last_items: std::cell::RefCell<Option<ItemRead>>,
     /// Refuse, unsent, a write request larger than this many bytes.
-    /// Scoped to one full-search call; never a cached readiness observation.
+    /// Scoped to one search call; never a cached readiness observation.
     require_substring: std::cell::Cell<bool>,
     max_write_bytes: usize,
     /// Refuse, unsent, a write nesting more guard clauses than this.
@@ -256,7 +256,7 @@ fn is_query_timeout(e: &SdError) -> bool {
 }
 
 fn status_error(what: &str, code: u16, body: &str) -> SdError {
-    if let Some(verdict) = attestation_verdict(code, body) {
+    if let Some((verdict, reason)) = attestation_verdict(code, body) {
         let hint = match verdict.as_str() {
             "skew" => {
                 " This machine's clock is more than 5 minutes off the server's; fix the clock."
@@ -278,8 +278,11 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
             }
             _ => "",
         };
+        // The server says WHICH check refused; the verdict alone does not
+        // (aegis-wn3: "invalid" hid the #687 declared-identity check).
+        let reason = reason.map(|r| format!(": {r}")).unwrap_or_default();
         return SdError::failed(format!(
-            "quipu {what}: signed write refused ({verdict}).{hint}"
+            "quipu {what}: signed write refused ({verdict}){reason}.{hint}"
         ));
     }
     let hint = if code == 401 || code == 403 {
@@ -292,14 +295,39 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
     SdError::failed(format!("quipu {what} failed (HTTP {code}): {body}{hint}"))
 }
 
-/// The verdict of a refused signed write: quipu answers 401 with
-/// `{"reason":"attestation_refused","verdict":...}`.
-fn attestation_verdict(code: u16, body: &str) -> Option<String> {
+/// The longest server reason sd repeats, in characters.
+const REFUSAL_REASON_CHARS: usize = 200;
+
+/// The verdict of a refused signed write, and the server's reason when it
+/// gives one: quipu answers 401 with
+/// `{"reason":"attestation_refused","verdict":...,"message":...}`.
+///
+/// The reason is server text going to a terminal, so it is cut to one line of
+/// printable characters, at most [`REFUSAL_REASON_CHARS`].
+fn attestation_verdict(code: u16, body: &str) -> Option<(String, Option<String>)> {
     if code != 401 {
         return None;
     }
     let v: Json = serde_json::from_str(body).ok()?;
-    (v["reason"] == "attestation_refused").then(|| v["verdict"].as_str().unwrap_or("?").to_string())
+    if v["reason"] != "attestation_refused" {
+        return None;
+    }
+    let verdict = v["verdict"].as_str().unwrap_or("?").to_string();
+    let reason = v["message"]
+        .as_str()
+        .map(|m| {
+            m.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(REFUSAL_REASON_CHARS)
+                .collect::<String>()
+        })
+        .filter(|m| !m.is_empty());
+    Some((verdict, reason))
 }
 
 /// Retry only explicit transient gateway responses to idempotent reads.
@@ -332,11 +360,14 @@ impl RemoteBackend {
         signer: Option<super::attest::Signer>,
         plain_http_ok: &[String],
     ) -> Result<Self> {
-        if token.is_some() && !secure_enough(base) && !plain_http_allowed(base, plain_http_ok) {
+        if (token.is_some() || signer.is_some())
+            && !secure_enough(base)
+            && !plain_http_allowed(base, plain_http_ok)
+        {
             return Err(SdError::new(
                 ErrorKind::Config,
                 format!(
-                    "refusing to send a bearer token to {base} over plain http; use https (or a \
+                    "refusing to send authentication evidence to {base} over plain http; use https (or a \
                      localhost server), or, if you trust the network path to it, add its host to \
                      [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
                 ),
@@ -361,13 +392,17 @@ impl RemoteBackend {
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
         };
-        match retry_read(|| {
-            quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
-                .call()
-                .map_err(Box::new)
-        })
-        .map_err(|error| *error)
-        {
+        let health = if b.signer.is_some() {
+            b.signed_request("GET", "/health", "", b"")?.call()
+        } else {
+            retry_read(|| {
+                quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .map_err(|e| *e)
+        };
+        match health {
             Ok(_) => Ok(b),
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
@@ -376,6 +411,51 @@ impl RemoteBackend {
                 &r.into_string().unwrap_or_default(),
             )),
         }
+    }
+
+    fn signed_request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<ureq::Request> {
+        let request = self.agent.request(method, &format!("{}{path}", self.base));
+        let mut req = super::provenance::apply_signed(request.set("X-Quipu-Client", "seeds"))
+            .set("Content-Type", content_type);
+        if let Some(signer) = &self.signer {
+            req = req.set(
+                super::attest::HEADER,
+                &signer.header_now(method, path, content_type, body)?,
+            );
+        }
+        Ok(req)
+    }
+
+    /// Identity returned by the protected binding selected by our signing key.
+    /// No environment-provided actor participates in this request or decision.
+    pub fn authenticated_identity(&self) -> Result<Json> {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| SdError::refused("identity requires an enrolled signing key"))?;
+        let value: Json =
+            serde_json::from_str(&self.post("/identity", "application/json", "{}", true)?)
+                .map_err(|_| SdError::refused("invalid authenticated identity response"))?;
+        let principal = value["principal"]
+            .as_str()
+            .filter(|p| !p.is_empty() && p.len() <= 2048 && !p.chars().any(char::is_control));
+        if value["authenticated"] != true
+            || value["auth_class"] != "attested_session"
+            || value["key_id"] != signer.key_id()
+            || value["session"] != signer.session
+            || principal.is_none()
+        {
+            return Err(SdError::refused(
+                "identity response does not match the signing key/session",
+            ));
+        }
+        Ok(value)
     }
 
     /// The server URL.
@@ -416,7 +496,10 @@ impl RemoteBackend {
     ) -> std::result::Result<String, (bool, SdError)> {
         let url = format!("{}{path}", self.base);
         let request = self.agent.post(&url);
-        let request = if path == "/query" && !auth {
+        let request = if self.signer.is_some() {
+            self.signed_request("POST", path, content_type, body.as_bytes())
+                .map_err(|e| (false, e))?
+        } else if path == "/query" && !auth {
             quipu_read_request(request, "query")
         } else {
             quipu_request(request)
@@ -428,7 +511,7 @@ impl RemoteBackend {
         if require_substring {
             req = req.set("X-Quipu-Require-Substring", "v6");
         }
-        if auth {
+        if auth && self.signer.is_none() {
             match &self.signer {
                 // A signed write carries the attestation and never the bearer.
                 Some(s) if super::attest::SIGNED_PATHS.contains(&path) => {
@@ -444,14 +527,14 @@ impl RemoteBackend {
                 }
             }
         }
-        let response = if path == "/query" && !auth {
+        let response = if path == "/query" && !auth && self.signer.is_none() {
             retry_read(|| req.clone().send_string(body).map_err(Box::new)).map_err(|error| *error)
         } else {
             req.send_string(body)
         };
         match response {
             Ok(r) if require_substring && r.header("X-Quipu-Substring-Index") != Some("v6") => Err((false,
-                SdError::refused("remote full-field search requires the supported complete substring index; server did not acknowledge readiness, refusing a snapshot fallback"))),
+                SdError::refused("remote title+description/full search requires the supported complete substring index; server did not acknowledge readiness, refusing a snapshot fallback"))),
             Ok(r) => r.into_string().map_err(|e| {
                 (
                     true,
@@ -1000,9 +1083,6 @@ impl RemoteBackend {
                 // A server older than signed /graph/create refuses the signed
                 // request. Creating a graph is idempotent, so retry once with
                 // the bearer when one is configured.
-                Err(_) if self.signer.is_some() && self.token.is_some() => {
-                    self.send_bearer("/graph/create", "application/json", &body)?;
-                }
                 Err(e) => return Err(e),
             }
         }
@@ -1011,37 +1091,23 @@ impl RemoteBackend {
         Ok(())
     }
 
-    /// POST with the bearer even when a signer is configured.
-    fn send_bearer(&self, path: &str, content_type: &str, body: &str) -> Result<String> {
-        let mut req = quipu_request(self.agent.post(&format!("{}{path}", self.base)))
-            .set("Content-Type", content_type);
-        if let Some(t) = &self.token {
-            req = req.set("Authorization", &format!("Bearer {t}"));
-        }
-        match req.send_string(body) {
-            Ok(r) => r
-                .into_string()
-                .map_err(|e| SdError::failed(format!("quipu {path}: reading the response: {e}"))),
-            Err(ureq::Error::Transport(t)) => Err(transport(&self.base, &t)),
-            Err(ureq::Error::Status(code, r)) => Err(status_error(
-                path,
-                code,
-                &r.into_string().unwrap_or_default(),
-            )),
-        }
-    }
-
     /// The server's registered graph IRIs, or `None` if it would not say (an
     /// older server, or any failure): then every graph is created, as before.
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
-        let text = retry_read(|| {
-            quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+        let response = if self.signer.is_some() {
+            self.signed_request("GET", "/graphs", "", b"")
+                .ok()?
                 .call()
-                .map_err(Box::new)
-        })
-        .ok()?
-        .into_string()
-        .ok()?;
+                .ok()?
+        } else {
+            retry_read(|| {
+                quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .ok()?
+        };
+        let text = response.into_string().ok()?;
         let v: Json = serde_json::from_str(&text).ok()?;
         Some(
             v["graphs"]
@@ -1335,26 +1401,26 @@ impl Backend for RemoteBackend {
         &self,
         req: &crate::engine::SearchReq,
     ) -> Result<Option<crate::engine::SearchPage>> {
-        if req.full {
+        {
             let needle = req.query.trim().to_lowercase();
             if needle.contains('\0') || needle.chars().count() < 3 {
                 return Err(SdError::refused(
-                    "remote full-field search requires at least three lowercase Unicode characters and no NUL; refusing an unindexed scan",
+                    "remote title+description/full search requires at least three lowercase Unicode characters and no NUL; refusing an unindexed scan",
                 ));
             }
         }
         // RemoteBackend is not Sync (it already has per-call Cell state).
         // Restore the scoped requirement on all returns and unwinding, so
-        // ordinary title searches and unrelated verbs retain their contract.
+        // unrelated verbs retain their contract. Both search scopes require the index.
         struct Restore<'a>(&'a std::cell::Cell<bool>, bool);
         impl Drop for Restore<'_> {
             fn drop(&mut self) {
                 self.0.set(self.1);
             }
         }
-        let previous = self.require_substring.replace(req.full);
+        let previous = self.require_substring.replace(true);
         let _restore = Restore(&self.require_substring, previous);
-        if req.full {
+        {
             let text = self.post("/query", "application/json", r#"{"query":"ASK {}"}"#, false)?;
             let answer: Json = serde_json::from_str(&text)
                 .map_err(|_| SdError::failed("invalid substring readiness response"))?;
@@ -2086,7 +2152,15 @@ impl RemoteBackend {
             }
             _ => Vec::new(),
         };
-        let ids: Vec<&str> = batch.seeds.iter().map(|w| w.seed.id.as_str()).collect();
+        let mut ids: Vec<String> = batch.seeds.iter().map(|w| w.seed.id.clone()).collect();
+        // A comment-only batch has no seeds: name the comments, or the refusal
+        // reads "for ;" and says nothing about what was lost (aegis-epi).
+        ids.extend(
+            batch
+                .comments
+                .iter()
+                .map(|c| format!("comment {} on {}", c.index, c.seed)),
+        );
         let detail = if holders.is_empty() {
             format!("for {}", ids.join(", "))
         } else {
@@ -2131,6 +2205,58 @@ mod scoped_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// quipu's 401 for a refused signed write, byte-for-byte as captured from a
+    /// real server on 2026-10-21 (aegis-m6o, the #687 incident).
+    const REFUSED_INVALID: &str = r#"{"credential_type":"attested_signature","error":"unauthorized: signed write refused (invalid)","expected_scope":"write","message":"declared identity differs from the authenticated session","provisioning":"Ask the identity introducer to register the client public key and bind its agent/session with allow_write; renew expired bindings. A rejected signature never falls back to bearer authentication.","reason":"attestation_refused","verdict":"invalid"}"#;
+
+    #[test]
+    fn a_refused_signed_write_says_why() {
+        // aegis-wn3: only "(invalid)" was printed. The reason that named the
+        // #687 check was in the body and sd dropped it.
+        let e = status_error("/update", 401, REFUSED_INVALID);
+        assert_eq!(
+            e.message,
+            "quipu /update: signed write refused (invalid): declared identity differs from \
+             the authenticated session."
+        );
+    }
+
+    #[test]
+    fn the_server_reason_keeps_the_verdict_hint() {
+        let body = r#"{"reason":"attestation_refused","verdict":"unbound","message":"no binding"}"#;
+        let e = status_error("/update", 401, body);
+        assert!(e
+            .message
+            .starts_with("quipu /update: signed write refused (unbound): no binding."));
+        assert!(e.message.contains("quipu attest register"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_refusal_without_a_reason_reads_as_before() {
+        let body = r#"{"reason":"attestation_refused","verdict":"invalid"}"#;
+        assert_eq!(
+            status_error("/update", 401, body).message,
+            "quipu /update: signed write refused (invalid)."
+        );
+        let blank = r#"{"reason":"attestation_refused","verdict":"invalid","message":"  "}"#;
+        assert_eq!(
+            status_error("/update", 401, blank).message,
+            "quipu /update: signed write refused (invalid)."
+        );
+    }
+
+    #[test]
+    fn the_server_reason_is_one_bounded_line() {
+        let long = "x\ny\u{1b}[31m".to_string() + &"z".repeat(1000);
+        let body = serde_json::json!({
+            "reason": "attestation_refused", "verdict": "invalid", "message": long,
+        })
+        .to_string();
+        let m = status_error("/update", 401, &body).message;
+        assert!(!m.contains('\n') && !m.contains('\u{1b}'), "{m:?}");
+        assert!(m.chars().count() < 400, "{}", m.chars().count());
+    }
 
     fn preflight_fixture(a: bool, b: bool, c: bool) -> Json {
         let mut rows = vec![json!({"probe":{"type":"literal","value":"complete"}})];
@@ -2418,7 +2544,7 @@ mod tests {
     }
 
     // aegis-1jh5en: every request seeds sends to quipu (the health check,
-    // the graph listing, a signed-or-bearer POST and a bearer-only POST)
+    // the graph listing, a signed-or-bearer POST and a graph-create POST)
     // carries the client label and the appropriate read/write declarations.
     #[test]
     fn every_quipu_request_carries_the_provenance_headers() {
@@ -2438,7 +2564,7 @@ mod tests {
             )
             .unwrap();
         remote
-            .send_bearer("/graph/create", "application/json", "{}")
+            .post("/graph/create", "application/json", "{}", true)
             .unwrap();
 
         let expected = super::super::provenance::headers();
@@ -2604,14 +2730,19 @@ mod tests {
 
     #[test]
     fn full_search_contract_refuses_missing_or_wrong_echo_and_restores_scope() {
-        for echo in [None, Some("wrong")] {
+        for (full, echo) in [
+            (false, None),
+            (false, Some("wrong")),
+            (true, None),
+            (true, Some("wrong")),
+        ] {
             let (base, seen) = recording_server_with_contract(echo);
             let backend =
                 RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
                     .unwrap();
             let req = crate::engine::SearchReq {
                 query: "needle".into(),
-                full: true,
+                full,
                 ..Default::default()
             };
             let error = backend.search_page(&req).unwrap_err();
@@ -2654,14 +2785,18 @@ mod tests {
 
     #[test]
     fn full_search_contract_refuses_unindexable_terms_before_any_query() {
-        for term in ["a", "ab", "  ab  ", "éé", "😃😃", "needle\0"] {
+        for (full, term) in [false, true].into_iter().flat_map(|full| {
+            ["a", "ab", "  ab  ", "éé", "😃😃", "needle\0"]
+                .into_iter()
+                .map(move |term| (full, term))
+        }) {
             let (base, seen) = recording_server_with_contract(Some("v6"));
             let backend =
                 RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
                     .unwrap();
             let req = crate::engine::SearchReq {
                 query: term.into(),
-                full: true,
+                full,
                 ..Default::default()
             };
             assert!(backend

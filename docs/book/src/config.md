@@ -218,7 +218,8 @@ Observe stores a cumulative `mismatches_total` and the latest 64 mismatch
 attempts in `$XDG_STATE_HOME/seeds/actor-principal.json`, falling back to
 `~/.local/state/seeds/actor-principal.json`. Entries contain actor, principal,
 verb and time, each bounded to 128 characters. The host lock serializes counter
-updates and the file is replaced atomically. These are attempted writes, not
+updates and the file is replaced atomically. Waiting for that lock is bounded
+to one second; contention warns UNKNOWN and the write continues. These are attempted writes, not
 commit receipts. Counter failure warns `UNKNOWN`, rather than claiming zero.
 A deliberately mismatched canary must increment the counter before a zero
 mismatch interval can establish anything. Do not turn on enforce for agents

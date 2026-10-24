@@ -43,4 +43,5 @@ installed configuration, host allowance or live credential participates.
 
 The stronger executable regression fixture is `tests/actor_principal.rs`:
 default observe, two actors under one key, positive counter, matching/mismatching
-enforce, off, corrupt-counter UNKNOWN, and bearer refusal before any HTTP request.
+enforce, off, corrupt/contended-counter UNKNOWN with a bounded lock wait, and
+bearer refusal before any HTTP request.

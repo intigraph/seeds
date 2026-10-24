@@ -62,7 +62,22 @@ fn record(path: &Path, event: Event) -> std::io::Result<u64> {
     };
     // A separate stable lock survives atomic replacement of the data file.
     let lock = open().open(dir.join("actor-principal.lock"))?;
-    lock.lock()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "observation counter lock busy after one second",
+                ));
+            }
+            Err(error) => return Err(std::io::Error::other(error.to_string())),
+        }
+    }
     let mut bytes = Vec::new();
     open()
         .open(path)?

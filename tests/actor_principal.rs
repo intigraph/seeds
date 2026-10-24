@@ -108,12 +108,13 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
         }
     });
     let config = root.join("home/.config/seeds/config.toml");
-    let run = |actor: &str, mode: Option<&str>| {
+    let command = |actor: &str, mode: Option<&str>| {
         let mode = mode
             .map(|m| format!("actor_principal_mode={m:?}\n"))
             .unwrap_or_default();
         std::fs::write(&config,format!("[quipu]\nsigning_key_file={:?}\nsigning_session=\"host-session\"\nsigning_introducer=\"urn:test:lead\"\n{mode}",key.to_str().unwrap())).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_sd"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sd"));
+        command
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", root.join("home"))
@@ -130,10 +131,10 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
                 actor,
                 "create",
                 "Synthetic actor probe",
-            ])
-            .output()
-            .unwrap()
+            ]);
+        command
     };
+    let run = |actor, mode| command(actor, mode).output().unwrap();
     let first = run("worker-a", None);
     let second = run("worker-b", None);
     let refused = run("worker-c", Some("enforce"));
@@ -141,6 +142,32 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
     let matching = run("host-principal", Some("enforce"));
     let state_path = root.join("state/seeds/actor-principal.json");
     let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    let held_counter = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("state/seeds/actor-principal.lock"))
+        .unwrap();
+    held_counter.lock().unwrap();
+    let started = std::time::Instant::now();
+    let mut child = command("worker-f", Some("observe"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() >= std::time::Duration::from_secs(5) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("optional observer stalled a write while its counter lock was held");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let contended = child.wait_with_output().unwrap();
+    drop(held_counter);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&state_path).unwrap()).unwrap(),
+        state
+    );
     std::fs::write(&state_path, b"{malformed retained counter").unwrap();
     let degraded = run("worker-e", Some("observe"));
     let before_bearer = requests.lock().unwrap().len();
@@ -171,7 +198,7 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
         .unwrap();
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
-    for output in [&first, &second, &off, &matching, &degraded] {
+    for output in [&first, &second, &off, &matching, &degraded, &contended] {
         assert!(
             output.status.success(),
             "{}",
@@ -184,6 +211,8 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
     assert!(String::from_utf8_lossy(&first.stderr).contains("mismatches_total=1"));
     assert!(String::from_utf8_lossy(&second.stderr).contains("mismatches_total=2"));
     assert!(String::from_utf8_lossy(&degraded.stderr).contains("counter UNKNOWN"));
+    assert!(String::from_utf8_lossy(&contended.stderr).contains("counter UNKNOWN"));
+    assert!(String::from_utf8_lossy(&contended.stderr).contains("busy after one second"));
     assert!(!bearer.status.success());
     assert!(String::from_utf8_lossy(&bearer.stderr).contains("refusing to send a bearer token"));
     assert_eq!(
@@ -208,13 +237,14 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
         .iter()
         .filter(|(h, _)| h.starts_with("POST /update "))
         .collect();
-    assert_eq!(updates.len(), 5, "enforce mismatch must never write");
+    assert_eq!(updates.len(), 6, "enforce mismatch must never write");
     for actor in [
         "worker-a",
         "worker-b",
         "worker-d",
         "host-principal",
         "worker-e",
+        "worker-f",
     ] {
         assert!(
             updates

@@ -38,6 +38,8 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
     let url = format!("http://127.1:{}", listener.local_addr().unwrap().port());
     assert!(!seeds::native::remote::secure_enough(&url));
     assert_eq!(url::Url::parse(&url).unwrap().host_str(), Some("127.0.0.1"));
+    let allow_identity = Arc::new(AtomicBool::new(true));
+    let served_identity = allow_identity.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let worker_stop = stop.clone();
@@ -82,7 +84,8 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
             let query = query["query"].as_str().unwrap_or("");
             let body = match path {
                 "/health" => json!({"ok":true}),
-                "/identity" => identity.clone(),
+                "/identity" if served_identity.load(Ordering::Relaxed) => identity.clone(),
+                "/identity" => json!({"authenticated":false}),
                 "/graphs" => json!({"graphs":[]}),
                 "/graph/create" => json!({"ok":true}),
                 "/query" if query.starts_with("SELECT ?probe") => {
@@ -140,6 +143,61 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
     let refused = run("worker-c", Some("enforce"));
     let off = run("worker-d", Some("off"));
     let matching = run("host-principal", Some("enforce"));
+    // Turning off attribution must never turn off strict authentication.
+    let updates_before = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(h, _)| h.starts_with("POST /update "))
+        .count();
+    allow_identity.store(false, Ordering::Relaxed);
+    let mut strict = command("worker-g", Some("off"));
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&config)
+            .unwrap(),
+        "require_identity=true"
+    )
+    .unwrap();
+    let strict_refused = strict.output().unwrap();
+    let updates_after_refusal = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(h, _)| h.starts_with("POST /update "))
+        .count();
+    allow_identity.store(true, Ordering::Relaxed);
+    let strict_allowed = strict.output().unwrap();
+
+    // A configured key is not an effective signer for an untrusted project URL.
+    std::fs::create_dir_all(root.join("work/.seeds")).unwrap();
+    std::fs::write(
+        root.join("work/.seeds/config.toml"),
+        format!("[quipu]\nurl={:?}\n", url.replace("127.1:", "127.0.0.1:")),
+    )
+    .unwrap();
+    let before_untrusted = requests.lock().unwrap().len();
+    let untrusted = Command::new(env!("CARGO_BIN_EXE_sd"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("home/.config"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("USER", "synthetic-user")
+        .current_dir(root.join("work"))
+        .args([
+            "--graph",
+            "urn:test:host-actors",
+            "--actor",
+            "worker-h",
+            "create",
+            "Synthetic strict project probe",
+        ])
+        .output()
+        .unwrap();
+    let after_untrusted = requests.lock().unwrap().len();
+    std::fs::remove_file(root.join("work/.seeds/config.toml")).unwrap();
     let state_path = root.join("state/seeds/actor-principal.json");
     let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
     let held_counter = std::fs::OpenOptions::new()
@@ -205,6 +263,33 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    assert!(
+        !strict_refused.status.success(),
+        "off bypassed strict identity"
+    );
+    assert!(String::from_utf8_lossy(&strict_refused.stderr).contains("identity response"));
+    assert_eq!(
+        updates_before, updates_after_refusal,
+        "strict refusal wrote an update"
+    );
+    assert!(
+        strict_allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&strict_allowed.stderr)
+    );
+    assert!(
+        !untrusted.status.success(),
+        "untrusted project wrote without an effective signer"
+    );
+    assert!(
+        String::from_utf8_lossy(&untrusted.stderr).contains("enrolled remote session key"),
+        "{}",
+        String::from_utf8_lossy(&untrusted.stderr)
+    );
+    assert_eq!(
+        before_untrusted, after_untrusted,
+        "untrusted strict write reached the server"
+    );
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr)
         .contains("differs from the authenticated principal"));
@@ -237,7 +322,7 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
         .iter()
         .filter(|(h, _)| h.starts_with("POST /update "))
         .collect();
-    assert_eq!(updates.len(), 6, "enforce mismatch must never write");
+    assert_eq!(updates.len(), 7, "enforce mismatch must never write");
     for actor in [
         "worker-a",
         "worker-b",
@@ -245,6 +330,7 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
         "host-principal",
         "worker-e",
         "worker-f",
+        "worker-g",
     ] {
         assert!(
             updates

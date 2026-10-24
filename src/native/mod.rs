@@ -1540,11 +1540,20 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
             "remote pendant export does not support --at; no historical source receipt is available",
         ));
     }
+    let effective_signer = signer(cfg, url, cfg.location_from_project)?;
+    if cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
+        && effective_signer.is_none()
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
     let mut remote = remote::RemoteBackend::connect(
         url,
         cfg.graph(),
         token(cfg, url, cfg.location_from_project)?,
-        signer(cfg, url, cfg.location_from_project)?,
+        effective_signer,
         &cfg.allow_plain_http_hosts,
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
@@ -1552,17 +1561,23 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     let authenticated_ctx;
     let ctx = if cfg.signing.is_some()
         && cli.command.writes()
-        && cfg.actor_principal_mode != config::ActorPrincipalMode::Off
+        && (cfg.require_identity || cfg.actor_principal_mode != config::ActorPrincipalMode::Off)
     {
         let identity = remote.authenticated_identity()?;
         let principal = identity["principal"].as_str().expect("identity validated");
-        let actor = actor_policy::select(
-            cfg.actor_principal_mode,
-            cli.actor.as_deref(),
-            principal,
-            cli.command.name(),
-            &ctx.now,
-        )?;
+        // Strict authentication is independent of attribution. Off preserves
+        // the original actor and emits no observation after validating identity.
+        let actor = if cfg.actor_principal_mode == config::ActorPrincipalMode::Off {
+            ctx.actor.clone()
+        } else {
+            actor_policy::select(
+                cfg.actor_principal_mode,
+                cli.actor.as_deref(),
+                principal,
+                cli.command.name(),
+                &ctx.now,
+            )?
+        };
         authenticated_ctx = Ctx {
             now: ctx.now.clone(),
             actor,

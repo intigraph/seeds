@@ -1,0 +1,12 @@
+Script started on 2026-10-22 12:13:29-04:00 [COMMAND="python3 docs/pr-demos/ask-deferral.py" <not executed on terminal>]
+Private ASK deferral control (fresh local stores; no production calls)
+case                 before exit    candidate exit
+needs-stiwi                    0                 5
+blocked:human                  0                 5
+desk                           0                 5
+decision-needed                0                 5
+title-prefix                   0                 5
+non-ASK                        0                 0
+PASS: five ASK cases refuse; ordinary deferral still succeeds.
+
+Script done on 2026-10-22 12:13:31-04:00 [COMMAND_EXIT_CODE="0"]

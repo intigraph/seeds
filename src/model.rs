@@ -609,6 +609,8 @@ impl Seed {
         [
             vocab::seeds("beadsJson"),
             vocab::seeds("dependencyOrigin"),
+            vocab::seeds("deferredAt"),
+            vocab::seeds("deferredBy"),
             crate::blockers::ledger_predicate(),
             crate::blockers::edge_predicate(),
         ]

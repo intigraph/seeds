@@ -3347,15 +3347,20 @@ fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
 
 #[test]
 fn strict_identity_refuses_unkeyed_local_write_before_opening_a_store() {
-    let s = Sandbox::new("strict-key-identity");
-    std::fs::create_dir_all(s.root.join("home/.config/seeds")).unwrap();
-    std::fs::write(
-        s.root.join("home/.config/seeds/config.toml"),
-        "[quipu]\nrequire_identity = true\n",
-    )
-    .unwrap();
-    let output = s.run(&["create", "Synthetic unsigned write"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("enrolled remote session key"));
-    assert!(!s.work().join(".seeds/seeds.db").exists());
+    for (name, setting) in [
+        ("strict-key-identity", "require_identity = true"),
+        ("enforce-key-identity", "actor_principal_mode = \"enforce\""),
+    ] {
+        let s = Sandbox::new(name);
+        std::fs::create_dir_all(s.root.join("home/.config/seeds")).unwrap();
+        std::fs::write(
+            s.root.join("home/.config/seeds/config.toml"),
+            format!("[quipu]\n{setting}\n"),
+        )
+        .unwrap();
+        let output = s.run(&["create", "Synthetic unsigned write"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("enrolled remote session key"));
+        assert!(!s.work().join(".seeds/seeds.db").exists());
+    }
 }

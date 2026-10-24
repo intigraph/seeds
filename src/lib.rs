@@ -36,6 +36,7 @@ pub mod ids;
 pub mod model;
 pub mod output;
 pub mod pendant;
+pub mod projection;
 pub mod quipu_backend;
 pub mod rank;
 pub mod schema;

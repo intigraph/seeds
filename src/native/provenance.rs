@@ -1,6 +1,6 @@
 //! Structured write provenance for every request seeds sends to quipu.
 //!
-//! Who wrote a fact must be machine-readable. Beside `X-Quipu-Client: seeds`,
+//! Who wrote a fact must be machine-readable. Beside the bounded `X-Quipu-Client: seeds/<command>` metric label,
 //! each request carries up to six headers from the environment. The task
 //! label is explicitly declared diagnostic metadata; no task is inferred:
 //!
@@ -130,6 +130,7 @@ pub fn headers() -> &'static [(&'static str, String)] {
 
 /// Set this process's provenance headers on a request.
 pub fn apply(mut req: ureq::Request) -> ureq::Request {
+    req = req.set("X-Quipu-Client", &super::command_context::client());
     for (name, value) in headers() {
         req = req.set(name, value);
     }
@@ -175,6 +176,7 @@ pub fn read_headers_from(
 
 /// Apply read metadata only. Writer provenance/signatures use `apply` unchanged.
 pub fn apply_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
+    req = req.set("X-Quipu-Client", &super::command_context::client());
     // Preserve the writer's legacy first-request snapshot, even when that
     // request is a read. Read declarations remain separate from that snapshot.
     let _ = headers();
@@ -206,6 +208,7 @@ pub(super) fn hostname() -> Option<String> {
 /// Diagnostic metadata cannot assert the agent/session on a signed request.
 /// The receiving protected registry supplies both fields from the verified key.
 pub fn apply_signed(mut req: ureq::Request) -> ureq::Request {
+    req = req.set("X-Quipu-Client", &super::command_context::client());
     for (name, value) in headers() {
         if !matches!(*name, "X-Quipu-Agent" | "X-Quipu-Session") {
             req = req.set(name, value);

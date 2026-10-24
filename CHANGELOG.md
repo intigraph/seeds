@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-10-24
+
+### Fixed
+
+- *(auth)* Observe shared-key actor mismatches by default (#194) ([76b2563](https://github.com/scbrown/seeds/commit/76b2563dd5e42a511501a1a9c268f549be68b040))
+
 ## [0.7.2] - 2026-10-24
 
 ### Added

@@ -36,7 +36,7 @@ native = ["dep:libc", "dep:url", "dep:clap", "dep:clap_complete", "dep:toml", "d
 shacl = ["quipu/shacl", "dep:shacl-pin"]
 
 [dependencies]
-quipu = { package = "quipu-ai", version = "0.9", default-features = false }
+quipu = { package = "quipu-ai", git = "https://github.com/intigraph/quipu", rev = "fec93ae63adcdf49e7bf1ce5e6b060f9650bb5e9", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # XSD canonical lexical forms for the typed times and the duration seeds
@@ -64,15 +64,13 @@ base64 = { version = "0.22", optional = true }
 jiff = { version = "0.2", optional = true }
 # --agent-context @file.yaml (already in the tree via shacl; MIT OR Apache-2.0).
 yaml-rust2 = { version = "0.10", optional = true }
-# quipu-ai 0.9 declares `shacl = "^0.3.16"`, but shacl 0.3.24 changed
-# `ShaclProcessor::validate`'s arity and quipu-ai 0.9.1 no longer compiles
-# against it. Pin the version quipu's own lockfile builds with, so an unlocked
-# `cargo install seeds-ai` resolves to a working tree too. Remove once quipu
-# ships a release that builds against the newer shacl.
-shacl-pin = { package = "shacl", version = "=0.3.16", optional = true }
+# Match the pinned shared-applier release's SHACL engine.
+shacl-pin = { package = "shacl", version = "=0.3.25", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+ring = "0.17"
+tempfile = "3"

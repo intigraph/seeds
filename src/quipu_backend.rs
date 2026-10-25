@@ -631,12 +631,18 @@ impl Backend for QuipuBackend {
             batches.push((g, d));
         }
         batches.extend(by_graph);
-        self.store.transact_graph_batches(
-            &batches,
-            &ctx.now,
-            Some(&ctx.actor),
-            Some(&batch.source),
-        )?;
+        let write = |store: &mut Store| {
+            store.transact_graph_batches(&batches, &ctx.now, Some(&ctx.actor), Some(&batch.source))
+        };
+        if ge != g && batches.iter().any(|(graph, _)| *graph == ge) {
+            // An ephemeral dependency may reference a shared Action. Only this
+            // configured project may supply its type; property values and all
+            // other destination graphs retain their own validation scope.
+            self.store
+                .with_write_reference_graphs(ge, &[ge, g], write)?;
+        } else {
+            write(&mut self.store)?;
+        }
         Ok(u64::try_from(self.store.transaction_head()?).unwrap_or(0))
     }
 }

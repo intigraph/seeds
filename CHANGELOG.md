@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.2] - 2026-10-25
+
+### Added
+
+- *(remote)* Say when a read comes from a Quipu read replica, and how stale it is (#199) ([1fe6560](https://github.com/scbrown/seeds/commit/1fe65608e22005021533613fa1c19cdbbce8df0e))
+
 ## [0.8.1] - 2026-10-25
 
 ### Fixed

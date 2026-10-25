@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.3] - 2026-10-25
+
+### Added
+
+- *(projection)* Consume the shared applier for board reads (#193) ([adfd266](https://github.com/scbrown/seeds/commit/adfd266837a1cd01682077472e4980eed7a20c88))
+
 ## [0.8.2] - 2026-10-25
 
 ### Added

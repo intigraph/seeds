@@ -16,6 +16,7 @@ pub mod credentials;
 mod cutover;
 pub mod provenance;
 pub mod remote;
+mod replica;
 pub mod store;
 
 use serde_json::Value as Json;
@@ -1591,7 +1592,8 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
         refuse_old_vocabulary(&ledger_label(cfg), &remote)?;
     }
-    match &cli.command {
+    let replica = remote.replica().cloned();
+    let mut run = || match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;
             let p = pendant_of(&remote)?;
@@ -1604,6 +1606,37 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
              configuration's primary store is already the remote",
         )),
         _ => dispatch(cli, cfg, ctx, &mut remote),
+    };
+    let result = run();
+    match replica {
+        Some(r) => with_replica(cli.json, result, &r),
+        None => result,
+    }
+}
+
+/// Say that the answer came from a read replica, and how stale it is: on
+/// stderr, so stdout and its `--json` shape are unchanged. Text mode gets one
+/// `sd:` line; `--json` gets one JSON object line, `{"replica": {...}}`. A
+/// failure (a refused write included) carries the notice in its message.
+fn with_replica(json: bool, result: Result<Outcome>, r: &replica::Staleness) -> Result<Outcome> {
+    match result {
+        Ok(mut o) => {
+            let line = if json {
+                r.to_json().to_string()
+            } else {
+                format!("sd: {}", r.notice())
+            };
+            o.stderr = if o.stderr.is_empty() {
+                line
+            } else {
+                format!("{line}\n{}", o.stderr)
+            };
+            Ok(o)
+        }
+        Err(mut e) => {
+            e.message = format!("{} ({})", e.message, r.notice());
+            Err(e)
+        }
     }
 }
 

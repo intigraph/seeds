@@ -223,6 +223,9 @@ pub struct RemoteBackend {
     /// Subjects per page of a subject listing ([`SUBJECT_PAGE`]; smaller in
     /// tests, so a small graph still spans pages).
     subject_page: usize,
+    /// The server is a read replica, and how stale its health answer said it
+    /// was (aegis-0aua).
+    replica: Option<super::replica::Staleness>,
 }
 
 /// Every request seeds sends to quipu names its client and carries the
@@ -365,7 +368,7 @@ impl RemoteBackend {
             .timeout_connect(Duration::from_secs(5))
             .timeout(Duration::from_secs(120))
             .build();
-        let b = Self {
+        let mut b = Self {
             base: base.trim_end_matches('/').to_string(),
             graph: graph.to_string(),
             token,
@@ -379,6 +382,7 @@ impl RemoteBackend {
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
+            replica: None,
         };
         let health = if b.signer.is_some() {
             b.signed_request("GET", "/health", "", b"")?.call()
@@ -391,7 +395,10 @@ impl RemoteBackend {
             .map_err(|e| *e)
         };
         match health {
-            Ok(_) => Ok(b),
+            Ok(response) => {
+                b.replica = super::replica::Staleness::from_headers(|name| response.header(name));
+                Ok(b)
+            }
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
                 "health check",
@@ -449,6 +456,11 @@ impl RemoteBackend {
     /// The server URL.
     pub fn url(&self) -> &str {
         &self.base
+    }
+
+    /// The staleness the server stated at connect, when it is a read replica.
+    pub fn replica(&self) -> Option<&super::replica::Staleness> {
+        self.replica.as_ref()
     }
 
     /// Cap write requests at `bytes` (see [`Backend::max_write_bytes`]).

@@ -2072,7 +2072,7 @@ dependencies = [
 [[package]]
 name = "quipu-ai"
 version = "0.16.2"
-source = "git+https://github.com/intigraph/quipu?rev=4ebcec322332e51b7d484bbb40e1454e84dcc47e#4ebcec322332e51b7d484bbb40e1454e84dcc47e"
+source = "git+https://github.com/intigraph/quipu?rev=fec93ae63adcdf49e7bf1ce5e6b060f9650bb5e9#fec93ae63adcdf49e7bf1ce5e6b060f9650bb5e9"
 dependencies = [
  "base64 0.22.1",
  "bigdecimal",

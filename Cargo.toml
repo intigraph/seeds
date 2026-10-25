@@ -36,7 +36,7 @@ native = ["dep:libc", "dep:url", "dep:clap", "dep:clap_complete", "dep:toml", "d
 shacl = ["quipu/shacl", "dep:shacl-pin"]
 
 [dependencies]
-quipu = { package = "quipu-ai", git = "https://github.com/intigraph/quipu", rev = "4ebcec322332e51b7d484bbb40e1454e84dcc47e", default-features = false }
+quipu = { package = "quipu-ai", git = "https://github.com/intigraph/quipu", rev = "fec93ae63adcdf49e7bf1ce5e6b060f9650bb5e9", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # XSD canonical lexical forms for the typed times and the duration seeds

@@ -260,3 +260,12 @@ client-side profile, migrate data, or change stored class and predicate names. A
 write operation against its complete loaded shape set before deployment.
 Write timestamps remain strings because that is the provenance producer's
 contract; item creation times remain typed `xsd:dateTime`.
+
+### Embedded ephemeral reference types
+
+When an embedded transaction writes the configured ephemeral graph, its referenced
+`rdf:type` context is exactly that graph plus the configured project graph. This
+allows ephemeral items to depend on shared items without joining property values
+or discovering unrelated projects. ROOT is not selected for those referenced
+types. The existing batch keeps its provenance, project and ephemeral writes
+atomic, and shared-to-ephemeral edges remain refused.

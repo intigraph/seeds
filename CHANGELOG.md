@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.1] - 2026-10-25
+
+### Fixed
+
+- *(provenance)* Label Quipu requests by CLI command (#196) ([02b6127](https://github.com/scbrown/seeds/commit/02b61272739d16343929b13831f49230ae8fa3ec))
+
 ## [0.8.0] - 2026-10-24
 
 ### Fixed

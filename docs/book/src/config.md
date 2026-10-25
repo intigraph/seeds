@@ -137,7 +137,10 @@ signing_introducer = "<lead>"
 
 - A signed write never also sends the bearer.
 - Every signed request is `quipu-write-v2`: the signature names the receiving
-  store, so another store that trusts the same key refuses it. sd reads that
+  store, so another store that trusts the same key refuses it. **This needs
+  quipu `quipu-ai-v0.12.0` or later**, the first release that verifies
+  write-v2 and reports `store_id` in `GET /stats`. Against an older quipu every
+  signed request is refused until you set `signing_version = "v1-legacy"`. sd reads that
   id from the server's `GET /stats` once, before it signs anything, and refuses
   to connect when `/stats` fails or names no usable `store_id`. It never falls
   back to the audience-free v1 on its own.

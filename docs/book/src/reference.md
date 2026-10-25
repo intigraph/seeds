@@ -77,7 +77,9 @@ connects to sends them, sd says so on stderr, and stdout is unchanged:
 - `--json` prints one JSON object line: `{"replica": {"writes": "refused",
   "source_tx": 6, "source_time": "...", "confirmed_age_s": 21, "lag_tx":
   null}}`. A value the replica does not know is `null`, never 0.
-- a failure, such as a refused write, carries the same notice in its message.
+- a failure, such as a refused write or an identity refusal, carries the same
+  notice in its message. `sd sync` refuses a replica as its remote before
+  reading or writing anything.
 
 The values are the replica's own claims at connect time. A replica that
 cannot reach its primary reports its lag as unknown, and its confirmed age

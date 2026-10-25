@@ -1527,9 +1527,14 @@ fn identity_outcome(json: bool, cfg: &Resolved) -> Result<Outcome> {
         signer(cfg, url, cfg.location_from_project)?,
         &cfg.allow_plain_http_hosts,
     )?;
-    let value = remote.authenticated_identity()?;
-    let text = value["principal"].as_str().unwrap_or_default().to_owned();
-    Ok(ok(json, value, text, vec![]))
+    let result = remote.authenticated_identity().map(|value| {
+        let text = value["principal"].as_str().unwrap_or_default().to_owned();
+        ok(json, value, text, vec![])
+    });
+    match remote.replica() {
+        Some(r) => with_replica(json, result, r),
+        None => result,
+    }
 }
 
 fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome> {
@@ -1559,6 +1564,24 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    // Every outcome after the connect, an identity or vocabulary refusal
+    // included, says when the server is a read replica.
+    let replica = remote.replica().cloned();
+    let result = run_connected(cli, cfg, ctx, &mut remote);
+    match replica {
+        Some(r) => with_replica(cli.json, result, &r),
+        None => result,
+    }
+}
+
+/// [`run_remote`] once connected: the identity, the vocabulary check and the
+/// verb.
+fn run_connected(
+    cli: &Cli,
+    cfg: &Resolved,
+    ctx: &Ctx,
+    remote: &mut remote::RemoteBackend,
+) -> Result<Outcome> {
     let authenticated_ctx;
     let ctx = if cfg.signing.is_some()
         && cli.command.writes()
@@ -1590,27 +1613,21 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
         ctx
     };
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
-        refuse_old_vocabulary(&ledger_label(cfg), &remote)?;
+        refuse_old_vocabulary(&ledger_label(cfg), remote)?;
     }
-    let replica = remote.replica().cloned();
-    let mut run = || match &cli.command {
+    match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;
-            let p = pendant_of(&remote)?;
+            let p = pendant_of(remote)?;
             let changed = store::write_pendant_dir(&dir, &p)?;
             remote_export_outcome(cli.json, &dir, &p, changed, cfg.graph())
         }
-        Command::Import(a) => import_into(cli, ctx, &mut remote, a),
+        Command::Import(a) => import_into(cli, ctx, remote, a),
         Command::Sync(_) => Err(SdError::usage(
             "sd sync runs from a local store ([quipu] store) to a [sync] remote; this \
              configuration's primary store is already the remote",
         )),
-        _ => dispatch(cli, cfg, ctx, &mut remote),
-    };
-    let result = run();
-    match replica {
-        Some(r) => with_replica(cli.json, result, &r),
-        None => result,
+        _ => dispatch(cli, cfg, ctx, remote),
     }
 }
 
@@ -1901,6 +1918,14 @@ fn run_sync(
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    // A sync writes to its remote, which a read replica refuses: say so before
+    // reading or writing anything.
+    if let Some(r) = remote.replica() {
+        return Err(SdError::refused(format!(
+            "the sync remote {url} is a Quipu read replica; nothing was read or written ({})",
+            r.notice()
+        )));
+    }
     refuse_old_vocabulary(
         &format!("the quipu server {url} (graph {})", cfg.graph()),
         &remote,

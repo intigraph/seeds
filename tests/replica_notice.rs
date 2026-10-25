@@ -163,3 +163,41 @@ fn a_refused_write_on_a_replica_names_the_replica() {
         "{err}"
     );
 }
+
+#[test]
+fn an_identity_refusal_from_a_replica_still_names_the_replica() {
+    // tim's #199 review: failures after the connect but before the verb (the
+    // identity read, the vocabulary check) dropped the notice.
+    let replica = fake_quipu(true);
+    let out = sd(&replica, &["identity"]);
+    let err = text(&out.stderr);
+    assert!(err.contains("read from a Quipu read replica"), "{err}");
+}
+
+#[test]
+fn a_sync_to_a_replica_is_refused_before_anything_moves() {
+    let replica = fake_quipu(true);
+    let home = std::env::temp_dir().join(format!("sd-replica-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let store = home.join("local.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_sd"))
+        .args(["--store", store.to_str().unwrap()])
+        .args(["sync", "--remote", &replica])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env_remove("SEEDS_QUIPU_URL")
+        .env_remove("SEEDS_QUIPU_STORE")
+        .env_remove("SEEDS_QUIPU_TOKEN")
+        .env_remove("QUIPU_AUTH_TOKEN")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let err = text(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        err.contains("is a Quipu read replica; nothing was read or written"),
+        "{err}"
+    );
+}

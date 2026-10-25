@@ -176,28 +176,46 @@ fn an_identity_refusal_from_a_replica_still_names_the_replica() {
 
 #[test]
 fn a_sync_to_a_replica_is_refused_before_anything_moves() {
+    // tim's #199 SAME: the refusal must come before the local store is opened
+    // or hydrated, so "nothing was read or written" is true locally too.
     let replica = fake_quipu(true);
     let home = std::env::temp_dir().join(format!("sd-replica-sync-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
-    let store = home.join("local.db");
-    let out = Command::new(env!("CARGO_BIN_EXE_sd"))
-        .args(["--store", store.to_str().unwrap()])
-        .args(["sync", "--remote", &replica])
-        .current_dir(&home)
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env_remove("SEEDS_QUIPU_URL")
-        .env_remove("SEEDS_QUIPU_STORE")
-        .env_remove("SEEDS_QUIPU_TOKEN")
-        .env_remove("QUIPU_AUTH_TOKEN")
-        .output()
-        .unwrap();
-    let _ = std::fs::remove_dir_all(&home);
+    let run = |store: &std::path::Path, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_sd"))
+            .args(["--store", store.to_str().unwrap()])
+            .args(args)
+            .current_dir(&home)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env_remove("SEEDS_QUIPU_URL")
+            .env_remove("SEEDS_QUIPU_STORE")
+            .env_remove("SEEDS_QUIPU_TOKEN")
+            .env_remove("QUIPU_AUTH_TOKEN")
+            .output()
+            .unwrap()
+    };
+    // A store that does not exist yet is not created.
+    let fresh = home.join("fresh.db");
+    let out = run(&fresh, &["sync", "--remote", &replica]);
     let err = text(&out.stderr);
     assert!(!out.status.success());
     assert!(
         err.contains("is a Quipu read replica; nothing was read or written"),
         "{err}"
     );
+    assert!(!fresh.exists(), "the refusal created the local store");
+    // An existing store is byte-identical afterwards.
+    let held = home.join("held.db");
+    assert!(run(&held, &["q", "a local seed"]).status.success());
+    let before = std::fs::read(&held).unwrap();
+    let out = run(&held, &["sync", "--remote", &replica]);
+    assert!(!out.status.success());
+    assert_eq!(
+        std::fs::read(&held).unwrap(),
+        before,
+        "the refusal changed the local store"
+    );
+    let _ = std::fs::remove_dir_all(&home);
 }

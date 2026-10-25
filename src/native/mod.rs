@@ -1902,12 +1902,6 @@ fn run_sync(
                 "sd sync needs a remote: set [sync] remote, SEEDS_SYNC_REMOTE, or --remote",
             )
         })?;
-    let mut h = store::open_for_write(path, cfg.graph())?;
-    refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
-    let mut notes = Vec::new();
-    if let Some(dir) = &cfg.pendant {
-        notes.extend(store::hydrate(&mut h.backend, path, dir, ctx)?);
-    }
     let from_project = a.remote.is_none() && cfg.sync_remote_from_project;
     let mut remote = remote::RemoteBackend::connect(
         &url,
@@ -1919,12 +1913,20 @@ fn run_sync(
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
     // A sync writes to its remote, which a read replica refuses: say so before
-    // reading or writing anything.
+    // the local store is opened or hydrated, so nothing local changes either.
     if let Some(r) = remote.replica() {
         return Err(SdError::refused(format!(
             "the sync remote {url} is a Quipu read replica; nothing was read or written ({})",
             r.notice()
         )));
+    }
+    // Only now touch the local store: the replica refusal above opened,
+    // hydrated and wrote nothing.
+    let mut h = store::open_for_write(path, cfg.graph())?;
+    refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
+    let mut notes = Vec::new();
+    if let Some(dir) = &cfg.pendant {
+        notes.extend(store::hydrate(&mut h.backend, path, dir, ctx)?);
     }
     refuse_old_vocabulary(
         &format!("the quipu server {url} (graph {})", cfg.graph()),

@@ -1462,9 +1462,9 @@ fn default_session() -> Result<String> {
 }
 
 /// The signing identity for writes to `url`, under the same trust gate as the
-/// token: a signed write names nothing about the server it was meant for, so a
-/// server a cloned project chose could relay it to yours within the clock
-/// window. Sign only for servers you would send your token to.
+/// token. A write-v2 signature names the receiving store, but the store id is
+/// whatever that server's `/stats` reports, and the legacy v1 names none: sign
+/// only for servers you would send your token to.
 fn signer(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<attest::Signer>> {
     let Some(s) = &cfg.signing else {
         return Ok(None);
@@ -1476,7 +1476,8 @@ fn signer(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<attest
         );
         return Ok(None);
     }
-    attest::Signer::load(&s.key_file, &s.session, &s.introducer).map(Some)
+    attest::Signer::load(&s.key_file, &s.session, &s.introducer)
+        .map(|signer| Some(signer.with_audience(s.audience.clone())))
 }
 
 fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
@@ -4067,6 +4068,7 @@ mod selected_credential_tests {
             key_file: "unread-signing-key".into(),
             session: "fixture".into(),
             introducer: "fixture".into(),
+            audience: attest::Audience::Store { pin: None },
         });
         assert!(token(&cfg, "https://example.org", false)
             .unwrap_err()

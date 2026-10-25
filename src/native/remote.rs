@@ -201,6 +201,10 @@ pub struct RemoteBackend {
     /// Signs writes on the paths quipu accepts signed (aegis-bys8d1); those
     /// then carry no bearer.
     signer: Option<super::attest::Signer>,
+    /// The store id every signed request names (`quipu-write-v2`), read from
+    /// the server's `/stats` once at connect and pinned for this connection.
+    /// `None` with a signer only under the explicit `v1-legacy` setting.
+    audience: Option<String>,
     agent: ureq::Agent,
     graph_registered: bool,
     ephemeral_registered: bool,
@@ -365,11 +369,12 @@ impl RemoteBackend {
             .timeout_connect(Duration::from_secs(5))
             .timeout(Duration::from_secs(120))
             .build();
-        let b = Self {
+        let mut b = Self {
             base: base.trim_end_matches('/').to_string(),
             graph: graph.to_string(),
             token,
             signer,
+            audience: None,
             agent,
             graph_registered: false,
             ephemeral_registered: false,
@@ -380,6 +385,7 @@ impl RemoteBackend {
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
         };
+        b.audience = b.resolve_audience()?;
         let health = if b.signer.is_some() {
             b.signed_request("GET", "/health", "", b"")?.call()
         } else {
@@ -401,6 +407,67 @@ impl RemoteBackend {
         }
     }
 
+    /// The store id to sign for (aegis-2idcev): this server's own `store_id`
+    /// from its unauthenticated `/stats`, before anything is signed. Never a
+    /// caller choice, and never a silent v1: a missing, unreadable or
+    /// unpinned-mismatching id refuses the connection.
+    fn resolve_audience(&self) -> Result<Option<String>> {
+        use super::attest::{audience_ok, Audience};
+        let Some(signer) = &self.signer else {
+            return Ok(None);
+        };
+        let pin = match &signer.audience {
+            Audience::LegacyV1 => return Ok(None),
+            Audience::Store { pin } => pin,
+        };
+        let refuse = |why: String| {
+            SdError::refused(format!(
+                "not signing for {}: {why}. Signed writes are bound to the receiving store \
+                 (quipu-write-v2); sd does not fall back to the audience-free v1. A server \
+                 older than write-v2 needs signing_version = \"v1-legacy\" in \
+                 ~/.config/seeds/config.toml.",
+                self.base
+            ))
+        };
+        let response = retry_read(|| {
+            quipu_read_request(self.agent.get(&format!("{}/stats", self.base)), "stats")
+                .call()
+                .map_err(Box::new)
+        })
+        .map_err(|e| *e);
+        let body = match response {
+            Ok(r) => r
+                .into_string()
+                .map_err(|e| refuse(format!("reading /stats: {e}")))?,
+            Err(ureq::Error::Transport(t)) => return Err(transport(&self.base, &t)),
+            Err(ureq::Error::Status(code, _)) => {
+                return Err(refuse(format!("GET /stats answered {code}")));
+            }
+        };
+        let store_id = serde_json::from_str::<Json>(&body)
+            .ok()
+            .and_then(|v| v["store_id"].as_str().map(str::to_owned))
+            .ok_or_else(|| refuse("its /stats names no store_id".into()))?;
+        if !audience_ok(&store_id) {
+            return Err(refuse(
+                "its /stats store_id is not a usable store id".into(),
+            ));
+        }
+        if let Some(pin) = pin {
+            if *pin != store_id {
+                return Err(refuse(format!(
+                    "it reports store {store_id}, but signing_store_id pins {pin}"
+                )));
+            }
+        }
+        Ok(Some(store_id))
+    }
+
+    /// The store id signed requests on this connection name, if any.
+    pub fn signing_audience(&self) -> Option<&str> {
+        self.audience.as_deref()
+    }
+
     fn signed_request(
         &self,
         method: &str,
@@ -414,7 +481,7 @@ impl RemoteBackend {
         if let Some(signer) = &self.signer {
             req = req.set(
                 super::attest::HEADER,
-                &signer.header_now(method, path, content_type, body)?,
+                &signer.header_now(method, path, content_type, body, self.audience.as_deref())?,
             );
         }
         Ok(req)
@@ -504,7 +571,13 @@ impl RemoteBackend {
                 // A signed write carries the attestation and never the bearer.
                 Some(s) if super::attest::SIGNED_PATHS.contains(&path) => {
                     let header = s
-                        .header_now("POST", path, content_type, body.as_bytes())
+                        .header_now(
+                            "POST",
+                            path,
+                            content_type,
+                            body.as_bytes(),
+                            self.audience.as_deref(),
+                        )
                         .map_err(|e| (false, e))?;
                     req = req.set(super::attest::HEADER, &header);
                 }

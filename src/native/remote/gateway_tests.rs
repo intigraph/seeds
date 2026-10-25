@@ -323,7 +323,10 @@ fn signed_identity_checks_binding_and_never_sends_declared_actor() {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
             let mut captured = Vec::new();
-            for body in ["ok".to_string(), value.to_string()] {
+            // /stats first (the v2 audience, read unsigned), then the signed
+            // /health and /identity.
+            let stats = r#"{"store_id":"urn:uuid:gateway-fixture"}"#.to_string();
+            for body in [stats, "ok".to_string(), value.to_string()] {
                 let (stream, _) = listener.accept().unwrap();
                 let mut reader = BufReader::new(stream);
                 let mut headers = String::new();
@@ -356,12 +359,108 @@ fn signed_identity_checks_binding_and_never_sends_declared_actor() {
         let result = backend.authenticated_identity();
         assert_eq!(result.is_ok(), mutation == "valid", "{mutation}");
         let requests = worker.join().unwrap();
-        assert!(requests[1].starts_with("post /identity "));
-        for request in requests {
+        assert!(requests[0].starts_with("get /stats "), "{}", requests[0]);
+        assert!(
+            !requests[0].contains("x-quipu-attestation:"),
+            "the audience is read before anything is signed"
+        );
+        assert!(requests[2].starts_with("post /identity "));
+        for request in requests.into_iter().skip(1) {
             assert!(request.contains("x-quipu-attestation:"));
             assert!(!request.contains("x-quipu-agent:"));
             assert!(!request.contains("x-quipu-session:"));
             assert!(!request.contains("authorization:"));
         }
+    }
+}
+
+/// aegis-2idcev: with a signer, an unusable `/stats` (an error status, no
+/// `store_id`, or a store id that could break the signed message) refuses the
+/// connection with NOTHING signed. A silent fall back to the audience-free v1
+/// would turn every one of these into a v1 request.
+#[test]
+fn an_unusable_stats_refuses_before_anything_is_signed() {
+    let served = r#"{"store_id":"urn:uuid:served"}"#;
+    for (name, status, body, pin) in [
+        (
+            "error status",
+            "500 Internal Server Error",
+            "{}".to_string(),
+            None,
+        ),
+        ("not found", "404 Not Found", "{}".to_string(), None),
+        ("no store_id", "200 OK", r#"{"facts":1}"#.to_string(), None),
+        (
+            "control char",
+            "200 OK",
+            r#"{"store_id":"urn:uuid:a\naudience=b"}"#.to_string(),
+            None,
+        ),
+        // A usable id that is not the one the user pinned.
+        (
+            "pin mismatch",
+            "200 OK",
+            served.to_string(),
+            Some("urn:uuid:pinned"),
+        ),
+    ] {
+        let signer = crate::native::attest::Signer::from_seed([47; 32], "s", "i")
+            .unwrap()
+            .with_audience(crate::native::attest::Audience::Store {
+                pin: pin.map(str::to_owned),
+            });
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            while !worker_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let Ok((stream, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    headers.push_str(&line);
+                }
+                captured.push(headers.to_ascii_lowercase());
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            captured
+        });
+        let result = RemoteBackend::connect(&base, "urn:fixture", None, Some(signer), &[]);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let requests = worker.join().unwrap();
+        let Err(error) = result else {
+            panic!("{name}: connected without a usable store id");
+        };
+        assert!(
+            error.to_string().contains("not signing for")
+                || error.to_string().contains("cannot reach"),
+            "{name}: {error}"
+        );
+        assert!(!requests.is_empty(), "{name}: control: /stats was asked");
+        assert!(
+            requests.iter().all(|r| r.starts_with("get /stats ")),
+            "{name}: only /stats may be sent: {requests:?}"
+        );
+        assert!(
+            requests.iter().all(|r| !r.contains("x-quipu-attestation:")),
+            "{name}: something was signed"
+        );
     }
 }

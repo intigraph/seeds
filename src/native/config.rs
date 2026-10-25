@@ -139,6 +139,12 @@ pub struct QuipuSection {
     pub signing_session: Option<String>,
     /// The introducer that registered it (`quipu attest register --introducer`).
     pub signing_introducer: Option<String>,
+    /// `"v2"` (the default) signs `quipu-write-v2`, bound to the receiving
+    /// store's id; `"v1-legacy"` signs the audience-free v1 (aegis-2idcev).
+    pub signing_version: Option<String>,
+    /// The store id writes must be signed for. When set, sd refuses to sign
+    /// for a server whose `/stats` reports any other id.
+    pub signing_store_id: Option<String>,
     /// User-level strict policy: refuse writes without a verified remote key identity.
     pub require_identity: Option<bool>,
     /// User/host policy for a declared actor differing from the verified key principal.
@@ -235,6 +241,33 @@ pub struct Signing {
     pub key_file: PathBuf,
     pub session: String,
     pub introducer: String,
+    pub audience: super::attest::Audience,
+}
+
+/// The signing format from `signing_version` and `signing_store_id`. A pin
+/// with v1 is refused: v1 names no store, so the pin could never be checked.
+fn signing_audience(q: &QuipuSection) -> Result<super::attest::Audience> {
+    use super::attest::{audience_ok, Audience};
+    let pin = q.signing_store_id.clone();
+    if pin.as_deref().is_some_and(|p| !audience_ok(p)) {
+        return Err(config_error(
+            "[quipu] signing_store_id must be a non-empty store id (GET /stats store_id) of \
+             at most 256 bytes with no control characters"
+                .into(),
+        ));
+    }
+    match q.signing_version.as_deref() {
+        None | Some("v2") => Ok(Audience::Store { pin }),
+        Some("v1-legacy") if pin.is_some() => Err(config_error(
+            "[quipu] signing_store_id needs signing_version = \"v2\": a v1 signature names no \
+             store, so the pin could never be checked"
+                .into(),
+        )),
+        Some("v1-legacy") => Ok(Audience::LegacyV1),
+        Some(other) => Err(config_error(format!(
+            "[quipu] signing_version {other:?} is not \"v2\" or \"v1-legacy\""
+        ))),
+    }
 }
 
 /// Everything resolution reads, passed in so tests control all of it.
@@ -499,6 +532,8 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             || p.quipu.signing_key_file.is_some()
             || p.quipu.signing_session.is_some()
             || p.quipu.signing_introducer.is_some()
+            || p.quipu.signing_version.is_some()
+            || p.quipu.signing_store_id.is_some()
             || p.quipu.require_identity.is_some()
             || p.quipu.actor_principal_mode.is_some()
         {
@@ -578,6 +613,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
                 key_file: expand(f, &user_base, home),
                 session: s.clone(),
                 introducer: i.clone(),
+                audience: signing_audience(q)?,
             }),
             _ => {
                 return Err(config_error(
@@ -940,6 +976,52 @@ mod tests {
     impl Drop for Sandbox {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// aegis-2idcev: signing is write-v2 unless the user explicitly chooses the
+    /// legacy v1; a pin needs v2; bad values and a project file are refused.
+    #[test]
+    fn the_signing_version_defaults_to_v2_and_v1_needs_the_explicit_legacy_word() {
+        use crate::native::attest::Audience;
+        let sb = Sandbox::new("signing-version");
+        let identity =
+            "[quipu]\nsigning_key_file=\"k\"\nsigning_session=\"s\"\nsigning_introducer=\"i\"\n";
+        let audience = |extra: &str| {
+            sb.user_toml(&format!("{identity}{extra}"));
+            resolve(&sb.inputs()).map(|r| r.signing.unwrap().audience)
+        };
+        assert_eq!(audience("").unwrap(), Audience::Store { pin: None });
+        assert_eq!(
+            audience("signing_version=\"v2\"\n").unwrap(),
+            Audience::Store { pin: None }
+        );
+        assert_eq!(
+            audience("signing_store_id=\"urn:uuid:pinned\"\n").unwrap(),
+            Audience::Store {
+                pin: Some("urn:uuid:pinned".into())
+            }
+        );
+        assert_eq!(
+            audience("signing_version=\"v1-legacy\"\n").unwrap(),
+            Audience::LegacyV1
+        );
+        for bad in [
+            "signing_version=\"v1\"\n",
+            "signing_version=\"V2\"\n",
+            "signing_version=\"v1-legacy\"\nsigning_store_id=\"urn:uuid:p\"\n",
+            "signing_store_id=\"\"\n",
+        ] {
+            assert!(audience(bad).is_err(), "{bad:?} accepted");
+        }
+        // A cloned project must not choose how (or for whom) your key signs.
+        sb.user_toml(identity);
+        for key in [
+            "signing_version=\"v1-legacy\"",
+            "signing_store_id=\"urn:uuid:x\"",
+        ] {
+            sb.project_toml(&format!("[quipu]\n{key}\n"));
+            assert!(resolve(&sb.inputs()).is_err(), "project {key} accepted");
         }
     }
 

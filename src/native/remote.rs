@@ -360,19 +360,7 @@ impl RemoteBackend {
         signer: Option<super::attest::Signer>,
         plain_http_ok: &[String],
     ) -> Result<Self> {
-        if (token.is_some() || signer.is_some())
-            && !secure_enough(base)
-            && !plain_http_allowed(base, plain_http_ok)
-        {
-            return Err(SdError::new(
-                ErrorKind::Config,
-                format!(
-                    "refusing to send authentication evidence to {base} over plain http; use https (or a \
-                     localhost server), or, if you trust the network path to it, add its host to \
-                     [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
-                ),
-            ));
-        }
+        require_token_transport(base, token.is_some(), plain_http_ok)?;
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(5))
             .timeout(Duration::from_secs(120))
@@ -1116,6 +1104,22 @@ impl RemoteBackend {
                 .collect(),
         )
     }
+}
+
+/// Preserve the bearer-only transport gate. A signed non-bearer request has
+/// exactly the exposure it had before the key-derived identity profile.
+fn require_token_transport(base: &str, has_bearer: bool, plain_http_ok: &[String]) -> Result<()> {
+    if has_bearer && !secure_enough(base) && !plain_http_allowed(base, plain_http_ok) {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            format!(
+                "refusing to send a bearer token to {base} over plain http; use https (or a \
+                 localhost server), or, if you trust the network path to it, add its host to \
+                 [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The host of an `http://` URL, lowercased: `(host:port, host)`. `None` for
@@ -2655,6 +2659,10 @@ mod tests {
 
     #[test]
     fn a_token_is_never_sent_over_plain_http_to_another_host() {
+        // No network probe or host exception: signed-only traffic passes the
+        // same production gate, while a bearer (even beside a signer) refuses.
+        assert!(require_token_transport("http://server.example.org", false, &[]).is_ok());
+        assert!(require_token_transport("http://server.example.org", true, &[]).is_err());
         assert!(secure_enough("https://quipu.example.org"));
         assert!(secure_enough("http://localhost:8080"));
         assert!(secure_enough("http://127.0.0.1:9/x"));

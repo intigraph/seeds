@@ -29,6 +29,31 @@ seed no clone can resolve. br accepts such an edge, and its own
 edge instead (exit 2, nothing written). An ephemeral seed may depend on
 anything.
 
+## Stream-backed read integration
+
+The native library's `StreamBoard` owns a local store and Quipu's shared
+applier together. A caller first supplies an independently trusted scoped
+bootstrap manifest, expected source/epoch/scope/policy binding and pinned
+stream public key. The scope must include the project and its ephemeral
+sibling. Bootstrap frames and signed replication frames go unchanged to the
+shared applier; Seeds does not implement another record applier.
+
+Board, plate and ready reads reuse the existing engine definitions at the
+local committed transaction. They require the shared applier's signed
+challenge proof within the requested freshness budget. A heartbeat is not
+such a proof. Disconnect, clock discontinuity, an ended epoch or a revoked
+scope prevents bounded reads. Source transaction numbers remain separate
+from local transaction numbers. Claims and writes stay on the authoritative
+backend; this reader exposes no writable backend.
+
+This is a library integration, not CLI routing or a background subscriber.
+The caller still owns authenticated bootstrap acquisition, transport,
+random challenge nonces and a monotonic clock. Normal CLI and Telegram
+readers are unchanged until that integration and its live acceptance are
+complete. The pinned Git dependency includes the shared-applier repairs;
+a registry release with the same required behavior is a separate release
+prerequisite.
+
 ## The vocabulary
 
 A seed is a `schema:Action`. The terms follow one order of preference: W3C

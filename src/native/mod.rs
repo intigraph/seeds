@@ -18,6 +18,7 @@ pub mod provenance;
 pub mod remote;
 mod replica;
 pub mod store;
+pub mod stream_projection;
 
 use serde_json::Value as Json;
 

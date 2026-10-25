@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.2] - 2026-10-25
+
+### Added
+
+- *(remote)* Say when a read comes from a Quipu read replica, and how stale it is (#199) ([1fe6560](https://github.com/scbrown/seeds/commit/1fe65608e22005021533613fa1c19cdbbce8df0e))
+
+## [0.8.1] - 2026-10-25
+
+### Fixed
+
+- *(provenance)* Label Quipu requests by CLI command (#196) ([02b6127](https://github.com/scbrown/seeds/commit/02b61272739d16343929b13831f49230ae8fa3ec))
+
+## [0.8.0] - 2026-10-24
+
+### Fixed
+
+- *(auth)* Observe shared-key actor mismatches by default (#194) ([76b2563](https://github.com/scbrown/seeds/commit/76b2563dd5e42a511501a1a9c268f549be68b040))
+
+## [0.7.2] - 2026-10-24
+
+### Added
+
+- *(shapes)* Govern optional deferral provenance (#185) ([8e35ce9](https://github.com/scbrown/seeds/commit/8e35ce9b768aa71896aaf8965705c97a8cab234f))
+
+### Fixed
+
+- *(work)* Keep ASK-class decisions visible (#184) ([e324b0c](https://github.com/scbrown/seeds/commit/e324b0c8d363ac95808fac22f3bb52f3dc55c4eb))
+
 ## [0.7.1] - 2026-10-23
 
 ### Documentation

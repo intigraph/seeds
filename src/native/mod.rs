@@ -6,6 +6,7 @@
 //! [`cli::Cli`] into calls on [`crate::engine`] and prints the result.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
+mod actor_policy;
 mod agent_context;
 pub mod attest;
 pub mod cli;
@@ -15,6 +16,7 @@ pub mod credentials;
 mod cutover;
 pub mod provenance;
 pub mod remote;
+mod replica;
 pub mod store;
 
 use serde_json::Value as Json;
@@ -325,6 +327,10 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
         (
             "quipu.allow_plain_http_hosts",
             serde_json::json!(cfg.allow_plain_http_hosts),
+        ),
+        (
+            "quipu.actor_principal_mode",
+            serde_json::json!(cfg.actor_principal_mode),
         ),
         ("project.prefix", serde_json::json!(cfg.prefix)),
         ("project.graph", serde_json::json!(cfg.graph)),
@@ -1186,7 +1192,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         Command::Info(args) if args.exact_comments => Some(store::lock_search(true)?),
         _ => None,
     };
-    if cfg.require_identity
+    if (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
         && cli.command.writes()
         && (cfg.signing.is_none() || !matches!(cfg.location, Location::Url(_)))
     {
@@ -1487,24 +1493,24 @@ fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
     o
 }
 
-fn require_actor_match(claim: Option<&str>, principal: &str) -> Result<()> {
-    if claim.is_some_and(|claim| claim != principal) {
-        return Err(SdError::refused(
-            "--actor/SEEDS_ACTOR differs from the authenticated principal",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod key_actor_tests {
     use super::*;
     #[test]
     fn actor_is_selected_by_verified_key_not_user_or_environment_claim() {
-        assert!(require_actor_match(None, "synthetic-owner").is_ok());
-        assert!(require_actor_match(Some("synthetic-owner"), "synthetic-owner").is_ok());
-        assert!(require_actor_match(Some("synthetic-other"), "synthetic-owner").is_err());
-        assert!(require_actor_match(Some(""), "synthetic-owner").is_err());
+        let check = |claim| {
+            actor_policy::select(
+                config::ActorPrincipalMode::Enforce,
+                claim,
+                "synthetic-owner",
+                "comment",
+                "2026-01-01T00:00:00Z",
+            )
+        };
+        assert!(check(None).is_ok());
+        assert!(check(Some("synthetic-owner")).is_ok());
+        assert!(check(Some("synthetic-other")).is_err());
+        assert!(check(Some("")).is_err());
     }
 }
 
@@ -1521,9 +1527,14 @@ fn identity_outcome(json: bool, cfg: &Resolved) -> Result<Outcome> {
         signer(cfg, url, cfg.location_from_project)?,
         &cfg.allow_plain_http_hosts,
     )?;
-    let value = remote.authenticated_identity()?;
-    let text = value["principal"].as_str().unwrap_or_default().to_owned();
-    Ok(ok(json, value, text, vec![]))
+    let result = remote.authenticated_identity().map(|value| {
+        let text = value["principal"].as_str().unwrap_or_default().to_owned();
+        ok(json, value, text, vec![])
+    });
+    match remote.replica() {
+        Some(r) => with_replica(json, result, r),
+        None => result,
+    }
 }
 
 fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome> {
@@ -1535,23 +1546,65 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
             "remote pendant export does not support --at; no historical source receipt is available",
         ));
     }
+    let effective_signer = signer(cfg, url, cfg.location_from_project)?;
+    if cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
+        && effective_signer.is_none()
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
     let mut remote = remote::RemoteBackend::connect(
         url,
         cfg.graph(),
         token(cfg, url, cfg.location_from_project)?,
-        signer(cfg, url, cfg.location_from_project)?,
+        effective_signer,
         &cfg.allow_plain_http_hosts,
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    // Every outcome after the connect, an identity or vocabulary refusal
+    // included, says when the server is a read replica.
+    let replica = remote.replica().cloned();
+    let result = run_connected(cli, cfg, ctx, &mut remote);
+    match replica {
+        Some(r) => with_replica(cli.json, result, &r),
+        None => result,
+    }
+}
+
+/// [`run_remote`] once connected: the identity, the vocabulary check and the
+/// verb.
+fn run_connected(
+    cli: &Cli,
+    cfg: &Resolved,
+    ctx: &Ctx,
+    remote: &mut remote::RemoteBackend,
+) -> Result<Outcome> {
     let authenticated_ctx;
-    let ctx = if cfg.signing.is_some() && cli.command.writes() {
+    let ctx = if cfg.signing.is_some()
+        && cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode != config::ActorPrincipalMode::Off)
+    {
         let identity = remote.authenticated_identity()?;
         let principal = identity["principal"].as_str().expect("identity validated");
-        require_actor_match(cli.actor.as_deref(), principal)?;
+        // Strict authentication is independent of attribution. Off preserves
+        // the original actor and emits no observation after validating identity.
+        let actor = if cfg.actor_principal_mode == config::ActorPrincipalMode::Off {
+            ctx.actor.clone()
+        } else {
+            actor_policy::select(
+                cfg.actor_principal_mode,
+                cli.actor.as_deref(),
+                principal,
+                cli.command.name(),
+                &ctx.now,
+            )?
+        };
         authenticated_ctx = Ctx {
             now: ctx.now.clone(),
-            actor: principal.to_owned(),
+            actor,
             prefix: ctx.prefix.clone(),
             claims: ctx.claims.clone(),
         };
@@ -1560,21 +1613,47 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
         ctx
     };
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
-        refuse_old_vocabulary(&ledger_label(cfg), &remote)?;
+        refuse_old_vocabulary(&ledger_label(cfg), remote)?;
     }
     match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;
-            let p = pendant_of(&remote)?;
+            let p = pendant_of(remote)?;
             let changed = store::write_pendant_dir(&dir, &p)?;
             remote_export_outcome(cli.json, &dir, &p, changed, cfg.graph())
         }
-        Command::Import(a) => import_into(cli, ctx, &mut remote, a),
+        Command::Import(a) => import_into(cli, ctx, remote, a),
         Command::Sync(_) => Err(SdError::usage(
             "sd sync runs from a local store ([quipu] store) to a [sync] remote; this \
              configuration's primary store is already the remote",
         )),
-        _ => dispatch(cli, cfg, ctx, &mut remote),
+        _ => dispatch(cli, cfg, ctx, remote),
+    }
+}
+
+/// Say that the answer came from a read replica, and how stale it is: on
+/// stderr, so stdout and its `--json` shape are unchanged. Text mode gets one
+/// `sd:` line; `--json` gets one JSON object line, `{"replica": {...}}`. A
+/// failure (a refused write included) carries the notice in its message.
+fn with_replica(json: bool, result: Result<Outcome>, r: &replica::Staleness) -> Result<Outcome> {
+    match result {
+        Ok(mut o) => {
+            let line = if json {
+                r.to_json().to_string()
+            } else {
+                format!("sd: {}", r.notice())
+            };
+            o.stderr = if o.stderr.is_empty() {
+                line
+            } else {
+                format!("{line}\n{}", o.stderr)
+            };
+            Ok(o)
+        }
+        Err(mut e) => {
+            e.message = format!("{} ({})", e.message, r.notice());
+            Err(e)
+        }
     }
 }
 
@@ -1823,12 +1902,6 @@ fn run_sync(
                 "sd sync needs a remote: set [sync] remote, SEEDS_SYNC_REMOTE, or --remote",
             )
         })?;
-    let mut h = store::open_for_write(path, cfg.graph())?;
-    refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
-    let mut notes = Vec::new();
-    if let Some(dir) = &cfg.pendant {
-        notes.extend(store::hydrate(&mut h.backend, path, dir, ctx)?);
-    }
     let from_project = a.remote.is_none() && cfg.sync_remote_from_project;
     let mut remote = remote::RemoteBackend::connect(
         &url,
@@ -1839,6 +1912,22 @@ fn run_sync(
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    // A sync writes to its remote, which a read replica refuses: say so before
+    // the local store is opened or hydrated, so nothing local changes either.
+    if let Some(r) = remote.replica() {
+        return Err(SdError::refused(format!(
+            "the sync remote {url} is a Quipu read replica; nothing was read or written ({})",
+            r.notice()
+        )));
+    }
+    // Only now touch the local store: the replica refusal above opened,
+    // hydrated and wrote nothing.
+    let mut h = store::open_for_write(path, cfg.graph())?;
+    refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
+    let mut notes = Vec::new();
+    if let Some(dir) = &cfg.pendant {
+        notes.extend(store::hydrate(&mut h.backend, path, dir, ctx)?);
+    }
     refuse_old_vocabulary(
         &format!("the quipu server {url} (graph {})", cfg.graph()),
         &remote,

@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "a4a5591e04ce7a7c6783fc96342f8d29339bb098d9e9f27ac61785e4d51fec8e",
+      "source_sha256": "2f7703e3b1564800b616af1c907528e549ac4a38dce322370ae3d4dd6b1a301e",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"
@@ -71,7 +71,7 @@
       "source": "docs/book/src/storage.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage.md",
       "summary": "One project is one named graph. A work item is a schema.org Action; public vocabulary and Quechua governance terms are preferred over tracker-specific terms.",
-      "source_sha256": "6321897260b6140bcf552fab25fc851d043630111cf229b1940e78f1a3b8681b",
+      "source_sha256": "fea90dab20b1493564992475a77811e2869d47a96d870f0ce4412fee6a5dc340",
       "type": "DecisionRecord",
       "properties": {
         "status": "active",
@@ -101,7 +101,7 @@
       "source": "docs/book/src/reference.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Freference.md",
       "summary": "Read the sd global options, verbs, JSON and exit-code contracts before changing a caller-facing behavior.",
-      "source_sha256": "97f5a52af7917b4e4550341ce397e4bbdfef0d3e710c25eb208719573910ad74",
+      "source_sha256": "74df808a6d3207035fc3e062b979fb6d5ca27dd0540d36d702da3e650631e948",
       "properties": {
         "startHereOrder": 2
       }

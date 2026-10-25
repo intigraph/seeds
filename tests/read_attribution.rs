@@ -136,7 +136,7 @@ fn probe(extra: &[(&str, &str)]) -> Vec<Headers> {
          discovery, the facts reads and the ephemeral existence check (aegis-83l)"
     );
     for headers in &result {
-        assert_eq!(headers["x-quipu-client"], "seeds");
+        assert_eq!(headers["x-quipu-client"], "seeds/show");
         let expected_source = extra
             .iter()
             .find(|(key, _)| *key == "QUIPU_SOURCE")

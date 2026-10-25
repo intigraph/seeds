@@ -120,9 +120,9 @@ leaves your machine; its public half is registered **once** on the server by
 someone else (your lead or a human, never you). After that every write carries
 an `x-quipu-attestation` header: a signature over that one request (method,
 path, content type, body hash) with a single-use nonce. Nothing in it can be
-reused as another request. Use HTTPS or an explicitly trusted local transport:
-the client applies the same transport/destination guard to signed evidence as
-to bearers. The server records the protected binding principal as authenticated
+reused as another request. Use HTTPS or an explicitly trusted local transport.
+The destination trust guard still applies to signed evidence; the plain-HTTP
+transport refusal covers bearer tokens only. The server records the protected binding principal as authenticated
 evidence separately from declared payload metadata.
 
 ```toml
@@ -192,10 +192,49 @@ cannot answer this command. The client checks the returned key ID and session.
 Set `require_identity = true` in the **user** `[quipu]` configuration only after
 installing the matching server and enrolling that user's own signing key using
 the existing introducer. In this profile, writes require a remote signing key;
-a local or unkeyed write refuses before opening a store. An explicit actor flag
-or environment actor must match the authenticated principal. Signed requests do
-not carry caller-declared agent/session headers, and signature refusal never
-falls back to a shared bearer. Unmigrated configurations retain legacy behavior.
+a local or unkeyed write refuses before opening a store. Signed requests do not
+carry caller-declared agent/session headers, and signature refusal never falls
+back to a shared bearer.
+
+The **user** `[quipu]` setting `actor_principal_mode` independently controls a
+declared `--actor` / `SEEDS_ACTOR` differing from the verified signing principal:
+
+Read the resolved host mode with `sd config get quipu.actor_principal_mode`.
+
+| Mode | Mismatched declared actor |
+| --- | --- |
+| `off` | Keep the actor without an identity observation. |
+| `observe` (default) | Keep the actor, record the mismatch, and warn. |
+| `enforce` | Refuse before a destination write. |
+
+A project cannot set this host policy. Unknown mode names refuse configuration.
+Enforce also requires an enrolled remote signing key; local and unkeyed writes
+refuse before opening a store, even without `require_identity = true`.
+In observe and enforce, an omitted actor uses the verified principal. The
+signature still authenticates the key principal; a claimed actor is attribution,
+not proof that the named agent owns that key. Identity/signature errors remain
+errors. Neither a mismatch nor a failed observation counter refuses an observe
+write.
+
+Observe stores a cumulative `mismatches_total` and the latest 64 mismatch
+attempts in `$XDG_STATE_HOME/seeds/actor-principal.json`, falling back to
+`~/.local/state/seeds/actor-principal.json`. Entries contain actor, principal,
+verb and time, each bounded to 128 characters. The host lock serializes counter
+updates and the file is replaced atomically. Waiting for that lock is bounded
+to one second; contention warns UNKNOWN and the write continues. These are attempted writes, not
+commit receipts. Counter failure warns `UNKNOWN`, rather than claiming zero.
+A deliberately mismatched canary must increment the counter before a zero
+mismatch interval can establish anything. Do not turn on enforce for agents
+still sharing one host key: enroll individual principals, observe a measured
+interval with a daily positive control, then canary enforcement separately.
+
+Signed requests without a bearer retain the same plain-HTTP exposure as 0.6.7.
+The bearer-token refusal above is unchanged, including its explicit host
+allowlist. Signatures bind the method, path, content type and body; server time
+and nonce checks constrain replay, but do not encrypt traffic or bind the
+destination. An interceptor can read or relay a captured request within its
+validity window. Use a trusted route; moving signed traffic to HTTPS requires
+the server write route and client CA trust, rather than a changed client default.
 
 Keep the key in an owner-only regular file owned by the current effective Unix
 UID. Symlinks, foreign owners, group/world permissions and oversized files are

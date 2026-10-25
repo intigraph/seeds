@@ -40,7 +40,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorKind, Result, SdError};
 use crate::vocab;
@@ -141,6 +141,18 @@ pub struct QuipuSection {
     pub signing_introducer: Option<String>,
     /// User-level strict policy: refuse writes without a verified remote key identity.
     pub require_identity: Option<bool>,
+    /// User/host policy for a declared actor differing from the verified key principal.
+    pub actor_principal_mode: Option<ActorPrincipalMode>,
+}
+
+/// Claimed actors are attribution; the authenticated principal remains the key identity.
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ActorPrincipalMode {
+    Off,
+    #[default]
+    Observe,
+    Enforce,
 }
 
 /// `[project]`.
@@ -199,6 +211,7 @@ pub struct Resolved {
     /// The signing key file, session and introducer, if configured.
     pub signing: Option<Signing>,
     pub require_identity: bool,
+    pub actor_principal_mode: ActorPrincipalMode,
     /// The largest write request to send a quipu server, in bytes
     /// (`SEEDS_MAX_WRITE_BYTES`, default [`DEFAULT_MAX_WRITE_BYTES`]). A larger
     /// sync is pushed in batches; a larger single write is refused unsent.
@@ -487,9 +500,10 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             || p.quipu.signing_session.is_some()
             || p.quipu.signing_introducer.is_some()
             || p.quipu.require_identity.is_some()
+            || p.quipu.actor_principal_mode.is_some()
         {
             return Err(config_error(format!(
-                "{} sets [quipu] token_file, trusted_hosts, allow_plain_http_hosts or signing_*; only your \
+                "{} sets [quipu] token_file, trusted_hosts, allow_plain_http_hosts, signing_* or identity policy; only your \
                  user config \
 (~/.config/seeds/config.toml) or SEEDS_QUIPU_TOKEN_FILE may, because a \
                  cloned repository could otherwise send your token to a server it chose",
@@ -640,6 +654,10 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             .as_ref()
             .and_then(|u| u.quipu.require_identity)
             .unwrap_or(false),
+        actor_principal_mode: user
+            .as_ref()
+            .and_then(|u| u.quipu.actor_principal_mode)
+            .unwrap_or_default(),
         max_write_bytes,
         max_write_clauses,
     })
@@ -1104,6 +1122,34 @@ mod tests {
             "{}",
             e.message
         );
+    }
+
+    #[test]
+    fn actor_principal_policy_defaults_to_observe_and_is_host_only() {
+        let sb = Sandbox::new("actor-policy-default");
+        assert_eq!(
+            resolve(&sb.inputs()).unwrap().actor_principal_mode,
+            ActorPrincipalMode::Observe
+        );
+        for (mode, expected) in [
+            ("off", ActorPrincipalMode::Off),
+            ("observe", ActorPrincipalMode::Observe),
+            ("enforce", ActorPrincipalMode::Enforce),
+        ] {
+            sb.user_toml(&format!("[quipu]\nactor_principal_mode={mode:?}\n"));
+            assert_eq!(
+                resolve(&sb.inputs()).unwrap().actor_principal_mode,
+                expected
+            );
+        }
+        sb.user_toml("[quipu]\nactor_principal_mode=\"enfroce\"\n");
+        assert!(
+            resolve(&sb.inputs()).is_err(),
+            "misspelling must not silently disable a policy"
+        );
+        let sb = Sandbox::new("actor-policy-project");
+        sb.project_toml("[quipu]\nactor_principal_mode=\"off\"\n");
+        assert_eq!(resolve(&sb.inputs()).unwrap_err().kind, ErrorKind::Config);
     }
 
     #[test]

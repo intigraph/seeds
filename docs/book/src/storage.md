@@ -68,6 +68,7 @@ These are vocabulary names, not hosts anyone contacts.
 | created, updated, closed | `schema:dateCreated`, `schema:dateModified`, `schema:endTime` | `xsd:dateTime` |
 | due | `ical:due` | `xsd:date` when a bare `YYYY-MM-DD`, else `xsd:dateTime` |
 | defer | `schema:scheduledTime` | `xsd:date` or `xsd:dateTime`, as for due |
+| latest explicit deferral | `seeds:deferredAt`, `seeds:deferredBy` | canonical `xsd:dateTime` and the writer context actor's principal IRI |
 | estimate | `schema:timeRequired` | `xsd:duration` of the minutes, canonical (`PT30M`, `PT1H30M`, `P1D`) |
 | close reason | `schema:result` | string |
 | outcome | `quechua:outcome` | `"done"` (the default), `abandoned`, `superseded` or `failed`, only when closed |
@@ -75,6 +76,18 @@ These are vocabulary names, not hosts anyone contacts.
 | `parent-child`, `related`, `discovered-from` | `schema:isPartOf`, `dcterms:relation`, `prov:wasDerivedFrom` | item IRI |
 | notes, design, acceptance criteria, agent context, external ref | `seeds:notes`, `seeds:design`, `seeds:acceptanceCriteria`, `seeds:agentContext`, `seeds:externalRef` | string (an external ref need not be a URL) |
 | driving workflow run | `seeds:workflowRun` | a shuttle run IRI, `urn:shuttle:run:<id>` ([Formulas](formulas.md)) |
+
+Explicit deferred creates, `sd defer`, and updates supplying deferred status or
+a defer date record the latest deferral time and actor in the same atomic
+write. Redefer replaces that pair; undefer and unrelated edits preserve it.
+The actor comes from the normal writer context, not its optional identity claims.
+Missing or invalid context refuses the deferral before commit.
+
+These optional fields are not backfilled. A report using them covers only
+writes made after deployment of this writer and must say **since <actual
+activation date>**. Missing historical provenance is UNKNOWN. Load the matching
+remote admission profile before deploying the new writer; client-side profile
+validation alone is not proof that the server profile has been loaded.
 
 **Times are typed, validated and written in canonical form.** A value that
 is not a valid `xsd:dateTime` (or, for due and defer, a bare `YYYY-MM-DD`

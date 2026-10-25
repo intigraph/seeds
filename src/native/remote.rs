@@ -223,17 +223,20 @@ pub struct RemoteBackend {
     /// Subjects per page of a subject listing ([`SUBJECT_PAGE`]; smaller in
     /// tests, so a small graph still spans pages).
     subject_page: usize,
+    /// The server is a read replica, and how stale its health answer said it
+    /// was (aegis-0aua).
+    replica: Option<super::replica::Staleness>,
 }
 
 /// Every request seeds sends to quipu names its client and carries the
 /// process's structured write provenance (`X-Quipu-Agent`, `-Harness`,
 /// `-Model`, `-Session`, `-Host`; see [`super::provenance`]).
 fn quipu_request(req: ureq::Request) -> ureq::Request {
-    super::provenance::apply(req.set("X-Quipu-Client", "seeds"))
+    super::provenance::apply(req)
 }
 
 fn quipu_read_request(req: ureq::Request, operation: &str) -> ureq::Request {
-    super::provenance::apply_read(req.set("X-Quipu-Client", "seeds"), operation)
+    super::provenance::apply_read(req, operation)
 }
 
 fn transport(url: &str, e: &ureq::Transport) -> SdError {
@@ -360,24 +363,12 @@ impl RemoteBackend {
         signer: Option<super::attest::Signer>,
         plain_http_ok: &[String],
     ) -> Result<Self> {
-        if (token.is_some() || signer.is_some())
-            && !secure_enough(base)
-            && !plain_http_allowed(base, plain_http_ok)
-        {
-            return Err(SdError::new(
-                ErrorKind::Config,
-                format!(
-                    "refusing to send authentication evidence to {base} over plain http; use https (or a \
-                     localhost server), or, if you trust the network path to it, add its host to \
-                     [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
-                ),
-            ));
-        }
+        require_token_transport(base, token.is_some(), plain_http_ok)?;
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(5))
             .timeout(Duration::from_secs(120))
             .build();
-        let b = Self {
+        let mut b = Self {
             base: base.trim_end_matches('/').to_string(),
             graph: graph.to_string(),
             token,
@@ -391,6 +382,7 @@ impl RemoteBackend {
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
+            replica: None,
         };
         let health = if b.signer.is_some() {
             b.signed_request("GET", "/health", "", b"")?.call()
@@ -403,7 +395,10 @@ impl RemoteBackend {
             .map_err(|e| *e)
         };
         match health {
-            Ok(_) => Ok(b),
+            Ok(response) => {
+                b.replica = super::replica::Staleness::from_headers(|name| response.header(name));
+                Ok(b)
+            }
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
                 "health check",
@@ -421,8 +416,7 @@ impl RemoteBackend {
         body: &[u8],
     ) -> Result<ureq::Request> {
         let request = self.agent.request(method, &format!("{}{path}", self.base));
-        let mut req = super::provenance::apply_signed(request.set("X-Quipu-Client", "seeds"))
-            .set("Content-Type", content_type);
+        let mut req = super::provenance::apply_signed(request).set("Content-Type", content_type);
         if let Some(signer) = &self.signer {
             req = req.set(
                 super::attest::HEADER,
@@ -461,6 +455,11 @@ impl RemoteBackend {
     /// The server URL.
     pub fn url(&self) -> &str {
         &self.base
+    }
+
+    /// The staleness the server stated at connect, when it is a read replica.
+    pub fn replica(&self) -> Option<&super::replica::Staleness> {
+        self.replica.as_ref()
     }
 
     /// Cap write requests at `bytes` (see [`Backend::max_write_bytes`]).
@@ -1117,6 +1116,22 @@ impl RemoteBackend {
                 .collect(),
         )
     }
+}
+
+/// Preserve the bearer-only transport gate. A signed non-bearer request has
+/// exactly the exposure it had before the key-derived identity profile.
+fn require_token_transport(base: &str, has_bearer: bool, plain_http_ok: &[String]) -> Result<()> {
+    if has_bearer && !secure_enough(base) && !plain_http_allowed(base, plain_http_ok) {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            format!(
+                "refusing to send a bearer token to {base} over plain http; use https (or a \
+                 localhost server), or, if you trust the network path to it, add its host to \
+                 [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The host of an `http://` URL, lowercased: `(host:port, host)`. `None` for
@@ -2615,7 +2630,7 @@ mod tests {
                     .map(|(_, v)| v.as_str())
                     .collect::<Vec<_>>()
             };
-            assert_eq!(get("X-Quipu-Client"), ["seeds"], "{line}");
+            assert_eq!(get("X-Quipu-Client"), ["seeds/show"], "{line}");
             for (name, value) in expected {
                 assert_eq!(get(name), [value.as_str()], "{line}: {name}");
             }
@@ -2656,6 +2671,10 @@ mod tests {
 
     #[test]
     fn a_token_is_never_sent_over_plain_http_to_another_host() {
+        // No network probe or host exception: signed-only traffic passes the
+        // same production gate, while a bearer (even beside a signer) refuses.
+        assert!(require_token_transport("http://server.example.org", false, &[]).is_ok());
+        assert!(require_token_transport("http://server.example.org", true, &[]).is_err());
         assert!(secure_enough("https://quipu.example.org"));
         assert!(secure_enough("http://localhost:8080"));
         assert!(secure_enough("http://127.0.0.1:9/x"));

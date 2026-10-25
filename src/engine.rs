@@ -182,6 +182,10 @@ fn new_seed(
         seed.status = "deferred".into();
         seed.defer_until = Some(parse_until(d, &ctx.now)?);
     }
+    ensure_ask_visible(&seed)?;
+    if seed.status == "deferred" {
+        stamp_deferral(&mut seed, ctx)?;
+    }
     Ok(seed)
 }
 
@@ -2696,6 +2700,20 @@ pub fn update(
         {
             clear_deferral(&mut s);
         }
+        let requesting_deferral = status.as_deref() == Some("deferred")
+            || req.defer.as_deref().is_some_and(|d| !d.trim().is_empty());
+        if requesting_deferral {
+            refuse_ask_deferral(before)?;
+        }
+        // Historical hidden ASK items remain alarm findings. Unrelated notes
+        // must still be editable; refuse a new deferral or newly introduced
+        // hidden ASK classification, rather than migrating old state here.
+        if !is_ask(before) || (before.status != "deferred" && before.defer_until.is_none()) {
+            ensure_ask_visible(&s)?;
+        }
+        if requesting_deferral {
+            stamp_deferral(&mut s, ctx)?;
+        }
         if s == *before {
             continue;
         }
@@ -2788,6 +2806,9 @@ pub fn label_change(
             status,
         });
         if changed {
+            if !is_ask(before) {
+                ensure_ask_visible(&s)?;
+            }
             s.updated_at = ctx.now.clone();
             s.revision = before.revision + 1;
             writes.push(SeedWrite {
@@ -2818,6 +2839,9 @@ pub fn label_rename(b: &mut dyn Backend, ctx: &Ctx, old: &str, new: &str) -> Res
         let mut s = before.clone();
         s.labels.remove(&old);
         s.labels.insert(new.clone());
+        if !is_ask(before) {
+            ensure_ask_visible(&s)?;
+        }
         s.updated_at = ctx.now.clone();
         s.revision = before.revision + 1;
         ids.push(s.id.clone());
@@ -2892,13 +2916,72 @@ pub type Transitions = (Vec<Transition>, Vec<Skipped>, u64);
 
 /// Apply one transition to every named seed in one transaction. `skip` says
 /// why a seed is left alone; `apply` changes the rest. Unknown ids write nothing.
+const ASK_LABELS: [&str; 5] = [
+    "needs-stiwi",
+    "blocked:human",
+    "desk",
+    "decision-needed",
+    "decision-stiwi",
+];
+const ASK_DEFER_REFUSAL: &str = "Stiwi bsf8: ASK-class items must stay visible and cannot be deferred; use Brief's Later choice, recorded by Stiwi, not by an agent";
+
+fn is_ask(seed: &Seed) -> bool {
+    seed.title.starts_with("ASK Stiwi")
+        || ASK_LABELS.iter().any(|label| seed.labels.contains(*label))
+}
+
+fn refuse_ask_deferral(seed: &Seed) -> Result<()> {
+    if is_ask(seed) {
+        return Err(SdError::refused(format!(
+            "{}: {ASK_DEFER_REFUSAL}",
+            seed.id
+        )));
+    }
+    Ok(())
+}
+
+// Stamp only explicit deferral writes. Reads, unrelated updates, undefer and
+// historical records retain their existing facts; no migration or backfill.
+fn stamp_deferral(seed: &mut Seed, ctx: &Ctx) -> Result<()> {
+    let at = model::canonical_time(&ctx.now, false)
+        .ok_or_else(|| SdError::usage("deferral requires a valid dateTime context"))?;
+    if ctx.actor.trim().is_empty() {
+        return Err(SdError::usage(
+            "deferral requires a non-empty actor context",
+        ));
+    }
+    let at_predicate = vocab::seeds("deferredAt");
+    let by_predicate = vocab::seeds("deferredBy");
+    seed.extra
+        .retain(|(p, _)| p != &at_predicate && p != &by_predicate);
+    seed.extra.insert((
+        at_predicate,
+        model::Obj::Typed {
+            lexical: at,
+            datatype: vocab::XSD_DATE_TIME.into(),
+        },
+    ));
+    seed.extra.insert((
+        by_predicate,
+        model::Obj::Iri(vocab::principal_iri(&ctx.actor)),
+    ));
+    Ok(())
+}
+
+fn ensure_ask_visible(seed: &Seed) -> Result<()> {
+    if seed.status == "deferred" || seed.defer_until.is_some() {
+        refuse_ask_deferral(seed)?;
+    }
+    Ok(())
+}
+
 fn transition(
     b: &mut dyn Backend,
     ctx: &Ctx,
     ids: &[String],
     source: &str,
-    skip: impl Fn(&Seed) -> Option<String>,
-    apply: impl Fn(&mut Seed),
+    skip: impl Fn(&Seed) -> Result<Option<String>>,
+    apply: impl Fn(&mut Seed) -> Result<()>,
     comment: Option<&str>,
 ) -> Result<Transitions> {
     let ids = unique(ids);
@@ -2913,7 +2996,9 @@ fn transition(
     let (mut writes, mut done, mut skipped, mut comments) = (vec![], vec![], vec![], vec![]);
     for id in &ids {
         let before = snap.get(id)?;
-        if let Some(reason) = skip(before) {
+        // Validate every member before the batch commit: an ASK must refuse
+        // the command, not become an exit-zero skip beside partial writes.
+        if let Some(reason) = skip(before)? {
             skipped.push(Skipped {
                 id: id.clone(),
                 reason,
@@ -2921,7 +3006,7 @@ fn transition(
             continue;
         }
         let mut s = before.clone();
-        apply(&mut s);
+        apply(&mut s)?;
         s.updated_at = ctx.now.clone();
         s.revision = before.revision + 1;
         if let Some(text) = comment {
@@ -2983,13 +3068,18 @@ pub fn reopen(
         ctx,
         ids,
         "seeds:reopen",
-        |s| match s.status.as_str() {
-            "closed" => None,
-            model::TOMBSTONE => Some("deleted (not reopenable)".into()),
-            "open" => Some("already open".into()),
-            other => Some(format!("not closed (status: {other})")),
+        |s| {
+            Ok(match s.status.as_str() {
+                "closed" => None,
+                model::TOMBSTONE => Some("deleted (not reopenable)".into()),
+                "open" => Some("already open".into()),
+                other => Some(format!("not closed (status: {other})")),
+            })
         },
-        |s| set_status(s, "open", &ctx.now, None),
+        |s| {
+            set_status(s, "open", &ctx.now, None);
+            Ok(())
+        },
         comment.as_deref(),
     )
 }
@@ -3020,14 +3110,18 @@ pub fn defer_with(
         ctx,
         ids,
         "seeds:defer",
-        |s| match s.status.as_str() {
-            "closed" => Some("cannot defer closed issue".to_string()),
-            model::TOMBSTONE => Some("cannot defer a deleted seed".to_string()),
-            _ => None,
+        |s| {
+            refuse_ask_deferral(s)?;
+            Ok(match s.status.as_str() {
+                "closed" => Some("cannot defer closed issue".to_string()),
+                model::TOMBSTONE => Some("cannot defer a deleted seed".to_string()),
+                _ => None,
+            })
         },
         |s| {
             s.status = "deferred".into();
             s.defer_until = until.clone();
+            stamp_deferral(s, ctx)
         },
         comment,
     )
@@ -3050,10 +3144,11 @@ pub fn undefer_with(
         ctx,
         ids,
         "seeds:undefer",
-        |s| (s.status != "deferred").then(|| format!("not deferred (status: {})", s.status)),
+        |s| Ok((s.status != "deferred").then(|| format!("not deferred (status: {})", s.status))),
         |s| {
             s.status = "open".into();
             clear_deferral(s);
+            Ok(())
         },
         comment,
     )

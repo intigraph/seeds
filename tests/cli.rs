@@ -3304,16 +3304,63 @@ fn decimal_rank_cli_roundtrip_and_single_item_move() {
 }
 
 #[test]
+fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
+    let s = Sandbox::new("ask-no-defer");
+    for label in [
+        "needs-stiwi",
+        "blocked:human",
+        "desk",
+        "decision-needed",
+        "decision-stiwi",
+        "title",
+    ] {
+        let mut args = vec![
+            "create",
+            if label == "title" {
+                "ASK Stiwi: choose"
+            } else {
+                "Technical control"
+            },
+        ];
+        if label != "title" {
+            args.extend(["--labels", label]);
+        }
+        let item = s.json(&args);
+        let id = item["id"].as_str().unwrap();
+        let before = s.json(&["show", id]);
+        for args in [
+            vec!["defer", id, "--until", "2027-01-01"],
+            vec!["update", id, "--status", "deferred"],
+            vec!["update", id, "--defer", "2027-01-01"],
+        ] {
+            let result = s.run(&args);
+            assert_eq!(code(&result), 5);
+            assert!(String::from_utf8_lossy(&result.stderr).contains("Brief's Later"));
+            assert_eq!(s.json(&["show", id]), before);
+        }
+    }
+    let normal = s.json(&["create", "Technical control", "--labels", "security"]);
+    let id = normal["id"].as_str().unwrap();
+    s.ok(&["defer", id, "--until", "2027-01-01"]);
+    assert_eq!(s.json(&["show", id])[0]["status"], "deferred");
+}
+
+#[test]
 fn strict_identity_refuses_unkeyed_local_write_before_opening_a_store() {
-    let s = Sandbox::new("strict-key-identity");
-    std::fs::create_dir_all(s.root.join("home/.config/seeds")).unwrap();
-    std::fs::write(
-        s.root.join("home/.config/seeds/config.toml"),
-        "[quipu]\nrequire_identity = true\n",
-    )
-    .unwrap();
-    let output = s.run(&["create", "Synthetic unsigned write"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("enrolled remote session key"));
-    assert!(!s.work().join(".seeds/seeds.db").exists());
+    for (name, setting) in [
+        ("strict-key-identity", "require_identity = true"),
+        ("enforce-key-identity", "actor_principal_mode = \"enforce\""),
+    ] {
+        let s = Sandbox::new(name);
+        std::fs::create_dir_all(s.root.join("home/.config/seeds")).unwrap();
+        std::fs::write(
+            s.root.join("home/.config/seeds/config.toml"),
+            format!("[quipu]\n{setting}\n"),
+        )
+        .unwrap();
+        let output = s.run(&["create", "Synthetic unsigned write"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("enrolled remote session key"));
+        assert!(!s.work().join(".seeds/seeds.db").exists());
+    }
 }

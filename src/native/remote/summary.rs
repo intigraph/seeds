@@ -1,6 +1,7 @@
 //! Indexed summaries: no ledger snapshot, seed body or comment materialization.
 use super::*;
 use crate::engine::{self, Activity, Count, CountReq, Filter, Stats, StatsReq};
+mod count;
 
 fn literal(s: &str) -> String {
     format!("\"{}\"", escape_literal(s))
@@ -625,32 +626,6 @@ impl RemoteBackend {
         }
         self.sparql_count_summary(req)
             .map(|count| (count, projection::CountSource::Sparql))
-    }
-
-    pub(super) fn sparql_count_summary(&self, req: &CountReq) -> Result<Count> {
-        let mut fields = self.filter_fields(&req.filter)?;
-        if req.filter.status.is_none() {
-            fields += " FILTER(?status != \"tombstone\")";
-            if !req.include_closed {
-                fields += " FILTER(?status != \"closed\")";
-            }
-        }
-        let total = self.aggregate_number(&format!(
-            "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
-            self.effective_normalized(&fields)
-        ))?;
-        let groups = req
-            .by
-            .as_deref()
-            .map(|by| {
-                let key = if by == "status" { "status" } else { "key" };
-                self.grouped(
-                    &self.effective_normalized(&(fields.clone() + &Self::group_field(by)?)),
-                    key,
-                )
-            })
-            .transpose()?;
-        Ok(Count { total, groups })
     }
 
     pub(super) fn stats_summary(&self, ctx: &Ctx, req: StatsReq) -> Result<Stats> {

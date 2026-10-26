@@ -294,3 +294,35 @@ fn external_status_changes_never_hide_default_open_items() {
     apply(&mut store, vec![datum(status, Value::Int(7), Op::Assert)]);
     check(&store, 1, "external irregular status");
 }
+
+#[test]
+fn count_snapshot_total_and_groups_use_one_http_query_then_a_fresh_read() {
+    // The fixture changes after the first query. A client splitting total and
+    // groups across requests cannot consume either response as a scalar count.
+    const FIRST: &str = r#"{"results":{"bindings":[{"arm":{"type":"literal","value":"total"},"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"2"}},{"arm":{"type":"literal","value":"group"},"status":{"type":"literal","value":"open"},"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"2"}},{"arm":{"type":"literal","value":"ambiguous"},"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"0"}}]}}"#;
+    const NEXT: &str = r#"{"results":{"bindings":[{"arm":{"type":"literal","value":"total"},"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"3"}},{"arm":{"type":"literal","value":"group"},"status":{"type":"literal","value":"open"},"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"3"}},{"arm":{"type":"literal","value":"ambiguous"},"n":{"type":"literal","datatype":"http://www.w3.org/2001/XMLSchema#integer","value":"0"}}]}}"#;
+    let (base, worker) = server(vec![(200, "ok"), (200, FIRST), (200, NEXT)]);
+    let backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
+    let req = crate::engine::CountReq {
+        filter: Default::default(),
+        by: Some("status".into()),
+        include_closed: false,
+    };
+    let first = backend.sparql_count_summary(&req).unwrap();
+    let next = backend.sparql_count_summary(&req).unwrap();
+    assert_eq!(first.total, 2);
+    assert_eq!(first.groups, Some(vec![("open".into(), 2)]));
+    assert_eq!(next.total, 3);
+    assert_eq!(next.groups, Some(vec![("open".into(), 3)]));
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 3, "health plus exactly one query per count");
+    for request in &requests[1..] {
+        let (_, body) = request.split_once('\n').unwrap();
+        let payload: Json = serde_json::from_str(body).unwrap();
+        let query = payload["query"].as_str().unwrap();
+        assert!(query.contains("BIND(\"total\" AS ?arm)"));
+        assert!(query.contains("BIND(\"group\" AS ?arm)"));
+        assert!(query.contains("COUNT(DISTINCT ?id)"));
+        assert!(query.contains("UNION"));
+    }
+}

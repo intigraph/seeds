@@ -36,3 +36,16 @@ ID ownership is checked outside the selected filters. Incomplete reads fall back
 to SPARQL; malformed responses and refused reads remain errors. All compatibility
 reads stay inside the projection transaction bracket, including the check for
 any ephemeral facts. The validated candidate count must match the aggregate.
+
+The SPARQL fallback sends its total, groups and scalar-ambiguity check in one
+`/query` request. A server that pins all reads of a query to one snapshot keeps
+those results consistent across concurrent writes; a later count sees the new
+snapshot. A single HTTP request alone cannot provide that guarantee on a server
+without query snapshot support.
+
+Competing scalar facts can make an aggregate select a different cohort from the
+native model's first scalar value. The fallback refuses such ambiguity in the
+fields relevant to the count instead of selecting any matching value. Labels
+remain multivalued. Missing, truncated, malformed or inconsistent aggregate
+results remain errors, never a zero count. Server query budgets still bound
+evaluation; a client timeout or output limit is not proof of server cancellation.

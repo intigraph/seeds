@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-10-26
+
+### Added
+
+- *(attest)* [**breaking**] Sign quipu-write-v2, bound to the receiving store (needs quipu-ai >= 0.12.0) (#198) ([b1f2acd](https://github.com/scbrown/seeds/commit/b1f2acd1129a9feff27b7c1b3d1e19a3bbc1da64))
+
 ## [0.8.3] - 2026-10-25
 
 ### Added

@@ -84,6 +84,8 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
             let query = query["query"].as_str().unwrap_or("");
             let body = match path {
                 "/health" => json!({"ok":true}),
+                // The store id a v2 signature names (aegis-2idcev).
+                "/stats" => json!({"store_id":"urn:uuid:actor-principal-fixture"}),
                 "/identity" if served_identity.load(Ordering::Relaxed) => identity.clone(),
                 "/identity" => json!({"authenticated":false}),
                 "/graphs" => json!({"graphs":[]}),
@@ -358,6 +360,12 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
             envelope["key_id"],
             signer.key_id(),
             "all actors use the SAME host key"
+        );
+        // Default signing is write-v2, bound to the store /stats named.
+        assert_eq!(envelope["version"], "quipu-write-v2", "{envelope}");
+        assert_eq!(
+            envelope["audience"], "urn:uuid:actor-principal-fixture",
+            "{envelope}"
         );
     }
     std::fs::remove_dir_all(root).unwrap();

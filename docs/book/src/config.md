@@ -18,6 +18,8 @@ store = ".seeds/seeds.db"            # a local quipu store file (the default)
 # signing_key_file = "~/.config/seeds/keys/<session>.key"  # signed writes: USER config only
 # signing_session = "<session>"
 # signing_introducer = "<who registered it>"
+# signing_version = "v2"              # default; "v1-legacy" only for a pre-write-v2 server
+# signing_store_id = "urn:uuid:..."   # optional pin: refuse any other store (GET /stats)
 
 [project]
 prefix = "sd"                        # id prefix for new seeds (default sd)
@@ -134,10 +136,25 @@ signing_introducer = "<lead>"
 ```
 
 - A signed write never also sends the bearer.
-- A key is used only for a server you would send your token to: a URL from a
-  project file needs its host in `trusted_hosts`. The signature does not name
-  the server, so a server a cloned project chose could otherwise pass your
-  signed write on to yours.
+- Every signed request is `quipu-write-v2`: the signature names the receiving
+  store, so another store that trusts the same key refuses it. **This needs
+  quipu `quipu-ai-v0.12.0` or later**, the first release that verifies
+  write-v2 and reports `store_id` in `GET /stats`. Against an older quipu every
+  signed request is refused until you set `signing_version = "v1-legacy"`. sd reads that
+  id from the server's `GET /stats` once, before it signs anything, and refuses
+  to connect when `/stats` fails or names no usable `store_id`. It never falls
+  back to the audience-free v1 on its own.
+- `signing_store_id` pins the store: when it is set, sd refuses a server whose
+  `/stats` reports any other id, so a server answering at that URL cannot get
+  your key to sign for itself. Leave it unset if one key signs for several
+  stores.
+- `signing_version = "v1-legacy"` signs the old `quipu-write-v1`, which names no
+  server, for a quipu server older than write-v2. It cannot be combined with
+  `signing_store_id`. An operator can refuse a session's v1 writes with
+  `quipu attest require-v2 <session>`.
+- A key is still used only for a server you would send your token to: a URL
+  from a project file needs its host in `trusted_hosts`, and a project file
+  cannot set any `signing_*` key.
 - `/graph/create` is signed too. seeds creates a graph only when the server
   does not already list it (`GET /graphs`). A server too old to accept a signed
   route refuses; the client does not retry that operation with a bearer.

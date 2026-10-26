@@ -30,6 +30,8 @@ class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/graphs":
             return self.reply({"graphs": []})
+        if self.path == "/stats":  # the store id a write-v2 signature names
+            return self.reply({"store_id": "urn:uuid:demo-fixture-store"})
         assert self.path == "/health"
         self.reply({"status": "ok"})
 

@@ -21,6 +21,7 @@ Accepted on every verb.
 
 | verb | flags (a br-compatible subset) |
 |---|---|
+| [`prime`](agent-primer.md) | `--static`, `--brief`, `--section <prefix>`; shared stack JSON |
 | [`create [TITLE]`](verbs/create.md) | `--title`, `-t/--type`, `-p/--priority`, `-d/--description`, `--description-file`, `-a/--assignee`, `-l/--labels`, `--parent`, `--deps`, `--dry-run`, `--silent` |
 | [`show <ID>...`](verbs/show.md) | |
 | [`list`](verbs/list.md) | `-s/--status`, `-t/--type`, `--assignee`, `--unassigned`, `-l/--label`, `-p/--priority`, `-a/--all`, `--limit` (default 50, 0 = all), `--sort` |

@@ -3,6 +3,7 @@
 [Introduction](introduction.md)
 
 - [Getting started](getting-started.md)
+- [Agent orientation](agent-primer.md)
 - [Why facts, not snapshots](why-facts.md)
 - [The bd intent map](intent-map.md)
 - [How it works](architecture.md)

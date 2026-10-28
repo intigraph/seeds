@@ -2,6 +2,7 @@
 
 | verb | writes | page |
 |---|---|---|
+| `prime` | no | [agent orientation](../agent-primer.md) |
 | `init` | yes (files) | [init](init.md) |
 | `create` | yes | [create](create.md) |
 | `show` | no | [show](show.md) |

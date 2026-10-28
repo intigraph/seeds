@@ -73,3 +73,15 @@ acquisition-fixture-test:
 installer-check:
     sh -n install.sh
     python3 scripts/test-install-release.py
+
+# Prime contract checks; default features only.
+prime action="test":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{quote(action)}} in
+        check) cargo check --locked --all-targets ;;
+        fmt) cargo fmt --check ;;
+        lint) cargo clippy --locked --all-targets -- -D warnings ;;
+        test) cargo test --locked --test prime --test prime_sync ;;
+        *) echo 'Use: just prime check|fmt|lint|test' >&2; exit 2 ;;
+    esac

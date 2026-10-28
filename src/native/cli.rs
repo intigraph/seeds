@@ -79,6 +79,8 @@ pub struct Cli {
 /// The verbs.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Agent primer plus a bounded read-only board summary
+    Prime(super::prime::PrimeArgs),
     /// Resolve the actor from an enrolled key and the server protected registry.
     Identity,
     /// Create a seed
@@ -1426,7 +1428,8 @@ impl Command {
             | Command::SpecQueryDefinition
             | Command::SpecReceipt { .. }
             | Command::SpecState { .. } => false,
-            Command::Export(_)
+            Command::Prime(_)
+            | Command::Export(_)
             | Command::Completions(_)
             | Command::Version(_)
             | Command::Identity
@@ -1461,6 +1464,7 @@ impl Command {
     /// The verb as a user typed it.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Prime(_) => "prime",
             Command::Cutover(_) => "cutover",
             Command::Create(_) => "create",
             Command::Rescope { .. } => "rescope",

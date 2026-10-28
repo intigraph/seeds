@@ -14,6 +14,7 @@ mod command_context;
 pub mod config;
 pub mod credentials;
 mod cutover;
+pub mod prime;
 pub mod provenance;
 pub mod remote;
 mod replica;
@@ -75,6 +76,9 @@ pub fn run(cli: &Cli) -> Outcome {
         return error_outcome(false, &e, Vec::new());
     }
 
+    if let Command::Prime(a) = &cli.command {
+        return prime::run(cli, a);
+    }
     if let Command::MergeDriver(a) = &cli.command {
         // Needs no store and no configuration: git runs it mid-merge.
         return match merge_driver(a) {
@@ -3520,7 +3524,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         },
         Command::Info(a) => info_outcome(json, cfg, b, a.schema, a.exact_comments),
         Command::Doctor(a) => doctor(json, cfg, b, a),
-        Command::Cutover(_)
+        Command::Prime(_)
+        | Command::Cutover(_)
         | Command::Export(_)
         | Command::Import(_)
         | Command::Sync(_)

@@ -50,6 +50,12 @@ rather than from a migration counter.
 live as stored queries next to the shapes (in camayoc), so the definition of
 "ready" is the same for every caller and travels with a shared ledger.
 
+## Agent orientation
+
+`sd prime` combines the configured board identity and existing plate/ready
+read definitions into bounded agent orientation. It starts no server and
+performs no project initialization or maintenance. See [Agent orientation](agent-primer.md).
+
 ## The verbs
 
 The CLI verbs cover what agents type directly: `create`, `show`, `list`,

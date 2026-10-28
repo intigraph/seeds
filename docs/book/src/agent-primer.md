@@ -15,10 +15,16 @@ is separate from the item JSON used by `sd list` and `sd show`.
 
 The plate uses `--actor` / `SEEDS_ACTOR`, then `SHANTY_AGENT`, then the usual
 user fallback. It lists at most ten assigned active items, including deferred
-ones, with a total count and title previews capped at 160 characters. The ready count uses the same dependency, deferral
-and ephemeral-item rules as `sd ready`. This is a read-time view, not a claim
+ones, with a total count and title previews capped at 160 characters. The ready
+count is scoped to that same actor before backend reads, using the same dependency,
+deferral and ephemeral-item rules as `sd ready --assignee <agent>`. It does not
+count unassigned work or another agent's queue. A one-row response limit is not
+a server-side work bound; actor scoping avoids a board-wide readiness query. This is a read-time view, not a claim
 of continuously fresh ownership. Plate and ready are separate reads, not a
 transactional combined snapshot. Replica notices remain in the summary.
+A remote historical `--at` summary is unavailable (null counters, degraded)
+because that engine path currently requires a whole-board snapshot; explicit
+`sd list/ready --at` remain available. Local historical reads are unchanged.
 
 The live probe runs inside a 750 ms parent deadline. Slow configuration,
 connection, authentication or queries become `partial`; the parent kills and

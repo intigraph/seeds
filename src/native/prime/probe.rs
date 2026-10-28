@@ -111,6 +111,13 @@ fn read(cli: &Cli, scope: &mut Value) -> Result<()> {
 }
 
 fn board(backend: &dyn Backend, ctx: &Ctx, at: Option<u64>, scope: &mut Value) -> Result<()> {
+    // Historical engine reads currently require a whole snapshot. Killing the
+    // client does not cancel that work on the server; leave this summary unknown.
+    if at.is_some() && backend.scoped_reads() {
+        return Err(SdError::refused(
+            "historical remote prime summary unavailable; use explicit sd list/ready --at reads",
+        ));
+    }
     super::super::refuse_old_vocabulary("prime board", backend)?;
     let page = engine::list(
         backend,
@@ -133,6 +140,12 @@ fn board(backend: &dyn Backend, ctx: &Ctx, at: Option<u64>, scope: &mut Value) -
         backend,
         ctx,
         &ReadyReq {
+            // A page limit only trims the response; bind the actor before
+            // readiness is computed so remote work never scans the board.
+            filter: Filter {
+                assignee: Some(ctx.actor.clone()),
+                ..Default::default()
+            },
             limit: Some(1),
             ..Default::default()
         },
@@ -140,4 +153,119 @@ fn board(backend: &dyn Backend, ctx: &Ctx, at: Option<u64>, scope: &mut Value) -
     )?;
     scope["ready_count"] = json!(ready.total);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::backend::{Claims, SeedQuery, WriteBatch};
+    use crate::model::Snapshot;
+    use std::cell::Cell;
+    use std::collections::BTreeMap;
+
+    struct CountingBackend {
+        fixture: Snapshot,
+        ready_reads: Cell<usize>,
+        filtered_reads: Cell<usize>,
+    }
+
+    impl Backend for CountingBackend {
+        fn scoped_reads(&self) -> bool {
+            true
+        }
+        fn snapshot(&self, _: Option<u64>) -> Result<Snapshot> {
+            panic!("prime hydrated the whole board")
+        }
+        fn ready_ids(&self, _: Option<u64>) -> Result<Vec<String>> {
+            panic!("prime requested board-wide readiness")
+        }
+        fn ready_ids_where(&self, query: &SeedQuery) -> Result<Option<Vec<String>>> {
+            self.ready_reads.set(self.ready_reads.get() + 1);
+            assert_eq!(query.assignee.as_deref(), Some("fixture-agent"));
+            Ok(Some(
+                self.fixture
+                    .seeds
+                    .values()
+                    .filter(|seed| query.matches(seed) && seed.status == "open")
+                    .map(|seed| seed.id.clone())
+                    .collect(),
+            ))
+        }
+        fn snapshot_where(&self, query: &SeedQuery) -> Result<Snapshot> {
+            self.filtered_reads.set(self.filtered_reads.get() + 1);
+            assert_eq!(query.assignee.as_deref(), Some("fixture-agent"));
+            let mut snap = self.fixture.clone();
+            snap.seeds.retain(|_, seed| query.matches(seed));
+            Ok(snap)
+        }
+        fn snapshot_seeds(&self, ids: &[String]) -> Result<Snapshot> {
+            let mut snap = self.fixture.clone();
+            for id in ids {
+                assert_eq!(snap.seeds[id].assignee.as_deref(), Some("fixture-agent"));
+            }
+            snap.seeds.retain(|id, _| ids.contains(id));
+            Ok(snap)
+        }
+        fn dependent_counts(&self, _: &[String]) -> Result<Option<BTreeMap<String, usize>>> {
+            Ok(Some(BTreeMap::new()))
+        }
+        fn commit(&mut self, _: &WriteBatch, _: &Ctx) -> Result<u64> {
+            panic!("prime attempted a write")
+        }
+        fn claims_of(&self, _: &str) -> Result<Vec<(u64, Claims)>> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn prime_ready_count_is_actor_scoped_before_backend_reads() {
+        let ctx = Ctx {
+            now: "2026-10-01T00:00:00Z".into(),
+            actor: "fixture-agent".into(),
+            prefix: "sd".into(),
+            claims: Default::default(),
+        };
+        let mut fixture =
+            crate::quipu_backend::QuipuBackend::in_memory("https://example.test/project").unwrap();
+        for owner in ["fixture-agent", "fixture-agent", "somebody-else", ""] {
+            engine::create(
+                &mut fixture,
+                &ctx,
+                &engine::CreateReq {
+                    title: format!("Item {owner}"),
+                    assignee: Some(owner.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let backend = CountingBackend {
+            fixture: fixture.snapshot(None).unwrap(),
+            ready_reads: Cell::new(0),
+            filtered_reads: Cell::new(0),
+        };
+        let mut summary = empty_summary(None);
+        board(&backend, &ctx, None, &mut summary).unwrap();
+        assert_eq!(summary["plate_total"], 2);
+        assert_eq!(summary["ready_count"], 2, "total, not the one-row page");
+        assert_eq!(backend.ready_reads.get(), 1);
+        assert!(
+            backend.filtered_reads.get() >= 2,
+            "plate and deferred ready scope"
+        );
+        let prior = (backend.ready_reads.get(), backend.filtered_reads.get());
+        let mut pinned = empty_summary(Some(1));
+        assert_eq!(
+            board(&backend, &ctx, Some(1), &mut pinned)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Refused
+        );
+        assert_eq!(
+            (backend.ready_reads.get(), backend.filtered_reads.get()),
+            prior
+        );
+        assert!(pinned["ready_count"].is_null());
+    }
 }

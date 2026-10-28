@@ -82,6 +82,6 @@ prime action="test":
         check) cargo check --locked --all-targets ;;
         fmt) cargo fmt --check ;;
         lint) cargo clippy --locked --all-targets -- -D warnings ;;
-        test) cargo test --locked --test prime --test prime_sync ;;
+        test) cargo test --locked --lib native::prime::probe::tests && cargo test --locked --test prime --test prime_sync ;;
         *) echo 'Use: just prime check|fmt|lint|test' >&2; exit 2 ;;
     esac

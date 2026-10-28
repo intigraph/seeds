@@ -137,8 +137,8 @@ fn local_plate_and_ready_reuse_engine_definitions_without_writes() {
     assert_eq!(summary["plate_total"], 3);
     assert_eq!(summary["plate"].as_array().unwrap().len(), 3);
     assert_eq!(
-        summary["ready_count"], 2,
-        "dependent and ephemeral are not ready: {v}"
+        summary["ready_count"], 1,
+        "other owners, dependent and ephemeral are not counted: {v}"
     );
     assert_eq!(summary["actor"], "fixture-agent");
     assert_eq!(summary["graph"], GRAPH);

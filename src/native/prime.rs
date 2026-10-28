@@ -135,11 +135,14 @@ fn brief(live: &Value) -> String {
         lines.push(format!("Board: {} ({}).", s["board"], live["status"]));
         lines.push(format!("Graph: {}. Actor: {}.", s["graph"], s["actor"]));
         lines.push(format!(
-            "Assigned active work: {}; ready count: {}.",
+            "Assigned active work: {}; ready assigned work: {}.",
             human(&s["plate_total"]),
             human(&s["ready_count"])
         ));
-        lines.push("Run `sd list --assignee <agent>` and `sd ready` for details.".into());
+        lines.push(
+            "Run `sd list --assignee <agent>` and `sd ready --assignee <agent>` for details."
+                .into(),
+        );
     }
     lines.push("Run `sd prime` for the full primer.".into());
     lines.join("\n")

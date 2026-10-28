@@ -261,6 +261,13 @@ write operation against its complete loaded shape set before deployment.
 Write timestamps remain strings because that is the provenance producer's
 contract; item creation times remain typed `xsd:dateTime`.
 
+The Action target stays broad so missing work-item fields still refuse.
+An Action explicitly marked `quechua:ScheduledJob` may instead use the
+scheduled-job profile's constraints; install that profile alongside the gate.
+The job branch forbids Seeds status, priority, issue type and deferral fields,
+so mixed job/work-item records must still pass every board constraint.
+The marker is a declaration discriminator, never execution authority.
+
 ### Embedded ephemeral reference types
 
 When an embedded transaction writes the configured ephemeral graph, its referenced

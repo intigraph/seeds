@@ -57,6 +57,9 @@ fn remote_gate_accepts_producer_and_rejects_missing_or_invalid_fields() {
     for predicate in [
         "https://seeds.local/ontology/actor",
         "https://schema.org/identifier",
+        "https://seeds.local/ontology/status",
+        "https://seeds.local/ontology/priority",
+        "https://seeds.local/ontology/issueType",
         "https://schema.org/text",
         "http://aegis.gastown.local/ontology/sourceKind",
     ] {
@@ -83,5 +86,71 @@ fn remote_gate_accepts_producer_and_rejects_missing_or_invalid_fields() {
         !quipu::validate_shapes(shapes, &render(&invalid))
             .unwrap()
             .conforms
+    );
+}
+
+#[test]
+fn only_explicit_scheduled_jobs_are_exempt_from_board_constraints() {
+    let shapes = include_str!("../shapes/quipu-gate.shapes.ttl");
+    let action = "<urn:test:job> a <https://schema.org/Action> .";
+    let marker = "<urn:test:job> a <https://scbrown.github.io/quechua/ns#ScheduledJob> .";
+    let conforms = |data: &str| quipu::validate_shapes(shapes, data).unwrap().conforms;
+    assert!(
+        !conforms(action),
+        "ordinary Actions retain strict board admission"
+    );
+    assert!(
+        conforms(&format!("{action} {marker}")),
+        "explicit job marker is accepted; its profile owns job constraints"
+    );
+    let unrelated_marker = marker.replace("#ScheduledJob", "#OtherJob");
+    assert!(
+        !conforms(&format!("{action} {unrelated_marker}")),
+        "a different class cannot select the job exception"
+    );
+    for property in [
+        "status",
+        "priority",
+        "issueType",
+        "deferredAt",
+        "deferredBy",
+    ] {
+        let data = format!("{action} {marker} <urn:test:job> <https://seeds.local/ontology/{property}> \"invalid\" .");
+        assert!(
+            !conforms(&data),
+            "job marker cannot hide board property {property}"
+        );
+    }
+    let missing_status =
+        format!("{action} {marker} <urn:test:job> <https://seeds.local/ontology/priority> 0 .");
+    assert!(
+        !conforms(&missing_status),
+        "mixed board item without status remains refused"
+    );
+    let missing_priority = format!(
+        "{action} {marker} <urn:test:job> <https://seeds.local/ontology/status> \"open\" ."
+    );
+    assert!(
+        !conforms(&missing_priority),
+        "mixed board item without priority remains refused"
+    );
+}
+
+#[test]
+fn duplicate_version_control_keeps_its_focus_and_path() {
+    let shapes = include_str!("../shapes/quipu-gate.shapes.ttl");
+    let data = r#"<urn:test:version-control> a <https://schema.org/Action> ;
+        <https://schema.org/version> 1, 2 ."#;
+    let feedback = quipu::validate_shapes(shapes, data).unwrap();
+    assert!(!feedback.conforms);
+    assert!(
+        feedback.results.iter().any(|issue| {
+            issue.focus_node.contains("urn:test:version-control")
+                && issue
+                    .path
+                    .as_deref()
+                    .is_some_and(|path| path.contains("https://schema.org/version"))
+        }),
+        "scheduled full-board validation must retain its seeded version control"
     );
 }

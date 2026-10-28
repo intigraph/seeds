@@ -9,8 +9,27 @@
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 @prefix aegis: <http://aegis.gastown.local/ontology/> .
 
+# Keep the Action target: a malformed board item must not escape by omitting
+# status or another field. Only the explicit scheduled-job profile may opt out.
 seeds:RemoteActionShape a sh:NodeShape ;
     sh:targetClass schema:Action ;
+    # Retain this cardinality at the target boundary so duplicate-version
+    # controls report the exact version path, not only a nested sh:or failure.
+    sh:property [ sh:path schema:version ; sh:maxCount 1 ] ;
+    sh:or (
+        [ sh:class quechua:ScheduledJob ;
+          # Mixed job/board records still have to pass the complete board arm.
+          sh:property [ sh:path seeds:status ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:priority ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:issueType ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:deferredAt ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:deferredBy ; sh:maxCount 0 ] ]
+        [ sh:node seeds:RemoteBoardActionShape ]
+    ) .
+
+# No target on this helper: the original constraints remain intact, reached
+# through RemoteActionShape for every non-job Action and every mixed record.
+seeds:RemoteBoardActionShape a sh:NodeShape ;
     # Optional for historical items: provenance begins with the new writer, no backfill.
     sh:property [ sh:path seeds:deferredAt ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
     sh:property [ sh:path seeds:deferredBy ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;

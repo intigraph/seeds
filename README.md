@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/thread-workshop/seeds.png" width="704" alt="seeds: A sprout grows from an ordered work card. Original pixel art in the Thread Workshop style."/></p>
+
 # seeds
 
 **seeds is an issue tracker for AI coding agents that stores each work item as

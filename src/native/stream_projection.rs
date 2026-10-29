@@ -208,6 +208,20 @@ impl StreamBoard {
         ))
     }
 
+    /// Render an existing CLI read against this applier's committed local cut.
+    /// The backend itself is read-only; no transport exposes a writer.
+    #[cfg(unix)]
+    pub(crate) fn read<T>(
+        &mut self,
+        now_ms: u64,
+        max_ms: u64,
+        render: impl FnOnce(&mut QuipuBackend, u64) -> Result<T>,
+    ) -> Result<(T, AppliedProgress, u64)> {
+        let (progress, bound) = self.progress(now_ms, max_ms)?;
+        let value = render(&mut self.backend, progress.local_tx)?;
+        Ok((value, progress, bound))
+    }
+
     /// Board or plate using the existing engine definition at a committed cut.
     pub fn list(&self, request: &ListReq, now_ms: u64, max_ms: u64) -> Result<Projected<Page>> {
         let (progress, bound) = self.progress(now_ms, max_ms)?;

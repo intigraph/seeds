@@ -9,7 +9,9 @@ Every document in this repository, and where it lives.
 | `docs/book/` | this book; every page is listed in the sidebar |
 | `shapes/seeds.shapes.ttl` | the SHACL shapes every write is validated against ([The storage model](storage.md)) |
 | `clippy.toml` | the rule that keeps the core wasm-clean ([WebAssembly](wasm.md)) |
+| `docs/book/src/push-reads.md` | operator-pinned push consumer and private local reads |
 | Release comparison adapter and API controls | [Reproducible release API comparison](semver-baseline.md) |
+| `docs/demos/push-read/` | isolated push/IPC CLI replay and caption |
 | `docs/demos/locked-semver/` | recorded source-fixture API comparisons and replay caption |
 
 Additional documents under `docs/` are folded into a book page or listed here.

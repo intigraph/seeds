@@ -1,0 +1,13 @@
+$ sd --store demo.db --graph urn:seeds:readme-demo --actor demo create 'Write the parser' -p 1
+created ○ demo-7vl [P1] [task] Write the parser (tx 2)
+[exit 0]
+$ sd --store demo.db --graph urn:seeds:readme-demo --actor demo ready
+○ demo-7vl [P1] [task] Write the parser
+[exit 0]
+$ sd --store demo.db --graph urn:seeds:readme-demo --actor demo stats --no-activity
+total 1
+  open 1 · in progress 0 · blocked 0 · deferred 0 · closed 0
+  ready now 1
+  epics ready to close 0
+  average lead time 0.0 h
+[exit 0]

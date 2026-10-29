@@ -47,6 +47,7 @@ pub mod acquisition;
 #[cfg(test)]
 mod gateway_tests;
 mod owner_query;
+mod projection;
 mod summary;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
@@ -2919,6 +2920,10 @@ mod tests {
     /// Start `SEEDS_TEST_QUIPU_SERVER`, or `None` when it is not set.
     pub(super) fn quipu_server() -> Option<Server> {
         let bin = std::env::var("SEEDS_TEST_QUIPU_SERVER").ok()?;
+        Some(quipu_server_config(&bin, None))
+    }
+
+    pub(super) fn quipu_server_config(bin: &str, config: Option<&str>) -> Server {
         for attempt in 0..5 {
             let dir = std::env::temp_dir().join(format!(
                 "seeds-remote-test-{}-{attempt}-{}",
@@ -2929,6 +2934,10 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&dir).unwrap();
+            if let Some(config) = config {
+                std::fs::create_dir_all(dir.join(".bobbin")).unwrap();
+                std::fs::write(dir.join(".bobbin/config.toml"), config).unwrap();
+            }
             let port = std::net::TcpListener::bind("127.0.0.1:0")
                 .unwrap()
                 .local_addr()
@@ -2946,7 +2955,7 @@ mod tests {
                     "explicit owned-fixture index preparation failed"
                 );
             }
-            let child = std::process::Command::new(&bin)
+            let child = std::process::Command::new(bin)
                 .args(["--db", dir.join("q.db").to_str().unwrap()])
                 .args(["--bind", &format!("127.0.0.1:{port}")])
                 .current_dir(&dir)
@@ -2969,7 +2978,7 @@ mod tests {
                     .call()
                     .is_ok();
                 if healthy && matches!(server.child.try_wait(), Ok(None)) {
-                    return Some(server);
+                    return server;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }

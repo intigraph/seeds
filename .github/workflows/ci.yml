@@ -147,6 +147,8 @@ jobs:
           grep -q 'test native::remote::tests::the_batched_graph_read_equals_the_whole_graph_scan ... ok' remote-lib.log
           grep -q 'test native::remote::scoped_tests::scoped_reads_print_exactly_what_a_whole_snapshot_prints ... ok' remote-lib.log
           grep -q 'test native::remote::scoped_tests::ready_refuses_a_seed_stored_under_a_non_canonical_iri ... ok' remote-lib.log
+          grep -q 'test native::remote::projection::tests::projection_count_legacy_server_reports_sparql_fallback ... ok' remote-lib.log
+          grep -q 'COUNT_READER source=sparql fallback=true parity_cases=60' remote-lib.log
 
   acquisition-fixture:
     name: Bounded acquisition controls

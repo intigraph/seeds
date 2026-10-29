@@ -14,6 +14,12 @@ name comes from the counting board: a *quipucamayoc* moved seeds across a
 
 This 20-second recording runs native sd 0.8.0 in a new, isolated local Quipu store. Every command names the public fixture graph and actor; the local fixture configuration sets the demo prefix. It creates one work item, reads the ready queue, then reports counts. No server, sync or production tracker is used. [Reproduce the recording](docs/demos/terminal.md).
 
+## Why you would want it
+
+- **Share a work queue:** read ready work and claim it with conflict checks.
+- **Keep history with each fact:** inspect earlier revisions of a work item.
+- **Choose where work lives:** use a local file, a committed pendant or a shared server.
+
 ## Install
 
 ```sh
@@ -29,7 +35,7 @@ Set `STACK_INSTALL_ROOT` on the receiving shell for another prefix.
 Pinned releases, alternatives, configuration and removal are in the
 [installation and usage reference](docs/installation-reference.md).
 
-## Try it
+## First success in three commands
 
 No server and no configuration: the first write creates a local quipu store at
 `.seeds/seeds.db`.
@@ -46,7 +52,40 @@ created ○ sd-k2x [P1] [task] Write the parser (tx 1)
 exit 0
 ```
 
-## Next steps
+## On your own code
+
+| You want to | Run |
+|---|---|
+| Read ready work | `sd ready --json` |
+| Open an item | `sd create "Write the parser" -p 1 -t task` |
+| Claim an item | `sd update <id> --claim` |
+| Inspect supported commands and output | `sd capabilities --json` |
+
+[Command reference](https://intigraph.github.io/seeds/reference.html)
+covers flags, output and exit codes.
+
+## Wire it into your agent
+
+Give your agent the [command reference](https://intigraph.github.io/seeds/reference.html)
+and run `sd capabilities --json` to inspect the installed command contract.
+Choose the intended store and graph explicitly when working across projects.
+An alias from another tracker is a separate Desire Path configuration; review
+existing aliases before changing them.
+
+## Before you start
+
+The shell installer needs Python 3.9+, curl and Linux or macOS. A local store
+needs no server; its first write creates `.seeds/seeds.db`. Run the example in
+a disposable directory if you do not want a project ledger there. Shared stores
+require endpoint and graph configuration; see [storage modes](https://intigraph.github.io/seeds/storage-modes.html).
+
+## What's next
+
+- [The Seeds book](https://intigraph.github.io/seeds/): concepts and usage.
+- [Installation reference](docs/installation-reference.md): configuration and removal.
+- [Reproduce the terminal demo](docs/demos/terminal.md): local fixture and full output.
+
+### Related tools and repository knowledge
 
 - [Tambo](https://github.com/scbrown/tambo): guided stack installation and verification.
 - [Camayoc](https://github.com/scbrown/camayoc): governed memory and vocabulary.
@@ -54,7 +93,7 @@ exit 0
 
 **Load this repository’s graph:** public repository-pendant assets have not yet been verified. When a release supplies the archive, checksum and provenance, follow the [verified import workflow](https://scbrown.github.io/quipu/sharing/index.html): extract the share directory and use `quipu import SHARE_DIR --db repository.db`. Import stages knowledge; ROOT stays unchanged.
 
-## The stack
+## 🧺 The stack
 
 <!-- stack-table:start -->
 
@@ -79,5 +118,12 @@ when.
 | [shuttle](https://github.com/scbrown/shuttle) | runs signed agent workflows and keeps their records in Quipu |
 
 <!-- stack-table:end -->
+
+
+## Contributing
+
+Run `just check` and `just test` before submitting a change.
+
+## 📜 License
 
 [License](LICENSE).

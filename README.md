@@ -10,6 +10,10 @@ same shape, and it is the beads replacement for the quipu stack.** The
 name comes from the counting board: a *quipucamayoc* moved seeds across a
 *yupana* to count, then knotted the result into the quipu.
 
+<p align="center"><img src="docs/demos/terminal/demo.svg" width="1000" alt="Create work, then read the ready queue: native commands and their complete output."/></p>
+
+This 20-second recording runs native sd 0.8.0 in a new, isolated local Quipu store. Every command names the public fixture graph and actor; the local fixture configuration sets the demo prefix. It creates one work item, reads the ready queue, then reports counts. No server, sync or production tracker is used. [Reproduce the recording](docs/demos/terminal.md).
+
 ## Install
 
 ```sh

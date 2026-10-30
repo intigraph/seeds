@@ -368,7 +368,21 @@ fn render(
     };
     let (result, p, bound) = board.read(now, request.max_ms, |backend, local_tx| {
         cli.at = Some(local_tx);
-        super::dispatch(&cli, cfg, &ctx, backend)
+        match super::dispatch(&cli, cfg, &ctx, backend) {
+            Ok(outcome) => Ok(outcome),
+            // Fresh, complete coverage can prove a caller's missing ID or bad
+            // selector. Preserve the ordinary CLI contract; projection/store
+            // failures still escape as UNKNOWN rather than domain answers.
+            Err(error)
+                if matches!(
+                    error.kind,
+                    crate::error::ErrorKind::NotFound | crate::error::ErrorKind::Usage
+                ) =>
+            {
+                Ok(super::error_outcome(cli.wants_json(), &error, vec![]))
+            }
+            Err(error) => Err(error),
+        }
     })?;
     Ok(Reply {
         version: 1,

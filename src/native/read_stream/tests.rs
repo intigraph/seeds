@@ -537,3 +537,24 @@ fn demo_cli_push_projection_without_primary_queries() {
     assert!(matches!(primary.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
     println!("observed primary HTTP connections: 0 (local fixture, not deployed traffic)");
 }
+
+#[test]
+fn fresh_projection_preserves_not_found_exit_and_json_contract() {
+    let mut f = Fixture::new();
+    f.prove(1, 3);
+    let known = f.request(&["sd", "--json", "show", &f.id]);
+    let present = render(&mut f.board, &f.config, &f.cfg, known, 4).unwrap();
+    assert!(present.result.stdout.contains("before"));
+    let cli = Cli::try_parse_from(["sd", "--json", "show", "sd-missing"]).unwrap();
+    let original = super::super::dispatch(&cli, &f.cfg, &context(), &mut f.source).unwrap_err();
+    assert_eq!(original.exit_code(), 3);
+    let expected = super::super::error_outcome(cli.wants_json(), &original, vec![]);
+    let request = f.request(&["sd", "--json", "show", "sd-missing"]);
+    let reply = render(&mut f.board, &f.config, &f.cfg, request, 4).unwrap();
+    assert_eq!(reply.result.code, expected.code);
+    assert_eq!(reply.result.stdout, expected.stdout);
+    assert_eq!(reply.result.stderr, expected.stderr);
+    f.board.disconnect();
+    let request = f.request(&["sd", "--json", "show", "sd-missing"]);
+    assert!(render(&mut f.board, &f.config, &f.cfg, request, 5).is_err());
+}

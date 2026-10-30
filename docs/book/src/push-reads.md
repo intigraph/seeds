@@ -69,7 +69,9 @@ The consumer issues at most one challenge every two seconds. This control
 traffic is distinct from board queries or watermark polling.
 
 A missing, stale, disconnected, mismatched or corrupt projection is reported as
-`UNKNOWN`, never as an empty board. The local client charges IPC elapsed time
+`UNKNOWN`, never as an empty board. A fresh complete view preserves the
+ordinary missing-seed exit code 3 and JSON error; lack of a valid projection
+proof still refuses UNKNOWN rather than proving absence. The local client charges IPC elapsed time
 against the proof budget. Configured head reads do not silently fall back to
 primary polling. Other board bindings refuse rather than reuse this projection.
 

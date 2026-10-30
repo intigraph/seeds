@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-10-30
+
+### Added
+
+- *(cli)* Sd prime per the stack prime contract (#204) ([a50d2ac](https://github.com/scbrown/seeds/commit/a50d2ac4e218b983612a92fd64b124ee4b98f8bd))
+- *(reads)* Consume push projections through private IPC (#210) ([81d16bc](https://github.com/scbrown/seeds/commit/81d16bc4d3d7a21e4769976dbe02d05fb34aa89f))
+
+### Documentation
+
+- *(readme)* Record native work capture in an isolated fixture (#208) ([1c8b4d8](https://github.com/scbrown/seeds/commit/1c8b4d877963aee44d9e103a2309bd5f0c140904))
+- *(readme)* Follow the shared stack sections (#209) ([46c05b1](https://github.com/scbrown/seeds/commit/46c05b1e2f1452069abd2bdce667d92846de960c))
+
+### Fixed
+
+- *(shapes)* Exempt explicit quechua:ScheduledJob from board constraints; keep the Action target (#206) ([d1c31e8](https://github.com/scbrown/seeds/commit/d1c31e8a43a93c4b14085dc5d6e461fdb414ff26))
+
 ## [0.9.0] - 2026-10-26
 
 ### Added

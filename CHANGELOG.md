@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.1] - 2026-10-30
+
+### Fixed
+
+- *(comments)* Confirm the intended writer after a lost response (#211) ([ffa40aa](https://github.com/scbrown/seeds/commit/ffa40aa3cc2af40b98d58622e8c0bb133597c5f2))
+
 ## [0.10.0] - 2026-10-30
 
 ### Added

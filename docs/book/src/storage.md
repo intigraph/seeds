@@ -225,6 +225,14 @@ primitive the shared-server backend needs (below).
 Reads take no lock. quipu keeps the store in SQLite WAL mode, so a reader sees
 the last committed transaction while a write is in flight.
 
+Remote comment writes distinguish a failed insertion from an exact replay.
+A zero-change response succeeds only when the intended comment and its
+existing write-provenance marker both match. An occupied index without that
+marker is a conflict; `comments add` rereads and renumbers within its bounded
+retry limit. If the response is lost, a matching comment from another writer
+cannot confirm our write: the result stays UNKNOWN (exit 8) and is not retried.
+The marker records declared provenance; it does not authenticate the writer.
+
 ## Why the default is an embedded quipu
 
 The original brief sketched reads through quipu's SPARQL `/query` and writes

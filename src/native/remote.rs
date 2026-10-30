@@ -45,6 +45,8 @@ use crate::vocab::{self, term};
 
 pub mod acquisition;
 #[cfg(test)]
+mod comment_tests;
+#[cfg(test)]
 mod gateway_tests;
 mod owner_query;
 mod summary;
@@ -2092,9 +2094,10 @@ impl Backend for RemoteBackend {
             )[7..31]
         );
         let mut prov = String::new();
-        for (iri, facts) in crate::backend::write_record(&write_iri, batch, ctx) {
+        let write_record = crate::backend::write_record(&write_iri, batch, ctx);
+        for (iri, facts) in &write_record {
             for (p, o) in facts {
-                prov.push_str(&format!("<{iri}> <{p}> {} . ", sparql_obj(&o)));
+                prov.push_str(&format!("<{iri}> <{p}> {} . ", sparql_obj(o)));
             }
         }
         update.push_str(&format!(
@@ -2157,6 +2160,14 @@ impl Backend for RemoteBackend {
             // project graph, decides landed vs lost (aegis-w3k75d.15).
             if let Some((changed, tx)) = update_report(body) {
                 if changed == 0 {
+                    // A byte-identical replay may legitimately be a no-op.
+                    // Matching comment fields alone cannot prove that: another
+                    // actor may have won the index with the same fields.
+                    if !batch.comments.is_empty()
+                        && self.unconfirmed(batch, &write_record)?.is_empty()
+                    {
+                        return Ok(tx.unwrap_or(0));
+                    }
                     return Err(SdError::conflict(self.lost_race(batch)));
                 }
                 return Ok(tx.unwrap_or(0));
@@ -2169,7 +2180,7 @@ impl Backend for RemoteBackend {
             // The request may have landed. Look before saying anything else,
             // and never invite a blind retry: a retried create mints a
             // second seed.
-            return match self.unconfirmed(batch) {
+            return match self.unconfirmed(batch, &write_record) {
                 Ok(missing) if missing.is_empty() => {
                     eprintln!(
                         "sd: the server's response was lost ({}); a read-back shows the write \
@@ -2203,7 +2214,7 @@ impl Backend for RemoteBackend {
             };
         }
 
-        let missing = self.unconfirmed(batch)?;
+        let missing = self.unconfirmed(batch, &write_record)?;
         if !missing.is_empty() {
             return Err(SdError::conflict(self.lost_race(batch)));
         }
@@ -2263,7 +2274,11 @@ impl RemoteBackend {
     /// What of `batch` the server does NOT show (empty when all of it landed).
     /// /update reports no affected count, so this read-back is the only proof
     /// that the precondition held.
-    fn unconfirmed(&self, batch: &WriteBatch) -> Result<Vec<String>> {
+    fn unconfirmed(
+        &self,
+        batch: &WriteBatch,
+        write_record: &[(String, Vec<Fact>)],
+    ) -> Result<Vec<String>> {
         let (f, e) = self.subjects_facts(&batch_subjects(batch))?;
         let after = Snapshot::from_graphs(&f, &e);
         let mut missing = Vec::new();
@@ -2280,6 +2295,27 @@ impl RemoteBackend {
         for c in &batch.comments {
             if !after.comments.contains(c) {
                 missing.push(format!("{} comment {}", c.seed, c.index));
+            }
+        }
+        if !batch.comments.is_empty() {
+            // A lost reply must not turn a different actor's identical comment
+            // into success. The marker binds this batch's content, time and
+            // writer; its facts are declarations, not authentication evidence.
+            let subjects = write_record.iter().map(|(iri, _)| iri.clone()).collect();
+            let mut recorded = Facts::new();
+            self.read_all(
+                &provenance_graph(&self.graph),
+                &subjects,
+                None,
+                &mut recorded,
+            )?;
+            for (iri, expected) in write_record {
+                if !recorded
+                    .get(iri)
+                    .is_some_and(|facts| expected.iter().all(|fact| facts.contains(fact)))
+                {
+                    missing.push(format!("comment write marker {iri}"));
+                }
             }
         }
         Ok(missing)

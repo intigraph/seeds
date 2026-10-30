@@ -79,6 +79,18 @@ pub struct Cli {
 /// The verbs.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Serve an operator-admitted push-fed read view on a private local socket
+    #[cfg(unix)]
+    ReadStream {
+        #[arg(long)]
+        config: std::path::PathBuf,
+        /// Validate the pinned input packet without network or socket activity
+        #[arg(long)]
+        check: bool,
+    },
+    /// Execute a bounded SELECT/ASK from JSON stdin on the admitted push projection
+    #[cfg(unix)]
+    ReadStreamQuery,
     /// Agent primer plus a bounded read-only board summary
     Prime(super::prime::PrimeArgs),
     /// Resolve the actor from an enrolled key and the server protected registry.
@@ -590,7 +602,8 @@ pub struct CreateArgs {
 }
 
 /// `sd show`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShowArgs {
     /// Seed id(s)
     #[arg(required = true)]
@@ -598,7 +611,8 @@ pub struct ShowArgs {
 }
 
 /// `sd list`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListArgs {
     /// Only this status (includes closed when you ask for closed)
     #[arg(short, long)]
@@ -760,7 +774,8 @@ pub struct SearchArgs {
 }
 
 /// `sd ready`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadyArgs {
     /// Cut the list at N. Without it, ready is NOT truncated; with it, a
     /// truncated list says so on stderr.
@@ -802,7 +817,8 @@ pub struct ReadyArgs {
 }
 
 /// `sd blocked`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlockedArgs {
     /// Page size (default 50; 0 = all). The output says when it was cut short.
     #[arg(long)]
@@ -1390,6 +1406,8 @@ impl Command {
     /// Whether the verb writes (and so takes the store's write lock).
     pub fn writes(&self) -> bool {
         match self {
+            #[cfg(unix)]
+            Command::ReadStream { .. } | Command::ReadStreamQuery => false,
             Command::Cutover(a) => !a.dry_run && matches!(a.operation.as_str(), "import" | "sync"),
             Command::Q(_) => true,
             Command::DueBackfill { apply_plan, .. } => apply_plan.is_some(),
@@ -1464,6 +1482,10 @@ impl Command {
     /// The verb as a user typed it.
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(unix)]
+            Command::ReadStream { .. } => "read-stream",
+            #[cfg(unix)]
+            Command::ReadStreamQuery => "read-stream-query",
             Command::Prime(_) => "prime",
             Command::Cutover(_) => "cutover",
             Command::Create(_) => "create",

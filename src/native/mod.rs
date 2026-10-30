@@ -16,6 +16,8 @@ pub mod credentials;
 mod cutover;
 pub mod prime;
 pub mod provenance;
+#[cfg(unix)]
+pub mod read_stream;
 pub mod remote;
 mod replica;
 pub mod store;
@@ -38,7 +40,8 @@ use config::{Location, Resolved};
 use serde_json::json;
 
 /// What a run produced: the exit code and the two streams.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Outcome {
     /// Process exit code.
     pub code: i32,
@@ -310,6 +313,7 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
     };
     vec![
         ("quipu.store", serde_json::json!(store)),
+        ("quipu.read_stream_config", path(&cfg.read_stream_config)),
         ("quipu.url", serde_json::json!(url)),
         (
             "quipu.location_source",
@@ -1251,6 +1255,22 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         graph: Some(graph),
         ..cfg.clone()
     };
+    #[cfg(unix)]
+    if let Command::ReadStream { config, check } = &cli.command {
+        return read_stream::run(cfg, config, *check);
+    }
+    #[cfg(unix)]
+    if matches!(cli.command, Command::ReadStreamQuery) {
+        if cli.at.is_some() {
+            return Err(SdError::refused(
+                "push projection queries cannot override their local cut",
+            ));
+        }
+        let path = cfg.read_stream_config.as_ref().ok_or_else(|| {
+            SdError::refused("push read UNKNOWN: user read_stream_config required")
+        })?;
+        return read_stream::read(cli, cfg, &ctx, path);
+    }
     if let Command::Cutover(a) = &cli.command {
         return cutover::run(cli, cfg, &ctx, a);
     }
@@ -1550,6 +1570,24 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     if matches!(&cli.command, Command::Export(_)) && cli.at.is_some() {
         return Err(SdError::refused(
             "remote pendant export does not support --at; no historical source receipt is available",
+        ));
+    }
+    #[cfg(unix)]
+    if cli.at.is_none() && read_stream::eligible(&cli.command) {
+        if let Some(path) = &cfg.read_stream_config {
+            return read_stream::read(cli, cfg, ctx, path);
+        }
+    }
+    #[cfg(not(unix))]
+    if cli.at.is_none()
+        && cfg.read_stream_config.is_some()
+        && matches!(
+            cli.command,
+            Command::List(_) | Command::Ready(_) | Command::Blocked(_) | Command::Show(_)
+        )
+    {
+        return Err(SdError::refused(
+            "push read IPC unsupported on this platform; no polling fallback",
         ));
     }
     let effective_signer = signer(cfg, url, cfg.location_from_project)?;
@@ -2474,6 +2512,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         return Err(SdError::usage("this spec command reads current delivery state; use show --at for historical item facts"));
     }
     match &cli.command {
+        #[cfg(unix)]
+        Command::ReadStream { .. } | Command::ReadStreamQuery => Err(SdError::refused("read-stream is not a board operation")),
         Command::Rescope { id, spec_file, quote, requester, summary, urgent, dry_run } => {
             use std::io::Read;
             let file = std::fs::File::open(spec_file).map_err(|e| SdError::usage(format!("cannot read spec file: {e}")))?;

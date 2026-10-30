@@ -113,6 +113,8 @@ pub struct SyncSection {
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QuipuSection {
+    /// Operator-owned push read packet; USER config only, never a project redirect.
+    pub read_stream_config: Option<String>,
     /// A local store file. Relative paths resolve against the directory that
     /// holds `.seeds/` (project file) or the user config directory (user file).
     pub store: Option<String>,
@@ -183,6 +185,7 @@ pub enum Location {
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
+    pub read_stream_config: Option<PathBuf>,
     pub spec_byte_cap: usize,
     pub due_priority_days: Option<[u32; 5]>,
     /// Where the graph lives.
@@ -459,6 +462,14 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     if inputs.flag_store.is_some() && inputs.flag_url.is_some() {
         return Err(config_error("pass --store or --quipu, not both".into()));
     }
+    if project
+        .as_ref()
+        .is_some_and(|p| p.quipu.read_stream_config.is_some())
+    {
+        return Err(config_error(
+            "[quipu] read_stream_config is user-level only".into(),
+        ));
+    }
     let home = inputs.home.as_deref();
     let root = project_root.clone().unwrap_or_else(|| inputs.cwd.clone());
 
@@ -664,6 +675,10 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         return Err(config_error("[specs] byte_cap must be 1..65536".into()));
     }
     Ok(Resolved {
+        read_stream_config: user
+            .as_ref()
+            .and_then(|u| u.quipu.read_stream_config.as_ref())
+            .map(|p| expand(p, &user_base, home)),
         spec_byte_cap,
         due_priority_days,
         location,

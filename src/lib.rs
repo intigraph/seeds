@@ -31,6 +31,7 @@ pub mod backend;
 pub mod beads;
 pub mod blockers;
 pub mod engine;
+pub mod message;
 pub mod error;
 pub mod ids;
 pub mod model;

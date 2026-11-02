@@ -2733,6 +2733,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 reverse: a.reverse,
                 deferred: a.deferred,
                 defer_until_present: a.defer_until_present,
+                // Only the JSON envelope prints dependent counts.
+                skip_dependent_counts: !json,
             };
             let p = engine::list(b, &req, at)?;
             let mut warnings = vec![];

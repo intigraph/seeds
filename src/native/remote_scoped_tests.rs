@@ -536,6 +536,7 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
                 reverse,
                 deferred,
                 defer_until_present,
+                skip_dependent_counts: false,
             };
             out.push(match engine::list(b, &req, None) {
                 Ok(p) => format!(
@@ -544,6 +545,19 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
                     output::page_text(&p, "matching")
                 ),
                 Err(e) => format!("list {req:?} {}", err(&e)),
+            });
+            // Text and CSV callers skip the counts; the listed seeds must not change.
+            let uncounted = ListReq {
+                skip_dependent_counts: true,
+                ..req.clone()
+            };
+            out.push(match engine::list(b, &uncounted, None) {
+                Ok(p) => format!(
+                    "list without counts {req:?}\n{}\n{}",
+                    output::seeds_json(&p.issues),
+                    output::page_text(&p, "matching")
+                ),
+                Err(e) => format!("list without counts {req:?} {}", err(&e)),
             });
         }
         for (include_closed, by) in [

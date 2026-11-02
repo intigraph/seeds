@@ -257,13 +257,24 @@ impl RemoteBackend {
     }
 
     fn page_snapshot(&self, ids: &[String], has_ephemeral: bool) -> Result<Snapshot> {
+        let subjects = ids.iter().map(|id| vocab::item_iri(id)).collect::<Vec<_>>();
+        self.full_snapshot(&subjects.iter().collect::<Vec<_>>(), has_ephemeral)
+    }
+
+    /// The full current facts of `subjects` in the project graph (and the
+    /// ephemeral graph, when it may hold facts), as one snapshot.
+    fn full_snapshot(&self, subjects: &[&String], has_ephemeral: bool) -> Result<Snapshot> {
+        // Seeds whose full facts one read asks for. A seed averages ~19 current
+        // facts on the live board, so 200 stay well under quipu's 10,000-row
+        // cap; read_subjects still halves any read that is truncated or times
+        // out. At 13 per read, `sd list --all` made ~13,500 round trips for
+        // 87,782 seeds (aegis-ek4.1).
+        const PAGE_SUBJECTS_PER_READ: usize = 200;
         let mut main = Facts::new();
         let mut eph = Facts::new();
-        let subjects = ids.iter().map(|id| vocab::item_iri(id)).collect::<Vec<_>>();
-        let refs = subjects.iter().collect::<Vec<_>>();
-        // Reuse the ephemeral-graph observation from this page's metadata
-        // snapshot, never across commands or backend calls.
-        for chunk in refs.chunks(13) {
+        // Reuse the ephemeral-graph observation from this listing, never
+        // across commands or backend calls.
+        for chunk in subjects.chunks(PAGE_SUBJECTS_PER_READ) {
             self.read_subjects(&self.graph, chunk, None, &mut main)?;
             if has_ephemeral {
                 self.read_subjects(&vocab::ephemeral_graph(&self.graph), chunk, None, &mut eph)?;
@@ -312,6 +323,18 @@ impl RemoteBackend {
         } else {
             subjects.extend(req.filter.ids.iter().map(|id| vocab::item_iri(id)));
         }
+        // A listing that takes everything (limit 0, no offset) reads every
+        // candidate's full facts for its page anyway. Filter and sort on those
+        // full facts directly instead of reading the metadata first: the full
+        // facts hold every predicate the metadata read selects, so the same
+        // seeds match in the same order (aegis-ek4.1: ~10s of an export).
+        if req.limit == Some(0) && req.offset == 0 {
+            let has_ephemeral = self.ephemeral_may_hold_facts()?;
+            let full = self.full_snapshot(&subjects.iter().collect::<Vec<_>>(), has_ephemeral)?;
+            let mut page = engine::list_matches_page(req, &full)?;
+            page.dependent_counts = self.listed_dependent_counts(req, &page, has_ephemeral)?;
+            return Ok(page);
+        }
         let (compact, has_ephemeral) = self.metadata_snapshot(
             &subjects,
             &req.filter,
@@ -330,13 +353,30 @@ impl RemoteBackend {
                 })?
                 .clone();
         }
-        page.dependent_counts = self.incoming_counts_scoped(&ids, has_ephemeral)?;
+        page.dependent_counts = self.listed_dependent_counts(req, &page, has_ephemeral)?;
         Ok(page)
+    }
+
+    /// The page's dependent counts, unless the caller will not show them.
+    fn listed_dependent_counts(
+        &self,
+        req: &engine::ListReq,
+        page: &engine::Page,
+        has_ephemeral: bool,
+    ) -> Result<BTreeMap<String, usize>> {
+        if req.skip_dependent_counts {
+            return Ok(BTreeMap::new());
+        }
+        let ids = page.issues.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        self.incoming_counts_scoped(&ids, has_ephemeral)
     }
 
     pub(super) fn incoming_counts(&self, ids: &[String]) -> Result<BTreeMap<String, usize>> {
         self.incoming_counts_scoped(ids, true)
     }
+
+    /// Bound branches in one dependent-count read.
+    const COUNT_BRANCHES_PER_READ: usize = 400;
 
     fn incoming_counts_scoped(
         &self,
@@ -354,11 +394,13 @@ impl RemoteBackend {
             term::discovered_from(),
         ];
         let eph = vocab::ephemeral_graph(&self.graph);
-        let per_read = if has_ephemeral {
-            SUBJECTS_PER_READ / (edges.len() * 2)
-        } else {
-            8
-        };
+        // About 400 bound branches per read (four edges, one or two graphs),
+        // far under quipu's structural cap; each branch is an indexed lookup
+        // on a bound target, and grouped() still refuses a truncated answer.
+        // At 8 targets per read `sd list --all` made ~11,000 count reads for
+        // 87,782 seeds (aegis-ek4.1).
+        let graphs = if has_ephemeral { 2 } else { 1 };
+        let per_read = (Self::COUNT_BRANCHES_PER_READ / (edges.len() * graphs)).max(1);
         for chunk in ids.chunks(per_read) {
             let mut branches = Vec::new();
             for id in chunk {

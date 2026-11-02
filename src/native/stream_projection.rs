@@ -11,7 +11,7 @@ use crate::error::{Result, SdError};
 use crate::projection::{AppliedProgress, Projected, SourceBinding};
 use crate::quipu_backend::QuipuBackend;
 use crate::vocab;
-use quipu::applier::{Applier, Outcome};
+use quipu::applier::{Applier, BootstrapTrust, Outcome, Source};
 use quipu::asof_share::{self, Manifest};
 use quipu::Store;
 use serde_json::Value as Json;
@@ -68,7 +68,25 @@ impl StreamBoard {
         }
         let store = Store::open_in_memory()?;
         let mut applier = Applier::open(&store)?;
-        applier.trust_stream(key, &manifest.scope_digest);
+        // Signed bootstrap AND signed transaction bodies. The shared applier
+        // checks each tx body's signature (session, store, epoch, scope,
+        // frame sequence, source tx, records digest) only once bootstrap
+        // authority is fixed; a bare stream key would verify the session but
+        // apply unsigned or tampered bodies. Every field is the operator pin.
+        let manifest_sha256 = format!(
+            "sha256:{}",
+            super::attest::sha256_hex(&quipu::replica_manifest::manifest_bytes(&manifest)?)
+        );
+        applier.require_signed_bootstrap(BootstrapTrust {
+            public_key_hex: key.to_owned(),
+            source: Source {
+                store_id: binding.store_id.clone(),
+                log_epoch: binding.log_epoch.clone(),
+            },
+            scope_digest: binding.scope_digest.clone(),
+            policy_digest: binding.policy_digest.clone(),
+            manifest_sha256,
+        })?;
         Ok(Self {
             backend: QuipuBackend::read_only(store, graph),
             applier,

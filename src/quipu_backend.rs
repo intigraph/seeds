@@ -253,6 +253,123 @@ impl QuipuBackend {
 }
 
 impl Backend for QuipuBackend {
+    fn message_send(
+        &mut self,
+        ctx: &Ctx,
+        window: &str,
+        message: &crate::message::Message,
+        source: &str,
+    ) -> Result<(bool, u64)> {
+        if !self.writable {
+            return Err(SdError::failed(
+                "this store was opened read-only; a write needs a writable store",
+            ));
+        }
+        if !crate::message::is_window_of(&self.graph_iri, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}; nothing was written",
+                self.graph_iri
+            )));
+        }
+        let problems = message.problems();
+        if !problems.is_empty() {
+            return Err(SdError::usage(format!(
+                "message not written: {}",
+                problems.join("; ")
+            )));
+        }
+        let iri = crate::message::message_iri(&message.id);
+        let wg = self.store.graph_create(window)?;
+        if self.facts_of(wg, &iri)?.is_some() {
+            // Same id = same delivery key (or same recipient/time/body): already sent.
+            return Ok((false, u64::try_from(self.store.transaction_head()?).unwrap_or(0)));
+        }
+        let e = self.store.intern(&iri)?;
+        let mut datums = Vec::new();
+        for (p, o) in message.facts() {
+            datums.push(Datum {
+                entity: e,
+                attribute: self.store.intern(&p)?,
+                value: self.value_of(&o)?,
+                valid_from: ctx.now.clone(),
+                valid_to: None,
+                op: Op::Assert,
+            });
+        }
+        // The provenance record board writes carry, in the window's own side graph.
+        let pg = self.store.graph_create(&vocab::provenance_graph(window))?;
+        let write_iri = format!(
+            "urn:seeds:write:{}",
+            &crate::pendant::sha256(format!("{}\n{}\n{source}\n{iri}", ctx.now, ctx.actor).as_bytes())[7..31]
+        );
+        let w = self.store.intern(&write_iri)?;
+        let mut prov = Vec::new();
+        for (p, o) in [
+            (vocab::RDF_TYPE.to_string(), Obj::Iri(vocab::seeds("Write"))),
+            (vocab::seeds("actor"), Obj::Str(ctx.actor.clone())),
+            (vocab::seeds("source"), Obj::Str(source.to_string())),
+            (vocab::seeds("at"), Obj::Str(ctx.now.clone())),
+            (vocab::seeds("wrote"), Obj::Iri(iri.clone())),
+        ] {
+            prov.push(Datum {
+                entity: w,
+                attribute: self.store.intern(&p)?,
+                value: self.value_of(&o)?,
+                valid_from: ctx.now.clone(),
+                valid_to: None,
+                op: Op::Assert,
+            });
+        }
+        self.store.transact_graph_batches(
+            &[(pg, prov), (wg, datums)],
+            &ctx.now,
+            Some(&ctx.actor),
+            Some(source),
+        )?;
+        Ok((true, u64::try_from(self.store.transaction_head()?).unwrap_or(0)))
+    }
+
+    fn messages(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<Vec<crate::message::Message>> {
+        let mut out = Vec::new();
+        for window in windows {
+            let Some(wg) = self.store.lookup(window)? else {
+                continue;
+            };
+            let filter = recipient
+                .map(|r| format!(" ; <{}recipient> <{}>", vocab::SCHEMA, vocab::principal_iri(r)))
+                .unwrap_or_default();
+            let q = format!(
+                "SELECT ?id WHERE {{ GRAPH <{window}> {{ ?m a <{s}Message> ; <{s}identifier> ?id{filter} }} }}",
+                s = vocab::SCHEMA
+            );
+            let result = query_temporal(&self.store, &q, &Self::ctx(None)?)?;
+            for row in result.rows() {
+                let Some(Value::Str(id)) = row.get("id") else {
+                    return Err(SdError::failed(format!(
+                        "the message listing of {window} returned a row without an id"
+                    )));
+                };
+                let facts = self
+                    .facts_of(wg, &crate::message::message_iri(id))?
+                    .unwrap_or_default();
+                match crate::message::Message::from_facts(&facts) {
+                    Some(m) => out.push(m),
+                    None => {
+                        return Err(SdError::failed(format!(
+                            "message {id} in {window} is malformed; refusing a partial listing"
+                        )))
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.sent_at, &a.id).cmp(&(&b.sent_at, &b.id)));
+        Ok(out)
+    }
+
     fn project_graph(&self) -> Option<&str> {
         Some(&self.graph_iri)
     }

@@ -1079,9 +1079,10 @@ fn page_at_counted(
         seeds.truncate(limit);
     }
     let dependent_counts = if counts {
+        let all = snap.dependent_counts();
         seeds
             .iter()
-            .map(|s| (s.id.clone(), snap.dependents(&s.id).len()))
+            .map(|s| (s.id.clone(), all.get(&s.id).copied().unwrap_or(0)))
             .collect()
     } else {
         BTreeMap::new()

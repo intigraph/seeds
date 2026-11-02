@@ -264,6 +264,12 @@ fn is_query_timeout(e: &SdError) -> bool {
     e.message.starts_with(QUERY_TIMEOUT)
 }
 
+/// Whether `/query` definitely refused a read (HTTP 4xx other than 408): the
+/// server evaluated nothing it could answer, so a different read may succeed.
+fn is_query_refusal(e: &SdError) -> bool {
+    e.message.starts_with("quipu /query failed (HTTP 4")
+}
+
 fn status_error(what: &str, code: u16, body: &str) -> SdError {
     if let Some((verdict, reason)) = attestation_verdict(code, body) {
         let hint = match verdict.as_str() {
@@ -950,7 +956,7 @@ impl RemoteBackend {
     }
 
     fn subjects_scoped(&self, pattern: &str, graph: &str, at: Option<u64>) -> Result<Vec<String>> {
-        match self.subjects_keyset(pattern, at) {
+        match self.subjects_keyset(pattern, graph, at)? {
             Some(found) => Ok(found),
             None => self.subjects_bisected(pattern, graph, at),
         }
@@ -964,11 +970,19 @@ impl RemoteBackend {
     /// scans the whole pattern: on the live board `sd list --all` spent 33.6s
     /// in ~49 subject queries returning ~208k rows for 87,782 seeds. Ordered
     /// pages read each subject once (18 pages, 12.9s). A bounded `ORDER BY
-    /// ... LIMIT` is a top-k quipu answers inside its sort budget; any error,
-    /// timeout, truncation or a page that is out of order, not past the last
-    /// key, or makes no progress falls back to bisection, which then reports
-    /// any real failure itself (aegis-ek4.1).
-    fn subjects_keyset(&self, pattern: &str, at: Option<u64>) -> Option<Vec<String>> {
+    /// ... LIMIT` is a top-k quipu answers inside its sort budget. Only an
+    /// ordered read quipu refuses (an HTTP 4xx such as that budget) or a page
+    /// that cannot be trusted (out of order, not past the last key, no
+    /// progress, an invalid binding) falls back to bisection. A 5xx, an
+    /// unreachable server, a timeout, a truncated or undecodable answer is a
+    /// real failure and is reported as it is: bisection would only ask the
+    /// same failing server again and report something else (aegis-ek4.1).
+    fn subjects_keyset(
+        &self,
+        pattern: &str,
+        graph: &str,
+        at: Option<u64>,
+    ) -> Result<Option<Vec<String>>> {
         // Every ordered page scans the whole pattern, so its cost is per page:
         // use the largest page that is never also a truncated one (quipu's
         // 10,000-row cap), unless a smaller page was set (tests use tiny ones).
@@ -984,36 +998,44 @@ impl RemoteBackend {
                 .as_ref()
                 .map(|l| format!("FILTER(STR(?s) > \"{}\") ", escape_literal(l)))
                 .unwrap_or_default();
-            let (rows, truncated) = self
-                .select_marked(
-                    &format!(
-                        "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bound}}} \
-                         ORDER BY STR(?s) LIMIT {page}",
-                    ),
-                    at,
-                )
-                .ok()?;
-            if truncated || rows.len() > page {
-                return None;
+            let answer = self.select_marked(
+                &format!(
+                    "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bound}}} \
+                     ORDER BY STR(?s) LIMIT {page}",
+                ),
+                at,
+            );
+            let (rows, truncated) = match answer {
+                Err(e) if is_query_refusal(&e) => return Ok(None),
+                other => other?,
+            };
+            if truncated {
+                return Err(SdError::failed(format!(
+                    "quipu truncated an ordered subject page of {graph}; refusing a partial \
+                     snapshot"
+                )));
+            }
+            if rows.len() > page {
+                return Ok(None);
             }
             let mut last: Option<String> = None;
             for row in &rows {
                 let Some(Obj::Iri(subject)) = row.get("s") else {
-                    return None;
+                    return Ok(None);
                 };
                 if lower.as_ref().is_some_and(|l| subject <= l)
                     || last.as_ref().is_some_and(|l| subject < l)
                 {
-                    return None;
+                    return Ok(None);
                 }
                 out.insert(subject.clone());
                 last = Some(subject.clone());
             }
             if rows.len() < page {
-                return Some(out.into_iter().collect());
+                return Ok(Some(out.into_iter().collect()));
             }
             if last.is_none() || last == lower {
-                return None;
+                return Ok(None);
             }
             lower = last;
         }

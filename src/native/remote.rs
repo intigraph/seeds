@@ -989,6 +989,14 @@ impl RemoteBackend {
     /// key, or makes no progress falls back to bisection, which then reports
     /// any real failure itself (aegis-ek4.1).
     fn subjects_keyset(&self, pattern: &str, at: Option<u64>) -> Option<Vec<String>> {
+        // Every ordered page scans the whole pattern, so its cost is per page:
+        // use the largest page that is never also a truncated one (quipu's
+        // 10,000-row cap), unless a smaller page was set (tests use tiny ones).
+        let page = if self.subject_page < SUBJECT_PAGE {
+            self.subject_page
+        } else {
+            ROW_CAP - 1
+        };
         let mut out = BTreeSet::new();
         let mut lower: Option<String> = None;
         loop {
@@ -1000,13 +1008,12 @@ impl RemoteBackend {
                 .select_marked(
                     &format!(
                         "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bound}}} \
-                         ORDER BY STR(?s) LIMIT {}",
-                        self.subject_page,
+                         ORDER BY STR(?s) LIMIT {page}",
                     ),
                     at,
                 )
                 .ok()?;
-            if truncated || rows.len() > self.subject_page {
+            if truncated || rows.len() > page {
                 return None;
             }
             let mut last: Option<String> = None;
@@ -1022,7 +1029,7 @@ impl RemoteBackend {
                 out.insert(subject.clone());
                 last = Some(subject.clone());
             }
-            if rows.len() < self.subject_page {
+            if rows.len() < page {
                 return Some(out.into_iter().collect());
             }
             if last.is_none() || last == lower {

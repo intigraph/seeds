@@ -257,6 +257,13 @@ impl RemoteBackend {
     }
 
     fn page_snapshot(&self, ids: &[String], has_ephemeral: bool) -> Result<Snapshot> {
+        let subjects = ids.iter().map(|id| vocab::item_iri(id)).collect::<Vec<_>>();
+        self.full_snapshot(&subjects.iter().collect::<Vec<_>>(), has_ephemeral)
+    }
+
+    /// The full current facts of `subjects` in the project graph (and the
+    /// ephemeral graph, when it may hold facts), as one snapshot.
+    fn full_snapshot(&self, subjects: &[&String], has_ephemeral: bool) -> Result<Snapshot> {
         // Seeds whose full facts one read asks for. A seed averages ~19 current
         // facts on the live board, so 200 stay well under quipu's 10,000-row
         // cap; read_subjects still halves any read that is truncated or times
@@ -265,11 +272,9 @@ impl RemoteBackend {
         const PAGE_SUBJECTS_PER_READ: usize = 200;
         let mut main = Facts::new();
         let mut eph = Facts::new();
-        let subjects = ids.iter().map(|id| vocab::item_iri(id)).collect::<Vec<_>>();
-        let refs = subjects.iter().collect::<Vec<_>>();
-        // Reuse the ephemeral-graph observation from this page's metadata
-        // snapshot, never across commands or backend calls.
-        for chunk in refs.chunks(PAGE_SUBJECTS_PER_READ) {
+        // Reuse the ephemeral-graph observation from this listing, never
+        // across commands or backend calls.
+        for chunk in subjects.chunks(PAGE_SUBJECTS_PER_READ) {
             self.read_subjects(&self.graph, chunk, None, &mut main)?;
             if has_ephemeral {
                 self.read_subjects(&vocab::ephemeral_graph(&self.graph), chunk, None, &mut eph)?;
@@ -317,6 +322,19 @@ impl RemoteBackend {
             }
         } else {
             subjects.extend(req.filter.ids.iter().map(|id| vocab::item_iri(id)));
+        }
+        // A listing that takes everything (limit 0, no offset) reads every
+        // candidate's full facts for its page anyway. Filter and sort on those
+        // full facts directly instead of reading the metadata first: the full
+        // facts hold every predicate the metadata read selects, so the same
+        // seeds match in the same order (aegis-ek4.1: ~10s of an export).
+        if req.limit == Some(0) && req.offset == 0 {
+            let has_ephemeral = self.ephemeral_may_hold_facts()?;
+            let full = self.full_snapshot(&subjects.iter().collect::<Vec<_>>(), has_ephemeral)?;
+            let mut page = engine::list_matches_page(req, &full)?;
+            let ids = page.issues.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+            page.dependent_counts = self.incoming_counts_scoped(&ids, has_ephemeral)?;
+            return Ok(page);
         }
         let (compact, has_ephemeral) = self.metadata_snapshot(
             &subjects,

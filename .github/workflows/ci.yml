@@ -49,8 +49,7 @@ jobs:
           set -euo pipefail
           cargo package --no-verify --locked
           crate=$(ls target/package/seeds-ai-*.crate)
-          tar -xzOf "$crate" "$(basename "$crate" .crate)/Cargo.toml" > packaged.toml
-          if grep -nE '^git *=' packaged.toml; then
+          if tar -xzOf "$crate" "$(basename "$crate" .crate)/Cargo.toml" | grep -nE '^git *='; then
             echo "packaged manifest still names a git dependency" >&2; exit 1
           fi
           tar -xzOf "$crate" "$(basename "$crate" .crate)/Cargo.lock" \

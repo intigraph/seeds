@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - *(share)* Admit tracked agent-file aliases in the release snapshot (#215) ([2be764c](https://github.com/scbrown/seeds/commit/2be764ca16f07fa8ffe9b0c628973f174f78f2a1))
-- *(reads)* Pin quipu to main and require signed transaction bodies (xdvg.4) (#216) ([a609176](https://github.com/scbrown/seeds/commit/a6091768dfd9633b0ba01d7ad445773d5e7124d3))
+- *(reads)* Pin quipu to main and require signed transaction bodies (#216) ([a609176](https://github.com/scbrown/seeds/commit/a6091768dfd9633b0ba01d7ad445773d5e7124d3))
 - *(release)* Depend on the published quipu-ai 0.16.6, not a git pin (#217) ([0bbc868](https://github.com/scbrown/seeds/commit/0bbc868a6ed025765003557f6979e29e2009d1fc))
 
 ## [0.10.1] - 2026-10-30

@@ -2072,7 +2072,8 @@ dependencies = [
 [[package]]
 name = "quipu-ai"
 version = "0.16.6"
-source = "git+https://github.com/intigraph/quipu?rev=d707ec62fe105f3296143321e681aec8daa46f28#d707ec62fe105f3296143321e681aec8daa46f28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc5bd50f55c1ee6403e668e43e451f1ff7b494cf44c77bd69ed4bb8a9a3fc93b"
 dependencies = [
  "base64 0.22.1",
  "bigdecimal",
@@ -2092,7 +2093,6 @@ dependencies = [
  "oxttl",
  "parking_lot",
  "petgraph 0.7.1",
- "quipu-signing",
  "regex",
  "ring",
  "rudof_iri",
@@ -2111,17 +2111,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml 0.8.23",
-]
-
-[[package]]
-name = "quipu-signing"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9590d3ae3ad7383f3b3325fd7649e873f26026460fc9767251028aa2a00c6575"
-dependencies = [
- "hex",
- "ring",
- "sha2",
 ]
 
 [[package]]

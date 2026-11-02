@@ -146,7 +146,10 @@ fn an_untrusted_ordered_page_falls_back_to_bisection() {
     const A: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:a"}}]}}"#;
     const C: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:c"}}]}}"#;
     const Z: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:z"}}]}}"#;
-    for (status, keyset) in [(200, UNORDERED), (400, r#"{"error":"ORDER BY retained key budget exceeded"}"#)] {
+    for (status, keyset) in [
+        (200, UNORDERED),
+        (400, r#"{"error":"ORDER BY retained key budget exceeded"}"#),
+    ] {
         let (base, worker) = server(vec![
             (200, "ok"),
             (status, keyset),
@@ -167,7 +170,9 @@ fn an_untrusted_ordered_page_falls_back_to_bisection() {
         );
         let requests = worker.join().unwrap();
         assert!(requests[1].contains("ORDER BY"));
-        assert!(requests[2..].iter().all(|request| !request.contains("ORDER BY")));
+        assert!(requests[2..]
+            .iter()
+            .all(|request| !request.contains("ORDER BY")));
     }
 }
 

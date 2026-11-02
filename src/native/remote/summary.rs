@@ -497,7 +497,11 @@ impl RemoteBackend {
 
     fn filter_fields(&self, f: &Filter) -> Result<String> {
         let (drive, fields) = self.filter_parts(f)?;
-        Ok(if drive.is_empty() { fields } else { format!("{fields} {drive}") })
+        Ok(if drive.is_empty() {
+            fields
+        } else {
+            format!("{fields} {drive}")
+        })
     }
 
     /// Required triples that select an explicit assignee and/or a single

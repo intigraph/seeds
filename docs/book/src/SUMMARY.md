@@ -41,6 +41,7 @@
   - [dep](verbs/dep.md)
   - [External prerequisites and unlock events](external-blockers.md)
   - [comments](verbs/comments.md)
+  - [msg](verbs/msg.md)
   - [export, import, sync](verbs/sync.md)
   - [version, where, info](verbs/about.md)
   - [config](verbs/config.md)

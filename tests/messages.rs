@@ -35,7 +35,15 @@ fn msg(key: &str, to: &str, at: &str, text: &str) -> Message {
 fn messages_land_in_their_week_window_and_never_on_the_board() {
     let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
     let c = ctx("2026-11-02T04:00:00Z");
-    engine::create(&mut b, &c, &CreateReq { title: "real work".into(), ..Default::default() }).unwrap();
+    engine::create(
+        &mut b,
+        &c,
+        &CreateReq {
+            title: "real work".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let before = b.snapshot(None).unwrap();
 
     let at = "2026-11-02T04:00:00Z";

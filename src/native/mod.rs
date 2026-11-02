@@ -34,7 +34,7 @@ use crate::quipu_backend::QuipuBackend;
 use crate::sync;
 use cli::{
     BlockersCommand, Cli, Command, CommentsCommand, ConfigCommand, DepCommand, EpicCommand,
-    LabelCommand,
+    LabelCommand, MsgCommand,
 };
 use config::{Location, Resolved};
 use serde_json::json;
@@ -3588,6 +3588,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             "export, import, sync, merge-driver, completions, init, version, where and the mapped verbs are handled before dispatch",
         )),
         Command::Label { command } => label(json, at, ctx, b, command),
+        Command::Msg { command } => msg(json, ctx, b, command),
         Command::Comments { command } => match command {
             CommentsCommand::Add {
                 id,
@@ -4206,5 +4207,138 @@ mod selected_credential_tests {
             .unwrap_err()
             .to_string()
             .contains("selected credential unavailable"));
+    }
+}
+
+/// `sd msg ...` (aegis-snq): crew mail in per-week window graphs.
+fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Result<Outcome> {
+    use crate::message::{message_id, recent_windows, window_graph, Message};
+    let graph = b
+        .project_graph()
+        .ok_or_else(|| SdError::usage("sd msg needs a project graph (a quipu store or server)"))?
+        .to_string();
+    let windows = |weeks: u32| {
+        recent_windows(&graph, &ctx.now, weeks).ok_or_else(|| {
+            SdError::failed(format!("the clock {:?} is not a valid instant", ctx.now))
+        })
+    };
+    let view = |m: &Message| {
+        serde_json::json!({
+            "id": m.id, "to": m.recipient, "from": m.sender, "sent_at": m.sent_at,
+            "kind": m.kind, "key": m.delivery_key, "about": m.about, "text": m.text,
+        })
+    };
+    match command {
+        MsgCommand::Send {
+            to,
+            from,
+            kind,
+            key,
+            about,
+            text,
+            message,
+            file,
+        } => {
+            let given = [!text.is_empty(), file.is_some(), message.is_some()]
+                .iter()
+                .filter(|x| **x)
+                .count();
+            if given != 1 {
+                return Err(SdError::usage(
+                    "give the message text exactly one way: positional, --message or --file",
+                ));
+            }
+            let body = match (file, message) {
+                (Some(f), _) => read_text(f)?,
+                (None, Some(m)) => m.clone(),
+                (None, None) => text.join(" "),
+            };
+            let sent_at =
+                crate::model::canonical_time(&ctx.now, false).unwrap_or_else(|| ctx.now.clone());
+            let m = Message {
+                id: message_id(key.as_deref(), to, &sent_at, &body),
+                recipient: to.clone(),
+                sender: Some(from.clone().unwrap_or_else(|| ctx.actor.clone())),
+                sent_at: sent_at.clone(),
+                text: body,
+                kind: kind.clone(),
+                delivery_key: key.clone(),
+                about: about.clone(),
+            };
+            let window = window_graph(&graph, &sent_at).ok_or_else(|| {
+                SdError::failed(format!("the clock {sent_at:?} is not a valid instant"))
+            })?;
+            let (written, tx) = b.message_send(ctx, &window, &m, "sd msg send")?;
+            let text = format!(
+                "{} {} to {} in {}{}",
+                if written { "sent" } else { "already sent" },
+                m.id,
+                m.recipient,
+                window,
+                tx_note(tx)
+            );
+            let mut v = view(&m);
+            v["window"] = serde_json::json!(window);
+            v["written"] = serde_json::json!(written);
+            Ok(ok(json, output::with_tx(v, Some(tx)), text, vec![]))
+        }
+        MsgCommand::List { to, weeks } => {
+            let ms = b.messages(&windows(*weeks)?, to.as_deref())?;
+            let text = if ms.is_empty() {
+                "no messages".to_string()
+            } else {
+                ms.iter()
+                    .map(|m| {
+                        format!(
+                            "{} {} -> {} [{}] {}",
+                            m.id,
+                            m.sender.as_deref().unwrap_or("?"),
+                            m.recipient,
+                            m.sent_at,
+                            crate::message::label_preview(&m.text)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok(ok(
+                json,
+                serde_json::json!(ms.iter().map(view).collect::<Vec<_>>()),
+                text,
+                vec![],
+            ))
+        }
+        MsgCommand::Count { to, weeks } => {
+            let n = b.messages(&windows(*weeks)?, to.as_deref())?.len();
+            Ok(ok(
+                json,
+                serde_json::json!({ "count": n }),
+                n.to_string(),
+                vec![],
+            ))
+        }
+        MsgCommand::Show { id, weeks } => {
+            let ms = b.messages(&windows(*weeks)?, None)?;
+            match ms.iter().find(|m| &m.id == id) {
+                Some(m) => Ok(ok(
+                    json,
+                    view(m),
+                    format!(
+                        "{} from {} to {} at {} ({})\n{}",
+                        m.id,
+                        m.sender.as_deref().unwrap_or("?"),
+                        m.recipient,
+                        m.sent_at,
+                        m.kind,
+                        m.text
+                    ),
+                    vec![],
+                )),
+                None => Err(SdError::new(
+                    crate::error::ErrorKind::NotFound,
+                    format!("no message {id} in the last {weeks} week(s)"),
+                )),
+            }
+        }
     }
 }

@@ -48,7 +48,12 @@ fn seeds(local: &str) -> String {
 
 /// The id of a message: derived from the delivery key when one is given, so a
 /// retried send names the same message; else from recipient, time and body.
-pub fn message_id(delivery_key: Option<&str>, recipient: &str, sent_at: &str, text: &str) -> String {
+pub fn message_id(
+    delivery_key: Option<&str>,
+    recipient: &str,
+    sent_at: &str,
+    text: &str,
+) -> String {
     let mut h = Sha256::new();
     match delivery_key {
         Some(k) => {
@@ -62,7 +67,12 @@ pub fn message_id(delivery_key: Option<&str>, recipient: &str, sent_at: &str, te
             }
         }
     }
-    let hex: String = h.finalize().iter().take(10).map(|b| format!("{b:02x}")).collect();
+    let hex: String = h
+        .finalize()
+        .iter()
+        .take(10)
+        .map(|b| format!("{b:02x}"))
+        .collect();
     format!("msg-{hex}")
 }
 
@@ -126,7 +136,51 @@ fn weeks_in_year(y: i64) -> u32 {
 /// The window graph a message sent at `sent_at` belongs to.
 pub fn window_graph(project_graph: &str, sent_at: &str) -> Option<String> {
     let (y, w) = iso_week(sent_at)?;
-    Some(format!("{}/messages/{y}-W{w:02}", project_graph.trim_end_matches('/')))
+    Some(format!(
+        "{}/messages/{y}-W{w:02}",
+        project_graph.trim_end_matches('/')
+    ))
+}
+
+/// Days since 1970-01-01 of a valid `YYYY-MM-DD…` instant.
+fn days_of(instant: &str) -> Option<i64> {
+    iso_week(instant)?; // validates the date
+    let y: i64 = instant[..4].parse().ok()?;
+    let m: i64 = instant[5..7].parse().ok()?;
+    let d: i64 = instant[8..10].parse().ok()?;
+    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m - 3) + 2) / 5 + d - 1;
+    Some(era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468)
+}
+
+/// `YYYY-MM-DD` of days since 1970-01-01 (civil-from-days).
+fn date_of(days: i64) -> String {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The windows of the `weeks` ISO weeks ending with the one holding `now`,
+/// newest first. `weeks` 0 is treated as 1.
+pub fn recent_windows(project_graph: &str, now: &str, weeks: u32) -> Option<Vec<String>> {
+    let today = days_of(now)?;
+    (0..weeks.max(1))
+        .map(|i| {
+            window_graph(
+                project_graph,
+                &format!("{}T00:00:00Z", date_of(today - 7 * i64::from(i))),
+            )
+        })
+        .collect()
 }
 
 /// Whether `graph` is a message window of `project_graph`.
@@ -173,7 +227,10 @@ impl Message {
             p.push(format!("kind {:?} is not one of note, alert", self.kind));
         }
         if iso_week(&self.sent_at).is_none() || !self.sent_at.ends_with('Z') {
-            p.push(format!("sent_at {:?} is not a UTC xsd:dateTime", self.sent_at));
+            p.push(format!(
+                "sent_at {:?} is not a UTC xsd:dateTime",
+                self.sent_at
+            ));
         }
         p
     }
@@ -183,8 +240,14 @@ impl Message {
         let mut f: Vec<Fact> = vec![
             (vocab::RDF_TYPE.into(), Obj::Iri(schema("Message"))),
             (schema("identifier"), Obj::Str(self.id.clone())),
-            (vocab::RDFS_LABEL.into(), Obj::Str(label_preview(&self.text))),
-            (schema("recipient"), Obj::Iri(vocab::principal_iri(&self.recipient))),
+            (
+                vocab::RDFS_LABEL.into(),
+                Obj::Str(label_preview(&self.text)),
+            ),
+            (
+                schema("recipient"),
+                Obj::Iri(vocab::principal_iri(&self.recipient)),
+            ),
             (
                 schema("dateSent"),
                 Obj::Typed {
@@ -216,7 +279,9 @@ impl Message {
             match (p.as_str(), o) {
                 (vocab::RDF_TYPE, Obj::Iri(c)) if *c == schema("Message") => typed = true,
                 (p, Obj::Str(s)) if p == schema("identifier") => id = Some(s.clone()),
-                (p, Obj::Iri(i)) if p == schema("recipient") => recipient = vocab::principal_name(i),
+                (p, Obj::Iri(i)) if p == schema("recipient") => {
+                    recipient = vocab::principal_name(i)
+                }
                 (p, Obj::Iri(i)) if p == schema("sender") => sender = vocab::principal_name(i),
                 (p, Obj::Typed { lexical, .. } | Obj::Str(lexical)) if p == schema("dateSent") => {
                     sent_at = Some(lexical.clone())
@@ -258,15 +323,20 @@ mod tests {
     fn iso_weeks_match_the_calendar_including_year_edges() {
         for (day, want) in [
             ("2026-11-02T04:00:00Z", (2026, 45)),
-            ("2026-01-01T00:00:00Z", (2026, 1)), // Thursday
+            ("2026-01-01T00:00:00Z", (2026, 1)),  // Thursday
             ("2027-01-01T00:00:00Z", (2026, 53)), // Friday of 2026-W53
-            ("2024-12-30T00:00:00Z", (2025, 1)), // Monday of 2025-W01
+            ("2024-12-30T00:00:00Z", (2025, 1)),  // Monday of 2025-W01
             ("2021-01-03T00:00:00Z", (2020, 53)),
             ("2024-02-29T00:00:00Z", (2024, 9)),
         ] {
             assert_eq!(iso_week(day), Some(want), "{day}");
         }
-        for bad in ["2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "nope", "2026-1-1"] {
+        for bad in [
+            "2026-02-30T00:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "nope",
+            "2026-1-1",
+        ] {
             assert_eq!(iso_week(bad), None, "{bad}");
         }
     }
@@ -279,8 +349,36 @@ mod tests {
         assert!(is_window_of(g, &w));
         assert!(!w.contains('#'));
         assert!(!is_window_of(g, g));
-        assert!(!is_window_of(g, "https://seeds.local/project/aegis#seeds-ephemeral"));
-        assert!(!is_window_of(g, "https://seeds.local/project/aegis/messages/2026-W4"));
+        assert!(!is_window_of(
+            g,
+            "https://seeds.local/project/aegis#seeds-ephemeral"
+        ));
+        assert!(!is_window_of(
+            g,
+            "https://seeds.local/project/aegis/messages/2026-W4"
+        ));
+    }
+
+    #[test]
+    fn recent_windows_step_back_whole_weeks_across_a_year_edge() {
+        let g = "https://seeds.local/project/aegis";
+        let w = recent_windows(g, "2027-01-05T10:00:00Z", 3).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                format!("{g}/messages/2027-W01"),
+                format!("{g}/messages/2026-W53"),
+                format!("{g}/messages/2026-W52"),
+            ]
+        );
+        assert_eq!(
+            recent_windows(g, "2026-11-02T04:00:00Z", 0).unwrap().len(),
+            1
+        );
+        assert!(recent_windows(g, "bad", 2).is_none());
+        for d in [0, 1, 59, 365, 10_957, 20_759, -1] {
+            assert_eq!(days_of(&format!("{}T00:00:00Z", date_of(d))), Some(d));
+        }
     }
 
     #[test]

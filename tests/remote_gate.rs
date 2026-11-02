@@ -177,7 +177,11 @@ fn remote_gate_admits_producer_messages_and_refuses_malformed_ones() {
         data
     };
     let good = m.facts();
-    assert!(quipu::validate_shapes(shapes, &render(&good)).unwrap().conforms);
+    assert!(
+        quipu::validate_shapes(shapes, &render(&good))
+            .unwrap()
+            .conforms
+    );
     // Each required field, once removed, is refused.
     for predicate in [
         "https://schema.org/identifier",
@@ -186,9 +190,15 @@ fn remote_gate_admits_producer_messages_and_refuses_malformed_ones() {
         "https://schema.org/dateSent",
         "https://schema.org/text",
     ] {
-        let without: Vec<_> = good.iter().filter(|(p, _)| p != predicate).cloned().collect();
+        let without: Vec<_> = good
+            .iter()
+            .filter(|(p, _)| p != predicate)
+            .cloned()
+            .collect();
         assert!(
-            !quipu::validate_shapes(shapes, &render(&without)).unwrap().conforms,
+            !quipu::validate_shapes(shapes, &render(&without))
+                .unwrap()
+                .conforms,
             "missing {predicate} must be refused"
         );
     }
@@ -199,11 +209,19 @@ fn remote_gate_admits_producer_messages_and_refuses_malformed_ones() {
             *o = seeds::model::Obj::Str("task".into());
         }
     }
-    assert!(!quipu::validate_shapes(shapes, &render(&bad_kind)).unwrap().conforms);
+    assert!(
+        !quipu::validate_shapes(shapes, &render(&bad_kind))
+            .unwrap()
+            .conforms
+    );
     let mut two = good.clone();
     two.push((
         "https://schema.org/recipient".into(),
         seeds::model::Obj::Iri(seeds::vocab::principal_iri("tim")),
     ));
-    assert!(!quipu::validate_shapes(shapes, &render(&two)).unwrap().conforms);
+    assert!(
+        !quipu::validate_shapes(shapes, &render(&two))
+            .unwrap()
+            .conforms
+    );
 }

@@ -282,7 +282,10 @@ impl Backend for QuipuBackend {
         let wg = self.store.graph_create(window)?;
         if self.facts_of(wg, &iri)?.is_some() {
             // Same id = same delivery key (or same recipient/time/body): already sent.
-            return Ok((false, u64::try_from(self.store.transaction_head()?).unwrap_or(0)));
+            return Ok((
+                false,
+                u64::try_from(self.store.transaction_head()?).unwrap_or(0),
+            ));
         }
         let e = self.store.intern(&iri)?;
         let mut datums = Vec::new();
@@ -300,7 +303,9 @@ impl Backend for QuipuBackend {
         let pg = self.store.graph_create(&vocab::provenance_graph(window))?;
         let write_iri = format!(
             "urn:seeds:write:{}",
-            &crate::pendant::sha256(format!("{}\n{}\n{source}\n{iri}", ctx.now, ctx.actor).as_bytes())[7..31]
+            &crate::pendant::sha256(
+                format!("{}\n{}\n{source}\n{iri}", ctx.now, ctx.actor).as_bytes()
+            )[7..31]
         );
         let w = self.store.intern(&write_iri)?;
         let mut prov = Vec::new();
@@ -326,7 +331,10 @@ impl Backend for QuipuBackend {
             Some(&ctx.actor),
             Some(source),
         )?;
-        Ok((true, u64::try_from(self.store.transaction_head()?).unwrap_or(0)))
+        Ok((
+            true,
+            u64::try_from(self.store.transaction_head()?).unwrap_or(0),
+        ))
     }
 
     fn messages(
@@ -340,7 +348,13 @@ impl Backend for QuipuBackend {
                 continue;
             };
             let filter = recipient
-                .map(|r| format!(" ; <{}recipient> <{}>", vocab::SCHEMA, vocab::principal_iri(r)))
+                .map(|r| {
+                    format!(
+                        " ; <{}recipient> <{}>",
+                        vocab::SCHEMA,
+                        vocab::principal_iri(r)
+                    )
+                })
                 .unwrap_or_default();
             let q = format!(
                 "SELECT ?id WHERE {{ GRAPH <{window}> {{ ?m a <{s}Message> ; <{s}identifier> ?id{filter} }} }}",

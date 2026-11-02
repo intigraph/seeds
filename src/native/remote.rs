@@ -1390,6 +1390,184 @@ fn sparql_obj(o: &Obj) -> String {
 }
 
 impl Backend for RemoteBackend {
+    fn message_send(
+        &mut self,
+        ctx: &Ctx,
+        window: &str,
+        message: &crate::message::Message,
+        source: &str,
+    ) -> Result<(bool, u64)> {
+        if !crate::message::is_window_of(&self.graph, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}; nothing was sent",
+                self.graph
+            )));
+        }
+        let problems = message.problems();
+        if !problems.is_empty() {
+            return Err(SdError::usage(format!(
+                "message not sent: {}",
+                problems.join("; ")
+            )));
+        }
+        // Register the window and its provenance side graph first: a WHERE
+        // only sees registered graphs, so the absence guard below would pass
+        // vacuously on an unregistered window.
+        let pg = provenance_graph(window);
+        let existing = self.graph_iris();
+        for g in [window.to_string(), pg.clone()] {
+            if !existing.as_ref().is_some_and(|e| e.contains(&g)) {
+                self.post(
+                    "/graph/create",
+                    "application/json",
+                    &json!({ "graph": g }).to_string(),
+                    true,
+                )?;
+            }
+        }
+        let iri = crate::message::message_iri(&message.id);
+        let write_iri = format!(
+            "urn:seeds:write:{}",
+            &crate::pendant::sha256(
+                format!("{}\n{}\n{source}\n{iri}", ctx.now, ctx.actor).as_bytes()
+            )[7..31]
+        );
+        let triples = |subject: &str, facts: &[Fact]| -> String {
+            facts
+                .iter()
+                .map(|(p, o)| format!("<{subject}> <{p}> {} . ", sparql_obj(o)))
+                .collect()
+        };
+        let record: Vec<Fact> = vec![
+            (
+                crate::vocab::RDF_TYPE.into(),
+                Obj::Iri(crate::vocab::seeds("Write")),
+            ),
+            (crate::vocab::seeds("actor"), Obj::Str(ctx.actor.clone())),
+            (crate::vocab::seeds("source"), Obj::Str(source.to_string())),
+            (crate::vocab::seeds("at"), Obj::Str(ctx.now.clone())),
+            (crate::vocab::seeds("wrote"), Obj::Iri(iri.clone())),
+        ];
+        let update = format!(
+            "INSERT {{ GRAPH <{window}> {{ {} }} GRAPH <{pg}> {{ {} }} }} WHERE {{ FILTER NOT EXISTS {{ GRAPH <{window}> {{ <{iri}> a <{}Message> }} }} }}",
+            triples(&iri, &message.facts()),
+            triples(&write_iri, &record),
+            crate::vocab::SCHEMA
+        );
+        let form = format!(
+            "update={}&actor={}&source={}",
+            form_encode(&update),
+            form_encode(&ctx.actor),
+            form_encode(source)
+        );
+        if form.len() > self.max_write_bytes {
+            return Err(SdError::refused(format!(
+                "{}: this message is {} bytes and the limit is {} (SEEDS_MAX_WRITE_BYTES); nothing was sent",
+                crate::backend::TOO_LARGE,
+                form.len(),
+                self.max_write_bytes
+            )));
+        }
+        match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
+            Ok(body) => match update_report(&body) {
+                // asserted > 0 exactly when the absence guard matched.
+                Some((changed, tx)) => Ok((changed > 0, tx.unwrap_or(0))),
+                None => Err(SdError::new(
+                    ErrorKind::Indeterminate,
+                    format!(
+                        "the server took the message write but did not report what it committed; \
+                         check `sd msg show {}` before resending",
+                        message.id
+                    ),
+                )),
+            },
+            Err((false, e)) => Err(e),
+            Err((true, e)) => {
+                // The request may have landed: look before saying anything.
+                match self.messages(&[window.to_string()], Some(&message.recipient)) {
+                    Ok(found) if found.iter().any(|m| m.id == message.id) => {
+                        eprintln!(
+                            "sd: the server's response was lost ({}); a read-back shows the message landed",
+                            e.message
+                        );
+                        Ok((true, 0))
+                    }
+                    Ok(_) => Err(SdError::new(
+                        ErrorKind::Indeterminate,
+                        format!(
+                            "the message's outcome is UNKNOWN: the response was lost ({}) and a \
+                             read-back does not show {} yet. A resend with the same delivery key \
+                             is safe: it cannot write a second copy.",
+                            e.message, message.id
+                        ),
+                    )),
+                    Err(read) => Err(SdError::new(
+                        ErrorKind::Indeterminate,
+                        format!(
+                            "the message's outcome is UNKNOWN: the response was lost ({}) and the \
+                             read-back failed ({}). A resend with the same delivery key is safe.",
+                            e.message, read.message
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+
+    fn messages(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<Vec<crate::message::Message>> {
+        let s = crate::vocab::SCHEMA;
+        let mut out = Vec::new();
+        for window in windows {
+            if !crate::message::is_window_of(&self.graph, window) {
+                return Err(SdError::usage(format!(
+                    "{window} is not a message window of {}",
+                    self.graph
+                )));
+            }
+            let filter = recipient
+                .map(|r| format!(" ; <{s}recipient> <{}>", crate::vocab::principal_iri(r)))
+                .unwrap_or_default();
+            let q = format!(
+                "SELECT ?m ?p ?o WHERE {{ GRAPH <{window}> {{ ?m a <{s}Message>{filter} . ?m ?p ?o }} }}"
+            );
+            let (rows, truncated) = self.select_marked(&q, None)?;
+            if truncated {
+                return Err(SdError::failed(format!(
+                    "the server cut the message listing of {window} short; refusing a partial answer"
+                )));
+            }
+            let mut by: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
+            for row in rows {
+                let (Some(Obj::Iri(m)), Some(Obj::Iri(p)), Some(o)) =
+                    (row.get("m"), row.get("p"), row.get("o"))
+                else {
+                    return Err(SdError::failed(format!(
+                        "a malformed row in the message listing of {window}"
+                    )));
+                };
+                by.entry(m.clone())
+                    .or_default()
+                    .push((p.clone(), o.clone()));
+            }
+            for (m, facts) in by {
+                match crate::message::Message::from_facts(&facts) {
+                    Some(msg) => out.push(msg),
+                    None => {
+                        return Err(SdError::failed(format!(
+                            "{m} in {window} is malformed; refusing a partial listing"
+                        )))
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.sent_at, &a.id).cmp(&(&b.sent_at, &b.id)));
+        Ok(out)
+    }
+
     fn spec_change_ids(&self) -> Result<Vec<String>> {
         let branches: Vec<_> = [&self.graph, &vocab::ephemeral_graph(&self.graph)]
             .iter()

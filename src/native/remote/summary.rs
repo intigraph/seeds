@@ -434,15 +434,12 @@ impl RemoteBackend {
         Ok(())
     }
 
-    // Ephemeral seeds replace project seeds of the same id, as Snapshot does.
-    fn effective_seeds(&self, fields: &str) -> String {
-        self.effective_seeds_driven("", fields)
-    }
-
-    /// As [`Self::effective_seeds`], with required `drive` triples placed
-    /// BEFORE the work-item type triple. Quipu evaluates a pattern holding a
-    /// type triple in written order, so a selective constant written first is
-    /// what lets it start from the cohort instead of every seed (aegis-efa).
+    /// Ephemeral seeds replace project seeds of the same id, as Snapshot does.
+    ///
+    /// Required `drive` triples go BEFORE the work-item type triple: Quipu
+    /// evaluates a pattern holding a type triple in written order, so a
+    /// selective constant written first is what lets it start from the cohort
+    /// instead of every seed (aegis-efa).
     fn effective_seeds_driven(&self, drive: &str, fields: &str) -> String {
         let eph = vocab::ephemeral_graph(&self.graph);
         let base = format!(
@@ -509,7 +506,7 @@ impl RemoteBackend {
     /// the default priority (2, applied to seeds without one) is excluded.
     fn filter_drive(f: &Filter) -> Result<(String, bool, bool)> {
         let mut drive = String::new();
-        let assignee = matches!(&f.assignee, Some(_)) && !f.unassigned;
+        let assignee = f.assignee.is_some() && !f.unassigned;
         if let (true, Some(person)) = (assignee, &f.assignee) {
             drive += &format!(
                 "VALUES ?assignee {{ <{}> {} }} ?s <{}> ?assignee .",

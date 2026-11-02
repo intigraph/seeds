@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-11-02
+
+### Perf
+
+- *(list)* Sd list --all on the live board in ~32s instead of ~620s (#219) ([53ca1d1](https://github.com/scbrown/seeds/commit/53ca1d117cb9e5a200ecf26605b6e668a88c693d))
+
 ## [0.10.3] - 2026-11-02
 
 ### Perf

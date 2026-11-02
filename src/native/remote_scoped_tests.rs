@@ -477,6 +477,28 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
             f.labels = vec!["{ ?s".into(), "?s".into()];
         }),
         f(&|f: &mut Filter| f.unassigned = true),
+        // Driven cohorts (aegis-efa): an explicit assignee and a single
+        // non-default priority become required leading triples, so every
+        // combination must still match the engine, including the default
+        // priority, an assignee with no seeds and the contradictory pairs.
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.priority = Some("1".into());
+        }),
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.priority = Some("2".into());
+        }),
+        f(&|f: &mut Filter| f.priority = Some("0".into())),
+        f(&|f: &mut Filter| f.assignee = Some("nobody".into())),
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.unassigned = true;
+        }),
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.priority_min = Some("1".into());
+        }),
         f(&|f: &mut Filter| f.labels = vec!["infra".into()]),
         f(&|f: &mut Filter| f.labels = vec!["infra".into(), "cutover".into()]),
         f(&|f: &mut Filter| f.labels_any = vec!["cutover".into()]),

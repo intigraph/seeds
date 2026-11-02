@@ -41,6 +41,19 @@ jobs:
       - run: cargo test --no-default-features
       - name: Publishing guard refuses what it must
         run: bash scripts/ci/crates-publish-guard.sh --selftest
+      # crates.io refuses a git-only dependency, and that used to surface only
+      # in the release run (aegis-67v3). Package on every PR instead: no build,
+      # and the emitted manifest must resolve quipu-ai from the registry.
+      - name: Crate packages with registry-only dependencies
+        run: |
+          set -euo pipefail
+          cargo package --no-verify --locked
+          crate=$(ls target/package/seeds-ai-*.crate)
+          if tar -xzOf "$crate" "$(basename "$crate" .crate)/Cargo.toml" | grep -nE '^git *='; then
+            echo "packaged manifest still names a git dependency" >&2; exit 1
+          fi
+          tar -xzOf "$crate" "$(basename "$crate" .crate)/Cargo.lock" \
+            | grep -A2 '^name = "quipu-ai"' | grep -q '^source = "registry+'
       - name: Locked semver baseline provenance controls
         run: python3 -m unittest discover -s scripts/ci/tests -p 'test_locked_semver.py'
       - name: Prove the built binary round-trips create -> dep add -> ready -> close

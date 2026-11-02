@@ -970,6 +970,74 @@ impl RemoteBackend {
     }
 
     fn subjects_scoped(&self, pattern: &str, graph: &str, at: Option<u64>) -> Result<Vec<String>> {
+        match self.subjects_keyset(pattern, at) {
+            Some(found) => Ok(found),
+            None => self.subjects_bisected(pattern, graph, at),
+        }
+    }
+
+    /// The subjects matching `pattern`, read in key order one page after
+    /// another (`STR(?s) > last ... ORDER BY STR(?s) LIMIT page`), or `None`
+    /// to fall back to [`Self::subjects_bisected`].
+    ///
+    /// Bisection re-reads every full page after splitting it, and each page
+    /// scans the whole pattern: on the live board `sd list --all` spent 33.6s
+    /// in ~49 subject queries returning ~208k rows for 87,782 seeds. Ordered
+    /// pages read each subject once (18 pages, 12.9s). A bounded `ORDER BY
+    /// ... LIMIT` is a top-k quipu answers inside its sort budget; any error,
+    /// timeout, truncation or a page that is out of order, not past the last
+    /// key, or makes no progress falls back to bisection, which then reports
+    /// any real failure itself (aegis-ek4.1).
+    fn subjects_keyset(&self, pattern: &str, at: Option<u64>) -> Option<Vec<String>> {
+        let mut out = BTreeSet::new();
+        let mut lower: Option<String> = None;
+        loop {
+            let bound = lower
+                .as_ref()
+                .map(|l| format!("FILTER(STR(?s) > \"{}\") ", escape_literal(l)))
+                .unwrap_or_default();
+            let (rows, truncated) = self
+                .select_marked(
+                    &format!(
+                        "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bound}}} \
+                         ORDER BY STR(?s) LIMIT {}",
+                        self.subject_page,
+                    ),
+                    at,
+                )
+                .ok()?;
+            if truncated || rows.len() > self.subject_page {
+                return None;
+            }
+            let mut last: Option<String> = None;
+            for row in &rows {
+                let Some(Obj::Iri(subject)) = row.get("s") else {
+                    return None;
+                };
+                if lower.as_ref().is_some_and(|l| subject <= l)
+                    || last.as_ref().is_some_and(|l| subject < l)
+                {
+                    return None;
+                }
+                out.insert(subject.clone());
+                last = Some(subject.clone());
+            }
+            if rows.len() < self.subject_page {
+                return Some(out.into_iter().collect());
+            }
+            if last.is_none() || last == lower {
+                return None;
+            }
+            lower = last;
+        }
+    }
+
+    fn subjects_bisected(
+        &self,
+        pattern: &str,
+        graph: &str,
+        at: Option<u64>,
+    ) -> Result<Vec<String>> {
         let mut out = BTreeSet::new();
         let mut ranges: Vec<(Option<String>, Option<String>)> = vec![(None, None)];
         while let Some((lower, upper)) = ranges.pop() {

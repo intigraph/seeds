@@ -257,13 +257,19 @@ impl RemoteBackend {
     }
 
     fn page_snapshot(&self, ids: &[String], has_ephemeral: bool) -> Result<Snapshot> {
+        // Seeds whose full facts one read asks for. A seed averages ~19 current
+        // facts on the live board, so 200 stay well under quipu's 10,000-row
+        // cap; read_subjects still halves any read that is truncated or times
+        // out. At 13 per read, `sd list --all` made ~13,500 round trips for
+        // 87,782 seeds (aegis-ek4.1).
+        const PAGE_SUBJECTS_PER_READ: usize = 200;
         let mut main = Facts::new();
         let mut eph = Facts::new();
         let subjects = ids.iter().map(|id| vocab::item_iri(id)).collect::<Vec<_>>();
         let refs = subjects.iter().collect::<Vec<_>>();
         // Reuse the ephemeral-graph observation from this page's metadata
         // snapshot, never across commands or backend calls.
-        for chunk in refs.chunks(13) {
+        for chunk in refs.chunks(PAGE_SUBJECTS_PER_READ) {
             self.read_subjects(&self.graph, chunk, None, &mut main)?;
             if has_ephemeral {
                 self.read_subjects(&vocab::ephemeral_graph(&self.graph), chunk, None, &mut eph)?;

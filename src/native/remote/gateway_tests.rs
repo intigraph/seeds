@@ -106,7 +106,7 @@ fn unordered_subject_ranges_are_complete_and_duplicate_pages_progress() {
     backend.subject_page = 3;
     assert_eq!(
         backend
-            .subjects_where("urn:test", "?s ?p ?o", None)
+            .subjects_bisected("GRAPH <urn:test> { ?s ?p ?o }", "urn:test", None)
             .unwrap(),
         vec!["urn:a", "urn:b", "urn:c", "urn:m", "urn:z"]
     );
@@ -116,6 +116,61 @@ fn unordered_subject_ranges_are_complete_and_duplicate_pages_progress() {
     assert!(requests[4].contains("FILTER(STR(?s) >"));
 }
 
+// aegis-ek4.1: listings read ordered key pages first; bisection is the
+// fallback when an ordered read cannot be trusted.
+#[test]
+fn ordered_subject_pages_read_each_subject_once() {
+    const PAGE1: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:a"}},{"s":{"type":"uri","value":"urn:b"}},{"s":{"type":"uri","value":"urn:b"}}]}}"#;
+    const PAGE2: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:c"}}]}}"#;
+    let (base, worker) = server(vec![(200, "ok"), (200, PAGE1), (200, PAGE2)]);
+    let mut backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
+    backend.subject_page = 3;
+    assert_eq!(
+        backend
+            .subjects_where("urn:test", "?s ?p ?o", None)
+            .unwrap(),
+        vec!["urn:a", "urn:b", "urn:c"]
+    );
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 3, "one request per page, no re-reads");
+    assert!(requests[1].contains("ORDER BY STR(?s) LIMIT 3"));
+    assert!(!requests[1].contains("FILTER(STR(?s) >"));
+    assert!(requests[2].contains(r#"FILTER(STR(?s) > \"urn:b\")"#));
+}
+
+#[test]
+fn an_untrusted_ordered_page_falls_back_to_bisection() {
+    const UNORDERED: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:m"}},{"s":{"type":"uri","value":"urn:a"}},{"s":{"type":"uri","value":"urn:m"}}]}}"#;
+    const FIRST: &str = UNORDERED;
+    const LOWER: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:c"}},{"s":{"type":"uri","value":"urn:a"}},{"s":{"type":"uri","value":"urn:b"}}]}}"#;
+    const A: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:a"}}]}}"#;
+    const C: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:c"}}]}}"#;
+    const Z: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:z"}}]}}"#;
+    for (status, keyset) in [(200, UNORDERED), (400, r#"{"error":"ORDER BY retained key budget exceeded"}"#)] {
+        let (base, worker) = server(vec![
+            (200, "ok"),
+            (status, keyset),
+            (200, FIRST),
+            (200, LOWER),
+            (200, A),
+            (200, C),
+            (200, Z),
+        ]);
+        let mut backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
+        backend.subject_page = 3;
+        assert_eq!(
+            backend
+                .subjects_where("urn:test", "?s ?p ?o", None)
+                .unwrap(),
+            vec!["urn:a", "urn:b", "urn:c", "urn:m", "urn:z"],
+            "keyset answer {status}"
+        );
+        let requests = worker.join().unwrap();
+        assert!(requests[1].contains("ORDER BY"));
+        assert!(requests[2..].iter().all(|request| !request.contains("ORDER BY")));
+    }
+}
+
 #[test]
 fn repeated_out_of_range_subject_refuses_instead_of_looping() {
     const SAME: &str = r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:m"}},{"s":{"type":"uri","value":"urn:m"}}]}}"#;
@@ -123,7 +178,7 @@ fn repeated_out_of_range_subject_refuses_instead_of_looping() {
     let mut backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
     backend.subject_page = 2;
     let error = backend
-        .subjects_where("urn:test", "?s ?p ?o", None)
+        .subjects_bisected("GRAPH <urn:test> { ?s ?p ?o }", "urn:test", None)
         .unwrap_err();
     assert!(error.message.contains("outside its requested range"));
     assert_eq!(worker.join().unwrap().len(), 3);

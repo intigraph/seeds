@@ -658,30 +658,10 @@ impl RemoteBackend {
             body["tx"] = json!(t);
         }
         let text = self.post("/query", "application/json", &body.to_string(), false)?;
-        let v: Json = serde_json::from_str(&text).map_err(|e| {
-            SdError::failed(format!(
-                "quipu /query returned something that is not JSON: {e}"
-            ))
-        })?;
-        let Some(rows) = v["results"]["bindings"].as_array() else {
-            return Err(SdError::failed(format!(
-                "quipu /query did not return SPARQL results JSON: {}",
-                text.chars().take(300).collect::<String>()
-            )));
-        };
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut m = BTreeMap::new();
-            if let Some(obj) = row.as_object() {
-                for (k, t) in obj {
-                    if let Some(o) = term(t) {
-                        m.insert(k.clone(), o);
-                    }
-                }
-            }
-            out.push(m);
+        match decode_select_typed(&text) {
+            Some(decoded) => Ok(decoded),
+            None => decode_select_general(&text),
         }
-        Ok((out, v["truncated"].as_bool().unwrap_or(false)))
     }
 
     fn count(&self, graph: &str, at: Option<u64>) -> Result<usize> {
@@ -1437,6 +1417,94 @@ fn ask_answer(graph: &str, body: &str) -> Result<bool> {
                 body.chars().take(200).collect::<String>()
             ))
         })
+}
+
+/// SPARQL JSON results decoded straight into rows, without building a
+/// `serde_json::Value` tree for every response (aegis-ek4.1: on the live board
+/// `sd list --all` spent most of its remaining client CPU allocating those
+/// trees). Strings are borrowed unless escaped.
+#[derive(serde::Deserialize)]
+struct TypedAnswer<'a> {
+    #[serde(borrow)]
+    results: TypedResults<'a>,
+    #[serde(default)]
+    truncated: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct TypedResults<'a> {
+    #[serde(borrow)]
+    bindings: Vec<BTreeMap<std::borrow::Cow<'a, str>, TypedTerm<'a>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct TypedTerm<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    value: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    datatype: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow, rename = "xml:lang")]
+    lang: Option<std::borrow::Cow<'a, str>>,
+}
+
+/// The rows and truncation flag of a SELECT answer, or `None` when it is not
+/// exactly the well-formed shape: the caller then decodes it the general way,
+/// so every answer means what it meant before this fast path existed.
+fn decode_select_typed(text: &str) -> Option<(Vec<BTreeMap<String, Obj>>, bool)> {
+    let answer: TypedAnswer<'_> = serde_json::from_str(text).ok()?;
+    let rows = answer
+        .results
+        .bindings
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .filter_map(|(k, t)| {
+                    let obj = match t.kind.as_ref() {
+                        "uri" => Obj::Iri(t.value.into_owned()),
+                        "literal" | "typed-literal" => Obj::literal(
+                            t.value.into_owned(),
+                            t.datatype.as_deref(),
+                            t.lang.as_deref(),
+                        ),
+                        _ => return None,
+                    };
+                    Some((k.into_owned(), obj))
+                })
+                .collect()
+        })
+        .collect();
+    Some((rows, answer.truncated.unwrap_or(false)))
+}
+
+/// The general SELECT decode: any JSON, with the original tolerance of odd
+/// rows and terms (skipped, not refused).
+fn decode_select_general(text: &str) -> Result<(Vec<BTreeMap<String, Obj>>, bool)> {
+    let v: Json = serde_json::from_str(text).map_err(|e| {
+        SdError::failed(format!(
+            "quipu /query returned something that is not JSON: {e}"
+        ))
+    })?;
+    let Some(rows) = v["results"]["bindings"].as_array() else {
+        return Err(SdError::failed(format!(
+            "quipu /query did not return SPARQL results JSON: {}",
+            text.chars().take(300).collect::<String>()
+        )));
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut m = BTreeMap::new();
+        if let Some(obj) = row.as_object() {
+            for (k, t) in obj {
+                if let Some(o) = term(t) {
+                    m.insert(k.clone(), o);
+                }
+            }
+        }
+        out.push(m);
+    }
+    Ok((out, v["truncated"].as_bool().unwrap_or(false)))
 }
 
 fn term(t: &Json) -> Option<Obj> {
@@ -2408,6 +2476,33 @@ mod tests {
     /// quipu's 401 for a refused signed write, byte-for-byte as captured from a
     /// real server on 2026-10-21 (aegis-m6o, the #687 incident).
     const REFUSED_INVALID: &str = r#"{"credential_type":"attested_signature","error":"unauthorized: signed write refused (invalid)","expected_scope":"write","message":"declared identity differs from the authenticated session","provisioning":"Ask the identity introducer to register the client public key and bind its agent/session with allow_write; renew expired bindings. A rejected signature never falls back to bearer authentication.","reason":"attestation_refused","verdict":"invalid"}"#;
+
+    // aegis-ek4.1: the typed fast path yields exactly what the general decode
+    // yields, and declines (so the general decode runs) every odd shape.
+    #[test]
+    fn typed_select_decode_matches_the_general_decode() {
+        let same = [
+            r#"{"results":{"bindings":[]}}"#,
+            r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:a"},"o":{"type":"literal","value":"x \"q\" \u00e9\n"}}]},"truncated":false}"#,
+            r#"{"results":{"bindings":[{"o":{"type":"literal","value":"hi","xml:lang":"en"},"n":{"type":"typed-literal","value":"7","datatype":"http://www.w3.org/2001/XMLSchema#integer"},"b":{"type":"bnode","value":"b0"}}]},"truncated":true}"#,
+            r#"{"head":{"vars":["s"]},"results":{"bindings":[{"s":{"type":"uri","value":"urn:a","extra":1}},{}]},"truncated":null,"count":2}"#,
+        ];
+        for text in same {
+            let typed = decode_select_typed(text).expect("well-formed answer decodes typed");
+            let general = decode_select_general(text).unwrap();
+            assert_eq!(typed, general, "{text}");
+        }
+        for odd in [
+            r#"{"results":{"bindings":[{"s":{"type":"uri","value":7}}]}}"#,
+            r#"{"results":{"bindings":[{"s":{"value":"urn:a"}}]}}"#,
+            r#"{"results":{"bindings":[["not","an","object"]]}}"#,
+            r#"{"results":{"bindings":[]},"truncated":"yes"}"#,
+            r#"{"results":{"bindings":[{"o":{"type":"literal","value":"x","datatype":5}}]}}"#,
+            r#"{"rows":[]}"#,
+        ] {
+            assert!(decode_select_typed(odd).is_none(), "{odd}");
+        }
+    }
 
     #[test]
     fn a_refused_signed_write_says_why() {

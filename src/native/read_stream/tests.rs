@@ -76,6 +76,11 @@ impl Fixture {
                     .clone()
             })
             .collect();
+        let doc = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
+        let stream_key = quipu::signing::public_key_hex(&key);
+        let identity = Arc::new(SigningIdentity::new(key, "fixture"));
+        let signature = quipu::replica_manifest::sign_manifest(&cut.manifest, &identity).unwrap();
         let raw = encode(&cut.manifest).unwrap();
         let manifest = dir.path().join("manifest.json");
         fs::write(&manifest, &raw).unwrap();
@@ -84,13 +89,11 @@ impl Fixture {
             &bootstrap,
             format!(
                 "event: quipu.asof\ndata: {}\n\n",
-                json!({"manifest":cut.manifest,"records":records})
+                json!({"manifest":cut.manifest,"records":records,"manifest_signature":signature})
             ),
         )
         .unwrap();
-        let doc = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
-        let key = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
-        let c = json!({"primary_url":"http://127.0.0.1:1","graph":GRAPH,"principal":"fixture-principal", "replication_credential_file":dir.path().join("replicate-token"), "store_id":cut.manifest.source.store_id,"log_epoch":cut.manifest.source.log_epoch,"scope_digest":cut.manifest.scope_digest,"policy_digest":cut.manifest.policy_digest,"stream_key":quipu::signing::public_key_hex(&key),"manifest":manifest,"manifest_sha256":super::super::attest::sha256_hex(&raw),"bootstrap":bootstrap,"socket":dir.path().join("read.sock"),"max_freshness_ms":5000});
+        let c = json!({"primary_url":"http://127.0.0.1:1","graph":GRAPH,"principal":"fixture-principal", "replication_credential_file":dir.path().join("replicate-token"), "store_id":cut.manifest.source.store_id,"log_epoch":cut.manifest.source.log_epoch,"scope_digest":cut.manifest.scope_digest,"policy_digest":cut.manifest.policy_digest,"stream_key":stream_key,"manifest":manifest,"manifest_sha256":super::super::attest::sha256_hex(&raw),"bootstrap":bootstrap,"socket":dir.path().join("read.sock"),"max_freshness_ms":5000});
         let config_path = dir.path().join("consumer.json");
         fs::write(&config_path, encode(&c).unwrap()).unwrap();
         for path in [&manifest, &bootstrap, &config_path] {
@@ -106,13 +109,8 @@ impl Fixture {
         let config = Config::load(&config_path, &cfg).unwrap();
         let mut board = config.bootstrap().unwrap();
         let req = board.stream_request().unwrap();
-        let (session, open) = Session::open(
-            source.store(),
-            &req,
-            "fixture-session".into(),
-            Arc::new(SigningIdentity::new(key, "fixture")),
-        )
-        .unwrap();
+        let (session, open) =
+            Session::open(source.store(), &req, "fixture-session".into(), identity).unwrap();
         board.apply_frame(open.event, &open.data, 1).unwrap();
         Self {
             _dir: dir,

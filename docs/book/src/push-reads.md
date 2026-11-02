@@ -39,6 +39,13 @@ existing applier verifies bootstrap completion, signatures, scope and epoch.
 No automatic bootstrap cut, credential registration, or service installation is
 performed by this command.
 
+The bootstrap must carry the source's `manifest_signature`, and every
+transaction body must carry its signature over session, store, epoch, scope,
+frame sequence, source transaction and records digest. The consumer fixes this
+bootstrap authority before the first frame, so an unsigned bootstrap, or a
+missing, malformed, foreign-key or tampered transaction signature, is refused
+without applying facts or advancing the cursor.
+
 Run `sd read-stream --config /absolute/private/reader.json --check` first. It
 validates the pinned local inputs without opening a socket or network connection.
 This check does not prove live authorization or freshness.

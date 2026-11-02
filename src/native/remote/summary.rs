@@ -476,11 +476,16 @@ impl RemoteBackend {
         Ok(())
     }
 
-    // Ephemeral seeds replace project seeds of the same id, as Snapshot does.
-    fn effective_seeds(&self, fields: &str) -> String {
+    /// Ephemeral seeds replace project seeds of the same id, as Snapshot does.
+    ///
+    /// Required `drive` triples go BEFORE the work-item type triple: Quipu
+    /// evaluates a pattern holding a type triple in written order, so a
+    /// selective constant written first is what lets it start from the cohort
+    /// instead of every seed (aegis-efa).
+    fn effective_seeds_driven(&self, drive: &str, fields: &str) -> String {
         let eph = vocab::ephemeral_graph(&self.graph);
         let base = format!(
-            "?s a <{}> ; <{}> ?id .",
+            "{drive} ?s a <{}> ; <{}> ?id .",
             term::work_item(),
             term::identifier()
         );
@@ -495,9 +500,14 @@ impl RemoteBackend {
     }
 
     fn effective_normalized(&self, fields: &str) -> String {
-        let regular = self.effective_seeds(fields);
+        self.effective_normalized_driven("", fields)
+    }
+
+    fn effective_normalized_driven(&self, drive: &str, fields: &str) -> String {
+        let regular = self.effective_seeds_driven(drive, fields);
         let missing = format!("FILTER NOT EXISTS {{ ?s <{}> ?raw_status FILTER(isLiteral(?raw_status) && sameTerm(?raw_status, STR(?raw_status))) }} BIND(\"open\" AS ?status)",term::status());
-        let fallback = self.effective_seeds(&fields.replace(&self.status_fields(), &missing));
+        let fallback =
+            self.effective_seeds_driven(drive, &fields.replace(&self.status_fields(), &missing));
         format!("{{ {regular} }} UNION {{ {fallback} }}")
     }
 
@@ -528,6 +538,42 @@ impl RemoteBackend {
     }
 
     fn filter_fields(&self, f: &Filter) -> Result<String> {
+        let (drive, fields) = self.filter_parts(f)?;
+        Ok(if drive.is_empty() {
+            fields
+        } else {
+            format!("{fields} {drive}")
+        })
+    }
+
+    /// Required triples that select an explicit assignee and/or a single
+    /// non-default priority. Each is equivalent to the OPTIONAL + FILTER form
+    /// it replaces: that FILTER rejects every row whose value is absent, and
+    /// the default priority (2, applied to seeds without one) is excluded.
+    fn filter_drive(f: &Filter) -> Result<(String, bool, bool)> {
+        let mut drive = String::new();
+        let assignee = f.assignee.is_some() && !f.unassigned;
+        if let (true, Some(person)) = (assignee, &f.assignee) {
+            drive += &format!(
+                "VALUES ?assignee {{ <{}> {} }} ?s <{}> ?assignee .",
+                vocab::principal_iri(person),
+                literal(person),
+                term::assigned_to()
+            );
+        }
+        let mut priority = false;
+        if let (Some(value), None, None) = (&f.priority, &f.priority_min, &f.priority_max) {
+            let value = crate::model::parse_priority(value)?;
+            if value != 2 {
+                drive += &format!(" ?s <{}> {value} .", term::priority());
+                priority = true;
+            }
+        }
+        Ok((drive.trim().to_string(), assignee, priority))
+    }
+
+    fn filter_parts(&self, f: &Filter) -> Result<(String, String)> {
+        let (drive, driven_assignee, driven_priority) = Self::filter_drive(f)?;
         let mut fields = self.status_fields();
         if let Some(status) = &f.status {
             fields += &format!(
@@ -542,7 +588,7 @@ impl RemoteBackend {
                 literal(&crate::model::parse_type(kind)?)
             );
         }
-        if f.assignee.is_some() || f.unassigned {
+        if (f.assignee.is_some() || f.unassigned) && !driven_assignee {
             fields += &format!(
                 " OPTIONAL {{ ?s <{}> ?assignee . FILTER({}) }}",
                 term::assigned_to(),
@@ -579,7 +625,9 @@ impl RemoteBackend {
                     .join(", ")
             );
         }
-        if f.priority.is_some() || f.priority_min.is_some() || f.priority_max.is_some() {
+        if (f.priority.is_some() || f.priority_min.is_some() || f.priority_max.is_some())
+            && !driven_priority
+        {
             fields += &format!(" OPTIONAL {{ ?s <{}> ?raw_priority . FILTER({} && ?raw_priority <= 255) }} BIND(COALESCE(?raw_priority, 2) AS ?priority)", term::priority(), nonnegative_integer_guard("?raw_priority"));
             for (value, operator) in [
                 (&f.priority, "="),
@@ -629,7 +677,7 @@ impl RemoteBackend {
         if let Some(now) = &f.overdue_at {
             fields += &format!(" ?s <{}> ?due . FILTER(STR(?due) < {} && ?status != \"closed\" && ?status != \"tombstone\")", term::due_at(), literal(now));
         }
-        Ok(fields)
+        Ok((drive, fields))
     }
 
     fn group_field(by: &str) -> Result<String> {
@@ -644,7 +692,7 @@ impl RemoteBackend {
     }
 
     pub(super) fn count_summary(&self, req: &CountReq) -> Result<Count> {
-        let mut fields = self.filter_fields(&req.filter)?;
+        let (drive, mut fields) = self.filter_parts(&req.filter)?;
         if req.filter.status.is_none() {
             fields += " FILTER(?status != \"tombstone\")";
             if !req.include_closed {
@@ -653,7 +701,7 @@ impl RemoteBackend {
         }
         let total = self.aggregate_number(&format!(
             "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
-            self.effective_normalized(&fields)
+            self.effective_normalized_driven(&drive, &fields)
         ))?;
         let groups = req
             .by
@@ -661,7 +709,10 @@ impl RemoteBackend {
             .map(|by| {
                 let key = if by == "status" { "status" } else { "key" };
                 self.grouped(
-                    &self.effective_normalized(&(fields.clone() + &Self::group_field(by)?)),
+                    &self.effective_normalized_driven(
+                        &drive,
+                        &(fields.clone() + &Self::group_field(by)?),
+                    ),
                     key,
                 )
             })

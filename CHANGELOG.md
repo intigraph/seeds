@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.3] - 2026-11-02
+
+### Perf
+
+- *(count)* Drive scoped counts from the assignee/priority cohort (#218) ([9721304](https://github.com/scbrown/seeds/commit/97213044bc80bb98dbd4c1b468304ba35306be42))
+
 ## [0.10.2] - 2026-11-02
 
 ### CI/CD

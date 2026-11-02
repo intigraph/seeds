@@ -332,8 +332,7 @@ impl RemoteBackend {
             let has_ephemeral = self.ephemeral_may_hold_facts()?;
             let full = self.full_snapshot(&subjects.iter().collect::<Vec<_>>(), has_ephemeral)?;
             let mut page = engine::list_matches_page(req, &full)?;
-            let ids = page.issues.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-            page.dependent_counts = self.incoming_counts_scoped(&ids, has_ephemeral)?;
+            page.dependent_counts = self.listed_dependent_counts(req, &page, has_ephemeral)?;
             return Ok(page);
         }
         let (compact, has_ephemeral) = self.metadata_snapshot(
@@ -354,8 +353,22 @@ impl RemoteBackend {
                 })?
                 .clone();
         }
-        page.dependent_counts = self.incoming_counts_scoped(&ids, has_ephemeral)?;
+        page.dependent_counts = self.listed_dependent_counts(req, &page, has_ephemeral)?;
         Ok(page)
+    }
+
+    /// The page's dependent counts, unless the caller will not show them.
+    fn listed_dependent_counts(
+        &self,
+        req: &engine::ListReq,
+        page: &engine::Page,
+        has_ephemeral: bool,
+    ) -> Result<BTreeMap<String, usize>> {
+        if req.skip_dependent_counts {
+            return Ok(BTreeMap::new());
+        }
+        let ids = page.issues.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        self.incoming_counts_scoped(&ids, has_ephemeral)
     }
 
     pub(super) fn incoming_counts(&self, ids: &[String]) -> Result<BTreeMap<String, usize>> {

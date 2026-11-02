@@ -945,6 +945,12 @@ pub struct ListReq {
     pub deferred: bool,
     /// Require a defer-until field, without interpreting its timestamp.
     pub defer_until_present: bool,
+    /// The caller will not show dependent counts (text and CSV output only
+    /// `list --json` prints them), so a backend may leave
+    /// [`Page::dependent_counts`] empty instead of reading them. On the live
+    /// board those reads were ~12s of `sd list --all --format csv`
+    /// (aegis-ek4.1). Default: counts are read.
+    pub skip_dependent_counts: bool,
 }
 
 /// A page of seeds and whether it was cut short.

@@ -1514,6 +1514,49 @@ impl Backend for RemoteBackend {
         }
     }
 
+    fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {
+        if !crate::message::is_window_of(&self.graph, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}",
+                self.graph
+            )));
+        }
+        let s = crate::vocab::SCHEMA;
+        let iri = crate::message::message_iri(id);
+        let (p, o) = crate::message::read_fact(&ctx.now);
+        let update = format!(
+            "INSERT {{ GRAPH <{window}> {{ <{iri}> <{p}> {} . }} }} WHERE {{ GRAPH <{window}> {{ <{iri}> a <{s}Message> FILTER NOT EXISTS {{ <{iri}> <{s}dateRead> ?r }} }} }}",
+            sparql_obj(&o)
+        );
+        let form = format!(
+            "update={}&actor={}&source={}",
+            form_encode(&update),
+            form_encode(&ctx.actor),
+            form_encode("sd msg read")
+        );
+        match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
+            Ok(body) => match update_report(&body) {
+                Some((changed, _)) => Ok(changed > 0),
+                None => Err(SdError::new(
+                    ErrorKind::Indeterminate,
+                    format!(
+                        "the server did not report the read mark of {id}; check `sd msg show {id}`"
+                    ),
+                )),
+            },
+            Err((false, e)) => Err(e),
+            // Marking read is idempotent (the guard keeps the first mark), so
+            // the caller may simply repeat it; say so instead of guessing.
+            Err((true, e)) => Err(SdError::new(
+                ErrorKind::Indeterminate,
+                format!(
+                    "the read mark of {id} is UNKNOWN ({}); repeating `sd msg read {id}` is safe",
+                    e.message
+                ),
+            )),
+        }
+    }
+
     fn messages(
         &self,
         windows: &[String],

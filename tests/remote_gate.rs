@@ -169,6 +169,7 @@ fn remote_gate_admits_producer_messages_and_refuses_malformed_ones() {
         kind: "alert".into(),
         delivery_key: Some("key-1".into()),
         about: vec!["aegis-snq".into()],
+        read_at: None,
     };
     let subject = seeds::message::message_iri(&m.id);
     let render = |facts: &Vec<seeds::model::Fact>| {

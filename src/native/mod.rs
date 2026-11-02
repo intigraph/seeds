@@ -4226,6 +4226,7 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
         serde_json::json!({
             "id": m.id, "to": m.recipient, "from": m.sender, "sent_at": m.sent_at,
             "kind": m.kind, "key": m.delivery_key, "about": m.about, "text": m.text,
+            "read_at": m.read_at,
         })
     };
     match command {
@@ -4264,6 +4265,7 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 kind: kind.clone(),
                 delivery_key: key.clone(),
                 about: about.clone(),
+                read_at: None,
             };
             let window = window_graph(&graph, &sent_at).ok_or_else(|| {
                 SdError::failed(format!("the clock {sent_at:?} is not a valid instant"))
@@ -4282,8 +4284,11 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             v["written"] = serde_json::json!(written);
             Ok(ok(json, output::with_tx(v, Some(tx)), text, vec![]))
         }
-        MsgCommand::List { to, weeks } => {
-            let ms = b.messages(&windows(*weeks)?, to.as_deref())?;
+        MsgCommand::List { to, unread, weeks } => {
+            let mut ms = b.messages(&windows(*weeks)?, to.as_deref())?;
+            if *unread {
+                ms.retain(|m| m.read_at.is_none());
+            }
             let text = if ms.is_empty() {
                 "no messages".to_string()
             } else {
@@ -4308,14 +4313,53 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 vec![],
             ))
         }
-        MsgCommand::Count { to, weeks } => {
-            let n = b.messages(&windows(*weeks)?, to.as_deref())?.len();
+        MsgCommand::Count { to, unread, weeks } => {
+            let n = b
+                .messages(&windows(*weeks)?, to.as_deref())?
+                .iter()
+                .filter(|m| !*unread || m.read_at.is_none())
+                .count();
             Ok(ok(
                 json,
                 serde_json::json!({ "count": n }),
                 n.to_string(),
                 vec![],
             ))
+        }
+        MsgCommand::Read { ids, weeks } => {
+            // Find each message's window from a bounded listing, then mark it.
+            let mut found = Vec::new();
+            for w in windows(*weeks)? {
+                for m in b.messages(std::slice::from_ref(&w), None)? {
+                    if ids.contains(&m.id) {
+                        found.push((w.clone(), m));
+                    }
+                }
+            }
+            let missing: Vec<&String> = ids
+                .iter()
+                .filter(|i| !found.iter().any(|(_, m)| &m.id == *i))
+                .collect();
+            if !missing.is_empty() {
+                return Err(SdError::new(
+                    crate::error::ErrorKind::NotFound,
+                    format!(
+                        "no message {} in the last {weeks} week(s); nothing was marked",
+                        missing
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+            let mut out = Vec::new();
+            for (w, m) in &found {
+                let marked = b.message_mark_read(ctx, w, &m.id)?;
+                out.push(serde_json::json!({ "id": m.id, "marked": marked }));
+            }
+            let text = format!("marked {} read", out.len());
+            Ok(ok(json, serde_json::json!(out), text, vec![]))
         }
         MsgCommand::Show { id, weeks } => {
             let ms = b.messages(&windows(*weeks)?, None)?;

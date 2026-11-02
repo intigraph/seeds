@@ -28,6 +28,7 @@ fn msg(key: &str, to: &str, at: &str, text: &str) -> Message {
         kind: "note".into(),
         delivery_key: Some(key.into()),
         about: vec![],
+        read_at: None,
     }
 }
 
@@ -89,4 +90,25 @@ fn a_message_outside_a_window_or_malformed_is_refused_and_nothing_written() {
     empty.text = String::new();
     assert!(b.message_send(&c, &w, &empty, "st inbox").is_err());
     assert!(b.messages(&[w], None).unwrap().is_empty());
+}
+
+#[test]
+fn a_read_mark_is_written_once_and_listing_reports_it() {
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let at = "2026-11-02T04:00:00Z";
+    let w = window_graph(GRAPH, at).unwrap();
+    let m = msg("k1", "wu", at, "hello");
+    b.message_send(&ctx(at), &w, &m, "st inbox").unwrap();
+    assert!(b.messages(&[w.clone()], Some("wu")).unwrap()[0]
+        .read_at
+        .is_none());
+    assert!(b
+        .message_mark_read(&ctx("2026-11-02T05:00:00Z"), &w, &m.id)
+        .unwrap());
+    assert!(!b
+        .message_mark_read(&ctx("2026-11-02T06:00:00Z"), &w, &m.id)
+        .unwrap());
+    let got = b.messages(&[w.clone()], Some("wu")).unwrap();
+    assert_eq!(got[0].read_at.as_deref(), Some("2026-11-02T05:00:00Z"));
+    assert!(b.message_mark_read(&ctx(at), &w, "msg-nope").is_err());
 }

@@ -36,6 +36,9 @@ pub struct Message {
     pub delivery_key: Option<String>,
     /// Seed ids the message refers to.
     pub about: Vec<String>,
+    /// When the recipient marked it read (`schema:dateRead`); append-only, the
+    /// earliest mark wins.
+    pub read_at: Option<String>,
 }
 
 fn schema(local: &str) -> String {
@@ -200,6 +203,17 @@ pub fn message_iri(id: &str) -> String {
     format!("{}message/{id}", vocab::SEEDS_BASE)
 }
 
+/// The read mark: `schema:dateRead`, an `xsd:dateTime`.
+pub fn read_fact(at: &str) -> Fact {
+    (
+        schema("dateRead"),
+        Obj::Typed {
+            lexical: at.to_string(),
+            datatype: vocab::XSD_DATE_TIME.into(),
+        },
+    )
+}
+
 /// The label floor: the first line of the body, at most [`LABEL_CHARS`].
 pub fn label_preview(text: &str) -> String {
     let first = text.lines().next().unwrap_or("").trim();
@@ -267,6 +281,9 @@ impl Message {
         for id in &self.about {
             f.push((schema("about"), Obj::Iri(vocab::item_iri(id))));
         }
+        if let Some(at) = &self.read_at {
+            f.push(read_fact(at));
+        }
         f
     }
 
@@ -275,6 +292,7 @@ impl Message {
         let (mut typed, mut id, mut recipient, mut sender) = (false, None, None, None);
         let (mut sent_at, mut text, mut kind, mut key) = (None, None, None, None);
         let mut about = Vec::new();
+        let mut read_at: Option<String> = None;
         for (p, o) in facts {
             match (p.as_str(), o) {
                 (vocab::RDF_TYPE, Obj::Iri(c)) if *c == schema("Message") => typed = true,
@@ -289,6 +307,11 @@ impl Message {
                 (p, Obj::Str(s)) if p == schema("text") => text = Some(s.clone()),
                 (p, Obj::Str(s)) if p == seeds("messageKind") => kind = Some(s.clone()),
                 (p, Obj::Str(s)) if p == seeds("deliveryKey") => key = Some(s.clone()),
+                (p, Obj::Typed { lexical, .. } | Obj::Str(lexical)) if p == schema("dateRead") => {
+                    if read_at.as_ref().is_none_or(|r| lexical < r) {
+                        read_at = Some(lexical.clone())
+                    }
+                }
                 (p, Obj::Iri(i)) if p == schema("about") => {
                     if let Some(id) = vocab::item_id(i) {
                         about.push(id)
@@ -310,6 +333,7 @@ impl Message {
             kind: kind.unwrap_or_else(|| "note".into()),
             delivery_key: key,
             about,
+            read_at,
         })
     }
 }
@@ -400,8 +424,18 @@ mod tests {
             kind: "note".into(),
             delivery_key: Some("k1".into()),
             about: vec!["aegis-snq".into()],
+            read_at: None,
         };
         assert!(m.problems().is_empty());
+        let mut read = m.clone();
+        read.read_at = Some("2026-11-02T05:00:00Z".into());
+        let mut twice = read.facts();
+        twice.push(read_fact("2026-11-02T06:00:00Z"));
+        assert_eq!(
+            Message::from_facts(&twice),
+            Some(read.clone()),
+            "earliest read mark wins"
+        );
         assert_eq!(Message::from_facts(&m.facts()), Some(m.clone()));
         assert!(m
             .facts()
@@ -419,6 +453,7 @@ mod tests {
             kind: "task".into(),
             delivery_key: None,
             about: vec![],
+            read_at: None,
         };
         assert_eq!(m.problems().len(), 4);
     }

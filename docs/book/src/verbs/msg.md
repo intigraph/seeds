@@ -6,9 +6,10 @@ or sync ever sees it.
 
 ```text
 sd msg send --to <name> [--from <name>] [--kind note|alert] [--key <key>] [--about <seed>]... <text>|-m <text>|-f <file>
-sd msg list  [--to <name>] [--weeks <n>]
-sd msg count [--to <name>] [--weeks <n>]
+sd msg list  [--to <name>] [--unread] [--weeks <n>]
+sd msg count [--to <name>] [--unread] [--weeks <n>]
 sd msg show <msg-id> [--weeks <n>]
+sd msg read <msg-id>... [--weeks <n>]
 ```
 
 ## Where messages live
@@ -29,6 +30,7 @@ own `#seeds-provenance` graph.
 | kind | `seeds:messageKind`: `note` or `alert` |
 | idempotence key | `seeds:deliveryKey` |
 | refers to | `schema:about` (seed IRIs; a message never carries work) |
+| read | `schema:dateRead` (`xsd:dateTime`), written by `sd msg read` |
 
 ## Idempotence
 
@@ -47,8 +49,11 @@ with the same key is safe.
 exist holds no messages; a malformed message or a truncated answer refuses the
 listing instead of returning part of it.
 
-Read and acknowledgement facts are not written yet. They come with the next
-phase of the design (shantytown `docs/message-graph.md`).
+`sd msg read` appends `schema:dateRead` once; a message already read keeps its
+first mark, so repeating it is safe, and nothing is deleted or closed. Reading
+is not acknowledgement: a separate ack, expiry and escalation come with the
+next phase of the design (shantytown `docs/message-graph.md`). `--unread`
+lists or counts only messages without a read mark.
 
 The remote gate admits the `schema:Message` class through
 `seeds:RemoteMessageShape` in `shapes/quipu-gate.shapes.ttl`; a server that has

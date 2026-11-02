@@ -1368,6 +1368,9 @@ pub enum MsgCommand {
         /// Only messages to this recipient
         #[arg(long)]
         to: Option<String>,
+        /// Only messages not yet marked read
+        #[arg(long)]
+        unread: bool,
         /// How many ISO weeks back, including this one
         #[arg(long, default_value_t = 2)]
         weeks: u32,
@@ -1377,7 +1380,19 @@ pub enum MsgCommand {
         /// Only messages to this recipient
         #[arg(long)]
         to: Option<String>,
+        /// Only messages not yet marked read
+        #[arg(long)]
+        unread: bool,
         /// How many ISO weeks back, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Mark messages read (the first mark is kept; nothing is deleted)
+    Read {
+        /// Message ids (msg-...)
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// How many ISO weeks back to look, including this one
         #[arg(long, default_value_t = 2)]
         weeks: u32,
     },
@@ -1493,7 +1508,9 @@ impl Command {
                 matches!(command, EpicCommand::CloseEligible { dry_run: false, .. })
             }
             Command::Comments { command } => matches!(command, CommentsCommand::Add { .. }),
-            Command::Msg { command } => matches!(command, MsgCommand::Send { .. }),
+            Command::Msg { command } => {
+                matches!(command, MsgCommand::Send { .. } | MsgCommand::Read { .. })
+            }
             Command::Label { command } => matches!(
                 command,
                 LabelCommand::Add { .. }
@@ -1612,6 +1629,7 @@ impl Command {
                 MsgCommand::List { .. } => "msg list",
                 MsgCommand::Count { .. } => "msg count",
                 MsgCommand::Show { .. } => "msg show",
+                MsgCommand::Read { .. } => "msg read",
             },
             Command::Label { command } => match command {
                 LabelCommand::Add { .. } => "label add",

@@ -337,6 +337,47 @@ impl Backend for QuipuBackend {
         ))
     }
 
+    fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {
+        if !self.writable {
+            return Err(SdError::failed(
+                "this store was opened read-only; a write needs a writable store",
+            ));
+        }
+        let iri = crate::message::message_iri(id);
+        let Some(wg) = self.store.lookup(window)? else {
+            return Err(SdError::new(
+                crate::error::ErrorKind::NotFound,
+                format!("no message {id} in {window}"),
+            ));
+        };
+        let facts = self.facts_of(wg, &iri)?.unwrap_or_default();
+        let Some(m) = crate::message::Message::from_facts(&facts) else {
+            return Err(SdError::new(
+                crate::error::ErrorKind::NotFound,
+                format!("no message {id} in {window}"),
+            ));
+        };
+        if m.read_at.is_some() {
+            return Ok(false);
+        }
+        let (p, o) = crate::message::read_fact(&ctx.now);
+        let datum = Datum {
+            entity: self.store.intern(&iri)?,
+            attribute: self.store.intern(&p)?,
+            value: self.value_of(&o)?,
+            valid_from: ctx.now.clone(),
+            valid_to: None,
+            op: Op::Assert,
+        };
+        self.store.transact_graph_batches(
+            &[(wg, vec![datum])],
+            &ctx.now,
+            Some(&ctx.actor),
+            Some("sd msg read"),
+        )?;
+        Ok(true)
+    }
+
     fn messages(
         &self,
         windows: &[String],

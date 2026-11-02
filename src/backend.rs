@@ -292,6 +292,14 @@ pub trait Backend {
         ))
     }
 
+    /// Mark one message read (append `schema:dateRead` once; a message already
+    /// read keeps its first mark). Returns whether a mark was written.
+    fn message_mark_read(&mut self, _ctx: &Ctx, _window: &str, _id: &str) -> Result<bool> {
+        Err(crate::error::SdError::usage(
+            "messages need a quipu store or server; this backend has no message graphs",
+        ))
+    }
+
     /// Messages in the named windows, for one recipient or all. A window that
     /// does not exist holds no messages; an unreadable one is an error.
     fn messages(

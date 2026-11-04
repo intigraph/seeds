@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-11-04
+
+### Fixed
+
+- *(read-stream)* Stream the operator bootstrap instead of a 256 MiB read (#223) ([6652891](https://github.com/scbrown/seeds/commit/66528914f0cbcd837353934c88cda41396dd8e0b))
+
+## [0.11.0] - 2026-11-02
+
+### Perf
+
+- *(list)* Sd list --all on the live board in ~32s instead of ~620s (#219) ([53ca1d1](https://github.com/scbrown/seeds/commit/53ca1d117cb9e5a200ecf26605b6e668a88c693d))
+
+## [0.10.3] - 2026-11-02
+
+### Perf
+
+- *(count)* Drive scoped counts from the assignee/priority cohort (#218) ([9721304](https://github.com/scbrown/seeds/commit/97213044bc80bb98dbd4c1b468304ba35306be42))
+
 ## [0.10.2] - 2026-11-02
 
 ### CI/CD

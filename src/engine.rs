@@ -945,6 +945,12 @@ pub struct ListReq {
     pub deferred: bool,
     /// Require a defer-until field, without interpreting its timestamp.
     pub defer_until_present: bool,
+    /// The caller will not show dependent counts (text and CSV output only
+    /// `list --json` prints them), so a backend may leave
+    /// [`Page::dependent_counts`] empty instead of reading them. On the live
+    /// board those reads were ~12s of `sd list --all --format csv`
+    /// (aegis-ek4.1). Default: counts are read.
+    pub skip_dependent_counts: bool,
 }
 
 /// A page of seeds and whether it was cut short.
@@ -1079,9 +1085,10 @@ fn page_at_counted(
         seeds.truncate(limit);
     }
     let dependent_counts = if counts {
+        let all = snap.dependent_counts();
         seeds
             .iter()
-            .map(|s| (s.id.clone(), snap.dependents(&s.id).len()))
+            .map(|s| (s.id.clone(), all.get(&s.id).copied().unwrap_or(0)))
             .collect()
     } else {
         BTreeMap::new()
@@ -2469,13 +2476,27 @@ pub fn update(
             "a move needs exactly one item and cannot change priority or claim",
         ));
     }
-    let mut snap = if req.parent.is_some() {
-        b.snapshot(None)?
-    } else if req.claim {
+    let mut snap = if req.claim {
         blocking_snapshot(b, ids, false)?
     } else {
         b.snapshot_items(ids)?
     };
+    if let Some(parent) = req
+        .parent
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        // Reparenting needs the proposed ancestors, not the whole board.
+        // Keep claim's blocking context too, and refuse mixed observations.
+        let ancestors = parent_snapshot(b, &[parent.to_string()])?;
+        if ancestors.tx != snap.tx {
+            return Err(SdError::conflict(
+                "parent context changed while reading; nothing was written",
+            ));
+        }
+        merge_snapshots(&mut snap, ancestors);
+    }
     let move_rank = if let Some(anchor) = moving {
         let target = snap.get(&ids[0])?;
         if anchor == &target.id {

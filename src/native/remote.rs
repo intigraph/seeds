@@ -264,6 +264,12 @@ fn is_query_timeout(e: &SdError) -> bool {
     e.message.starts_with(QUERY_TIMEOUT)
 }
 
+/// Whether `/query` definitely refused a read (HTTP 4xx other than 408): the
+/// server evaluated nothing it could answer, so a different read may succeed.
+fn is_query_refusal(e: &SdError) -> bool {
+    e.message.starts_with("quipu /query failed (HTTP 4")
+}
+
 fn status_error(what: &str, code: u16, body: &str) -> SdError {
     if let Some((verdict, reason)) = attestation_verdict(code, body) {
         let hint = match verdict.as_str() {
@@ -658,30 +664,10 @@ impl RemoteBackend {
             body["tx"] = json!(t);
         }
         let text = self.post("/query", "application/json", &body.to_string(), false)?;
-        let v: Json = serde_json::from_str(&text).map_err(|e| {
-            SdError::failed(format!(
-                "quipu /query returned something that is not JSON: {e}"
-            ))
-        })?;
-        let Some(rows) = v["results"]["bindings"].as_array() else {
-            return Err(SdError::failed(format!(
-                "quipu /query did not return SPARQL results JSON: {}",
-                text.chars().take(300).collect::<String>()
-            )));
-        };
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut m = BTreeMap::new();
-            if let Some(obj) = row.as_object() {
-                for (k, t) in obj {
-                    if let Some(o) = term(t) {
-                        m.insert(k.clone(), o);
-                    }
-                }
-            }
-            out.push(m);
+        match decode_select_typed(&text) {
+            Some(decoded) => Ok(decoded),
+            None => decode_select_general(&text),
         }
-        Ok((out, v["truncated"].as_bool().unwrap_or(false)))
     }
 
     fn count(&self, graph: &str, at: Option<u64>) -> Result<usize> {
@@ -970,6 +956,97 @@ impl RemoteBackend {
     }
 
     fn subjects_scoped(&self, pattern: &str, graph: &str, at: Option<u64>) -> Result<Vec<String>> {
+        match self.subjects_keyset(pattern, graph, at)? {
+            Some(found) => Ok(found),
+            None => self.subjects_bisected(pattern, graph, at),
+        }
+    }
+
+    /// The subjects matching `pattern`, read in key order one page after
+    /// another (`STR(?s) > last ... ORDER BY STR(?s) LIMIT page`), or `None`
+    /// to fall back to [`Self::subjects_bisected`].
+    ///
+    /// Bisection re-reads every full page after splitting it, and each page
+    /// scans the whole pattern: on the live board `sd list --all` spent 33.6s
+    /// in ~49 subject queries returning ~208k rows for 87,782 seeds. Ordered
+    /// pages read each subject once (18 pages, 12.9s). A bounded `ORDER BY
+    /// ... LIMIT` is a top-k quipu answers inside its sort budget. Only an
+    /// ordered read quipu refuses (an HTTP 4xx such as that budget) or a page
+    /// that cannot be trusted (out of order, not past the last key, no
+    /// progress, an invalid binding) falls back to bisection. A 5xx, an
+    /// unreachable server, a timeout, a truncated or undecodable answer is a
+    /// real failure and is reported as it is: bisection would only ask the
+    /// same failing server again and report something else (aegis-ek4.1).
+    fn subjects_keyset(
+        &self,
+        pattern: &str,
+        graph: &str,
+        at: Option<u64>,
+    ) -> Result<Option<Vec<String>>> {
+        // Every ordered page scans the whole pattern, so its cost is per page:
+        // use the largest page that is never also a truncated one (quipu's
+        // 10,000-row cap), unless a smaller page was set (tests use tiny ones).
+        let page = if self.subject_page < SUBJECT_PAGE {
+            self.subject_page
+        } else {
+            ROW_CAP - 1
+        };
+        let mut out = BTreeSet::new();
+        let mut lower: Option<String> = None;
+        loop {
+            let bound = lower
+                .as_ref()
+                .map(|l| format!("FILTER(STR(?s) > \"{}\") ", escape_literal(l)))
+                .unwrap_or_default();
+            let answer = self.select_marked(
+                &format!(
+                    "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bound}}} \
+                     ORDER BY STR(?s) LIMIT {page}",
+                ),
+                at,
+            );
+            let (rows, truncated) = match answer {
+                Err(e) if is_query_refusal(&e) => return Ok(None),
+                other => other?,
+            };
+            if truncated {
+                return Err(SdError::failed(format!(
+                    "quipu truncated an ordered subject page of {graph}; refusing a partial \
+                     snapshot"
+                )));
+            }
+            if rows.len() > page {
+                return Ok(None);
+            }
+            let mut last: Option<String> = None;
+            for row in &rows {
+                let Some(Obj::Iri(subject)) = row.get("s") else {
+                    return Ok(None);
+                };
+                if lower.as_ref().is_some_and(|l| subject <= l)
+                    || last.as_ref().is_some_and(|l| subject < l)
+                {
+                    return Ok(None);
+                }
+                out.insert(subject.clone());
+                last = Some(subject.clone());
+            }
+            if rows.len() < page {
+                return Ok(Some(out.into_iter().collect()));
+            }
+            if last.is_none() || last == lower {
+                return Ok(None);
+            }
+            lower = last;
+        }
+    }
+
+    fn subjects_bisected(
+        &self,
+        pattern: &str,
+        graph: &str,
+        at: Option<u64>,
+    ) -> Result<Vec<String>> {
         let mut out = BTreeSet::new();
         let mut ranges: Vec<(Option<String>, Option<String>)> = vec![(None, None)];
         while let Some((lower, upper)) = ranges.pop() {
@@ -1362,6 +1439,94 @@ fn ask_answer(graph: &str, body: &str) -> Result<bool> {
                 body.chars().take(200).collect::<String>()
             ))
         })
+}
+
+/// SPARQL JSON results decoded straight into rows, without building a
+/// `serde_json::Value` tree for every response (aegis-ek4.1: on the live board
+/// `sd list --all` spent most of its remaining client CPU allocating those
+/// trees). Strings are borrowed unless escaped.
+#[derive(serde::Deserialize)]
+struct TypedAnswer<'a> {
+    #[serde(borrow)]
+    results: TypedResults<'a>,
+    #[serde(default)]
+    truncated: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct TypedResults<'a> {
+    #[serde(borrow)]
+    bindings: Vec<BTreeMap<std::borrow::Cow<'a, str>, TypedTerm<'a>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct TypedTerm<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    value: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    datatype: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow, rename = "xml:lang")]
+    lang: Option<std::borrow::Cow<'a, str>>,
+}
+
+/// The rows and truncation flag of a SELECT answer, or `None` when it is not
+/// exactly the well-formed shape: the caller then decodes it the general way,
+/// so every answer means what it meant before this fast path existed.
+fn decode_select_typed(text: &str) -> Option<(Vec<BTreeMap<String, Obj>>, bool)> {
+    let answer: TypedAnswer<'_> = serde_json::from_str(text).ok()?;
+    let rows = answer
+        .results
+        .bindings
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .filter_map(|(k, t)| {
+                    let obj = match t.kind.as_ref() {
+                        "uri" => Obj::Iri(t.value.into_owned()),
+                        "literal" | "typed-literal" => Obj::literal(
+                            t.value.into_owned(),
+                            t.datatype.as_deref(),
+                            t.lang.as_deref(),
+                        ),
+                        _ => return None,
+                    };
+                    Some((k.into_owned(), obj))
+                })
+                .collect()
+        })
+        .collect();
+    Some((rows, answer.truncated.unwrap_or(false)))
+}
+
+/// The general SELECT decode: any JSON, with the original tolerance of odd
+/// rows and terms (skipped, not refused).
+fn decode_select_general(text: &str) -> Result<(Vec<BTreeMap<String, Obj>>, bool)> {
+    let v: Json = serde_json::from_str(text).map_err(|e| {
+        SdError::failed(format!(
+            "quipu /query returned something that is not JSON: {e}"
+        ))
+    })?;
+    let Some(rows) = v["results"]["bindings"].as_array() else {
+        return Err(SdError::failed(format!(
+            "quipu /query did not return SPARQL results JSON: {}",
+            text.chars().take(300).collect::<String>()
+        )));
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut m = BTreeMap::new();
+        if let Some(obj) = row.as_object() {
+            for (k, t) in obj {
+                if let Some(o) = term(t) {
+                    m.insert(k.clone(), o);
+                }
+            }
+        }
+        out.push(m);
+    }
+    Ok((out, v["truncated"].as_bool().unwrap_or(false)))
 }
 
 fn term(t: &Json) -> Option<Obj> {
@@ -2554,6 +2719,33 @@ mod tests {
     /// quipu's 401 for a refused signed write, byte-for-byte as captured from a
     /// real server on 2026-10-21 (aegis-m6o, the #687 incident).
     const REFUSED_INVALID: &str = r#"{"credential_type":"attested_signature","error":"unauthorized: signed write refused (invalid)","expected_scope":"write","message":"declared identity differs from the authenticated session","provisioning":"Ask the identity introducer to register the client public key and bind its agent/session with allow_write; renew expired bindings. A rejected signature never falls back to bearer authentication.","reason":"attestation_refused","verdict":"invalid"}"#;
+
+    // aegis-ek4.1: the typed fast path yields exactly what the general decode
+    // yields, and declines (so the general decode runs) every odd shape.
+    #[test]
+    fn typed_select_decode_matches_the_general_decode() {
+        let same = [
+            r#"{"results":{"bindings":[]}}"#,
+            r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:a"},"o":{"type":"literal","value":"x \"q\" \u00e9\n"}}]},"truncated":false}"#,
+            r#"{"results":{"bindings":[{"o":{"type":"literal","value":"hi","xml:lang":"en"},"n":{"type":"typed-literal","value":"7","datatype":"http://www.w3.org/2001/XMLSchema#integer"},"b":{"type":"bnode","value":"b0"}}]},"truncated":true}"#,
+            r#"{"head":{"vars":["s"]},"results":{"bindings":[{"s":{"type":"uri","value":"urn:a","extra":1}},{}]},"truncated":null,"count":2}"#,
+        ];
+        for text in same {
+            let typed = decode_select_typed(text).expect("well-formed answer decodes typed");
+            let general = decode_select_general(text).unwrap();
+            assert_eq!(typed, general, "{text}");
+        }
+        for odd in [
+            r#"{"results":{"bindings":[{"s":{"type":"uri","value":7}}]}}"#,
+            r#"{"results":{"bindings":[{"s":{"value":"urn:a"}}]}}"#,
+            r#"{"results":{"bindings":[["not","an","object"]]}}"#,
+            r#"{"results":{"bindings":[]},"truncated":"yes"}"#,
+            r#"{"results":{"bindings":[{"o":{"type":"literal","value":"x","datatype":5}}]}}"#,
+            r#"{"rows":[]}"#,
+        ] {
+            assert!(decode_select_typed(odd).is_none(), "{odd}");
+        }
+    }
 
     #[test]
     fn a_refused_signed_write_says_why() {

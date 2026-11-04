@@ -613,6 +613,155 @@ fn parent_dependency_reads_only_exact_ancestor_context_and_refuses_cycles() {
 }
 
 #[test]
+fn update_parent_reads_only_proposed_ancestors_and_detaches_without_them() {
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let root = mk(&mut inner, "root", 3);
+    let unrelated = mk(&mut inner, "unrelated", 4);
+    engine::dep_add(&mut inner, &ctx(5), &parent, &root, "parent-child").unwrap();
+    let mut b = CommentReads {
+        inner,
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    let (changed, _) = engine::update(
+        &mut b,
+        &ctx(6),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(format!(" {parent} ")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(changed[0].parent.as_ref(), Some(&parent));
+    assert!(b.snapshots.borrow().is_empty());
+    let read: std::collections::BTreeSet<_> = b.items.borrow().iter().flatten().cloned().collect();
+    assert_eq!(read, [child.clone(), parent.clone(), root.clone()].into());
+    assert!(!read.contains(&unrelated));
+
+    // The scoped path must retain the descendant/self-cycle veto.
+    let error = engine::update(
+        &mut b,
+        &ctx(7),
+        std::slice::from_ref(&root),
+        &UpdateReq {
+            parent: Some(child.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Refused);
+    assert!(b.snapshots.borrow().is_empty());
+
+    b.items.borrow_mut().clear();
+    let (changed, _) = engine::update(
+        &mut b,
+        &ctx(8),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(" ".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(changed[0].parent, None);
+    assert_eq!(*b.items.borrow(), vec![vec![child]]);
+    assert!(b.snapshots.borrow().is_empty());
+}
+
+#[test]
+fn update_parent_and_claim_still_refuses_an_open_blocker() {
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let blocker = mk(&mut inner, "open blocker", 3);
+    engine::dep_add(&mut inner, &ctx(4), &child, &blocker, "blocks").unwrap();
+    let mut b = CommentReads {
+        inner,
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    let error = engine::update(
+        &mut b,
+        &ctx(5),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(parent),
+            claim: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert!(error.message.contains("blocked by"));
+    assert!(b.snapshots.borrow().is_empty());
+    assert!(b.items.borrow().iter().flatten().any(|id| id == &blocker));
+    let unchanged = b.inner.snapshot(None).unwrap();
+    assert_eq!(unchanged.get(&child).unwrap().parent, None);
+    assert_eq!(unchanged.get(&child).unwrap().assignee, None);
+}
+
+#[test]
+fn update_parent_refuses_mixed_snapshot_transactions_without_writing() {
+    struct ChangedContext {
+        inner: QuipuBackend,
+        reads: std::cell::Cell<usize>,
+    }
+    impl Backend for ChangedContext {
+        fn snapshot(&self, _: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+            panic!("reparenting must not read the whole board");
+        }
+        fn snapshot_items(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+            let mut snap = self.inner.snapshot_items(ids)?;
+            let n = self.reads.get();
+            self.reads.set(n + 1);
+            if n > 0 {
+                snap.tx += 1;
+            }
+            Ok(snap)
+        }
+        fn commit(&mut self, _: &WriteBatch, _: &Ctx) -> seeds::error::Result<u64> {
+            panic!("a mixed parent context must not commit");
+        }
+        fn ready_ids(&self, at: Option<u64>) -> seeds::error::Result<Vec<String>> {
+            self.inner.ready_ids(at)
+        }
+        fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+            self.inner.claims_of(id)
+        }
+    }
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let mut b = ChangedContext {
+        inner,
+        reads: Default::default(),
+    };
+    let error = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(parent),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert!(error.message.contains("parent context changed"));
+    assert_eq!(
+        b.inner.snapshot(None).unwrap().get(&child).unwrap().parent,
+        None
+    );
+}
+
+#[test]
 fn blocker_read_failure_and_manual_holds_do_not_unlock() {
     use seeds::blockers::{self, Blocker, State};
     let mut inner = backend();

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.2] - 2026-11-04
+
+### Added
+
+- *(share)* Publish pendant entities under w3id.org/intigraph names (#225) ([d12bd1c](https://github.com/scbrown/seeds/commit/d12bd1cf3eeca1d121f93eba23b7bf3843b8d5ea))
+
+### Fixed
+
+- Scope reparent validation to ancestor reads (#227) ([6c2eafe](https://github.com/scbrown/seeds/commit/6c2eafe80288c2aa9298d28a490a0b9126e862a6))
+
 ## [0.11.1] - 2026-11-04
 
 ### Fixed

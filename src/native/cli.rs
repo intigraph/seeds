@@ -1293,9 +1293,15 @@ pub enum BlockersCommand {
         execute: bool,
     },
     /// Observe conditions once; unchanged observations make no write
-    Reconcile {},
+    Reconcile {
+        /// Reconcile only this seed (for a targeted reaction); omit for all seeds
+        issue: Option<String>,
+    },
     /// Persistent pending events for the shared notifier
-    Events {},
+    Events {
+        /// Read only this seed's pending events; omit for all seeds
+        issue: Option<String>,
+    },
     /// Acknowledge an event using its retained delivery receipt
     Ack {
         /// Seed owning the event

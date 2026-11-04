@@ -1,4 +1,4 @@
-//! Crew mail is written to window graphs and never seen by the board (aegis-snq).
+//! Crew mail is written to window graphs and never seen by the board.
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::unwrap_used)]
 
@@ -58,9 +58,9 @@ fn messages_land_in_their_week_window_and_never_on_the_board() {
     // Idempotent on the id (same delivery key): nothing is rewritten.
     assert!(!b.message_send(&c, &w, &m1, "st inbox").unwrap().0);
 
-    let wu = b.messages(&[w.clone()], Some("wu")).unwrap();
+    let wu = b.messages(std::slice::from_ref(&w), Some("wu")).unwrap();
     assert_eq!(wu, vec![m1.clone()]);
-    assert_eq!(b.messages(&[w.clone()], None).unwrap().len(), 2);
+    assert_eq!(b.messages(std::slice::from_ref(&w), None).unwrap().len(), 2);
     // A window that does not exist holds nothing.
     let empty = window_graph(GRAPH, "2026-10-01T00:00:00Z").unwrap();
     assert!(b.messages(&[empty], None).unwrap().is_empty());
@@ -99,7 +99,7 @@ fn a_read_mark_is_written_once_and_listing_reports_it() {
     let w = window_graph(GRAPH, at).unwrap();
     let m = msg("k1", "wu", at, "hello");
     b.message_send(&ctx(at), &w, &m, "st inbox").unwrap();
-    assert!(b.messages(&[w.clone()], Some("wu")).unwrap()[0]
+    assert!(b.messages(std::slice::from_ref(&w), Some("wu")).unwrap()[0]
         .read_at
         .is_none());
     assert!(b
@@ -108,7 +108,112 @@ fn a_read_mark_is_written_once_and_listing_reports_it() {
     assert!(!b
         .message_mark_read(&ctx("2026-11-02T06:00:00Z"), &w, &m.id)
         .unwrap());
-    let got = b.messages(&[w.clone()], Some("wu")).unwrap();
+    let got = b.messages(std::slice::from_ref(&w), Some("wu")).unwrap();
     assert_eq!(got[0].read_at.as_deref(), Some("2026-11-02T05:00:00Z"));
     assert!(b.message_mark_read(&ctx(at), &w, "msg-nope").is_err());
+}
+
+#[test]
+fn same_key_retry_across_iso_week_keeps_one_original_message() {
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let first_at = "2026-11-01T23:59:59Z";
+    let retry_at = "2026-11-02T00:00:01Z";
+    let first_window = window_graph(GRAPH, first_at).unwrap();
+    let retry_window = window_graph(GRAPH, retry_at).unwrap();
+    assert_ne!(first_window, retry_window);
+    let first = msg("week-boundary", "wu", first_at, "one delivery");
+    let retry = msg("week-boundary", "wu", retry_at, "one delivery");
+    assert_eq!(first.id, retry.id);
+    assert!(
+        b.message_send(&ctx(first_at), &first_window, &first, "test")
+            .unwrap()
+            .0
+    );
+    assert!(
+        !b.message_send(&ctx(retry_at), &retry_window, &retry, "test")
+            .unwrap()
+            .0
+    );
+    assert_eq!(
+        b.messages(&[first_window, retry_window], Some("wu"))
+            .unwrap(),
+        vec![first]
+    );
+    assert!(b.snapshot(None).unwrap().seeds.is_empty());
+}
+
+#[test]
+fn binding_keeps_original_receipt_after_read_and_beyond_recent_windows() {
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let at = "2026-11-01T23:59:59Z";
+    let window = window_graph(GRAPH, at).unwrap();
+    let first = msg("retained", "wu", at, "original");
+    b.message_send(&ctx(at), &window, &first, "test").unwrap();
+    b.message_mark_read(&ctx("2026-11-02T01:00:00Z"), &window, &first.id)
+        .unwrap();
+    let retry_at = "2027-01-04T00:00:01Z";
+    let retry_window = window_graph(GRAPH, retry_at).unwrap();
+    let retry = msg("retained", "wu", retry_at, "original");
+    assert!(
+        !b.message_send(&ctx(retry_at), &retry_window, &retry, "test")
+            .unwrap()
+            .0
+    );
+    let (bound, receipt) = b.message_receipt(&first.id).unwrap().unwrap();
+    assert_eq!(bound, window);
+    assert_eq!(receipt.sent_at, at);
+    assert!(receipt.read_at.is_some());
+    for changed in [
+        msg("retained", "tim", retry_at, "original"),
+        msg("retained", "wu", retry_at, "changed"),
+    ] {
+        assert!(b
+            .message_send(&ctx(retry_at), &retry_window, &changed, "test")
+            .is_err());
+    }
+    assert!(b.messages(&[retry_window], None).unwrap().is_empty());
+}
+
+#[test]
+fn unavailable_original_payload_never_releases_a_delivery_key() {
+    use quipu::store::Datum;
+    use quipu::types::Op;
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let at = "2026-11-01T23:59:59Z";
+    let w = window_graph(GRAPH, at).unwrap();
+    let m = msg("unavailable", "wu", at, "retain binding");
+    b.message_send(&ctx(at), &w, &m, "test").unwrap();
+    let store = b.store_mut();
+    let e = store
+        .lookup(&seeds::message::message_iri(&m.id))
+        .unwrap()
+        .unwrap();
+    let g = store.lookup(&w).unwrap().unwrap();
+    let datums: Vec<_> = store
+        .entity_facts_in_graph(e, g)
+        .unwrap()
+        .into_iter()
+        .map(|f| Datum {
+            entity: e,
+            attribute: f.attribute,
+            value: f.value,
+            valid_from: at.into(),
+            valid_to: None,
+            op: Op::Retract,
+        })
+        .collect();
+    store
+        .transact_graph_batches(
+            &[(g, datums)],
+            at,
+            Some("test"),
+            Some("unavailable payload fixture"),
+        )
+        .unwrap();
+    assert!(b.message_receipt(&m.id).is_err());
+    let later = "2027-01-04T00:00:01Z";
+    let retry = msg("unavailable", "wu", later, "retain binding");
+    let new = window_graph(GRAPH, later).unwrap();
+    assert!(b.message_send(&ctx(later), &new, &retry, "test").is_err());
+    assert!(b.messages(&[new], None).unwrap().is_empty());
 }

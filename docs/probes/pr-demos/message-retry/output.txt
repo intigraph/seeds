@@ -1,0 +1,19 @@
+Script started on 2026-11-04 02:45:09-05:00 [COMMAND="bash run-demo.sh" <not executed on terminal>]
+Baseline 8891be3604728d7e1b8ce56308c783799f99a1c4 (in-memory library)
+$ cargo run --quiet --example message_retry
+same key at 2026-11-01T23:59:59Z: written=true
+same key at 2026-11-02T00:00:01Z: written=true
+writes=2; messages=2
+stored send time: 2026-11-01T23:59:59Z
+stored send time: 2026-11-02T00:00:01Z
+work items=0
+
+Candidate (same input, in-memory library)
+$ cargo run --quiet --example message_retry
+same key at 2026-11-01T23:59:59Z: written=true
+same key at 2026-11-02T00:00:01Z: written=false
+writes=1; messages=1
+stored send time: 2026-11-01T23:59:59Z
+work items=0
+
+Script done on 2026-11-04 02:45:11-05:00 [COMMAND_EXIT_CODE="0"]

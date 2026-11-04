@@ -1,4 +1,4 @@
-//! Crew mail as its own entity, outside the board graph (aegis-snq; design in
+//! Crew mail as its own entity, outside the board graph (design in
 //! shantytown `docs/message-graph.md`).
 //!
 //! A message is a `schema:Message` in a per-ISO-week window graph,
@@ -198,6 +198,17 @@ pub fn is_window_of(project_graph: &str, graph: &str) -> bool {
     })
 }
 
+/// Stable per-project delivery bindings, retained when week windows are archived.
+/// This graph is outside board snapshots and is not itself a message window.
+pub fn binding_graph(project_graph: &str) -> String {
+    format!("{}/message-bindings", project_graph.trim_end_matches('/'))
+}
+
+/// Existing schema.org predicate linking a delivery to its original window.
+pub fn binding_predicate() -> String {
+    schema("isPartOf")
+}
+
 /// The message's IRI.
 pub fn message_iri(id: &str) -> String {
     format!("{}message/{id}", vocab::SEEDS_BASE)
@@ -228,6 +239,26 @@ pub fn label_preview(text: &str) -> String {
 }
 
 impl Message {
+    /// A retry may use a later clock/read mark, but cannot redirect a key or
+    /// silently replace its payload. The first accepted send owns the binding.
+    pub fn same_delivery(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.recipient == other.recipient
+            && self.sender == other.sender
+            && self.text == other.text
+            && self.kind == other.kind
+            && self.delivery_key == other.delivery_key
+            && {
+                let mut left = self.about.clone();
+                left.sort();
+                left.dedup();
+                let mut right = other.about.clone();
+                right.sort();
+                right.dedup();
+                left == right
+            }
+    }
+
     /// What is wrong with this message, if anything (empty = writable).
     pub fn problems(&self) -> Vec<String> {
         let mut p = Vec::new();
@@ -423,7 +454,7 @@ mod tests {
             text: "line one\nline two".into(),
             kind: "note".into(),
             delivery_key: Some("k1".into()),
-            about: vec!["aegis-snq".into()],
+            about: vec!["sd-example".into()],
             read_at: None,
         };
         assert!(m.problems().is_empty());

@@ -48,6 +48,8 @@ pub mod acquisition;
 mod comment_tests;
 #[cfg(test)]
 mod gateway_tests;
+#[cfg(test)]
+mod message_tests;
 mod owner_query;
 mod summary;
 
@@ -1579,8 +1581,9 @@ impl Backend for RemoteBackend {
         // only sees registered graphs, so the absence guard below would pass
         // vacuously on an unregistered window.
         let pg = provenance_graph(window);
+        let bg = crate::message::binding_graph(&self.graph);
         let existing = self.graph_iris();
-        for g in [window.to_string(), pg.clone()] {
+        for g in [window.to_string(), pg.clone(), bg.clone()] {
             if !existing.as_ref().is_some_and(|e| e.contains(&g)) {
                 self.post(
                     "/graph/create",
@@ -1614,10 +1617,10 @@ impl Backend for RemoteBackend {
             (crate::vocab::seeds("wrote"), Obj::Iri(iri.clone())),
         ];
         let update = format!(
-            "INSERT {{ GRAPH <{window}> {{ {} }} GRAPH <{pg}> {{ {} }} }} WHERE {{ FILTER NOT EXISTS {{ GRAPH <{window}> {{ <{iri}> a <{}Message> }} }} }}",
+            "INSERT {{ GRAPH <{window}> {{ {} }} GRAPH <{pg}> {{ {} }} GRAPH <{bg}> {{ <{iri}> <{binding}> <{window}> }} }} WHERE {{ FILTER NOT EXISTS {{ GRAPH <{bg}> {{ <{iri}> <{binding}> ?original }} }} }}",
             triples(&iri, &message.facts()),
             triples(&write_iri, &record),
-            crate::vocab::SCHEMA
+            binding = crate::message::binding_predicate()
         );
         let form = format!(
             "update={}&actor={}&source={}",
@@ -1636,7 +1639,14 @@ impl Backend for RemoteBackend {
         match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
             Ok(body) => match update_report(&body) {
                 // asserted > 0 exactly when the absence guard matched.
-                Some((changed, tx)) => Ok((changed > 0, tx.unwrap_or(0))),
+                Some((changed, tx)) => {
+                    match self.message_receipt(&message.id) {
+                        Ok(Some((_, original))) if original.same_delivery(message) => Ok((changed > 0, tx.unwrap_or(0))),
+                        Ok(Some(_)) => Err(SdError::conflict("delivery key is already bound to a different message")),
+                        other => Err(SdError::new(ErrorKind::Indeterminate, format!(
+                            "message update returned but original delivery binding is unverified ({other:?}); do not assume delivery"))),
+                    }
+                },
                 None => Err(SdError::new(
                     ErrorKind::Indeterminate,
                     format!(
@@ -1649,15 +1659,16 @@ impl Backend for RemoteBackend {
             Err((false, e)) => Err(e),
             Err((true, e)) => {
                 // The request may have landed: look before saying anything.
-                match self.messages(&[window.to_string()], Some(&message.recipient)) {
-                    Ok(found) if found.iter().any(|m| m.id == message.id) => {
+                match self.message_receipt(&message.id) {
+                    Ok(Some((_, original))) if original.same_delivery(message) => {
                         eprintln!(
                             "sd: the server's response was lost ({}); a read-back shows the message landed",
                             e.message
                         );
                         Ok((true, 0))
                     }
-                    Ok(_) => Err(SdError::new(
+                    Ok(Some(_)) => Err(SdError::conflict("delivery key is already bound to a different message")),
+                    Ok(None) => Err(SdError::new(
                         ErrorKind::Indeterminate,
                         format!(
                             "the message's outcome is UNKNOWN: the response was lost ({}) and a \
@@ -1677,6 +1688,48 @@ impl Backend for RemoteBackend {
                 }
             }
         }
+    }
+
+    fn message_receipt(&self, id: &str) -> Result<Option<(String, crate::message::Message)>> {
+        let bg = crate::message::binding_graph(&self.graph);
+        let iri = crate::message::message_iri(id);
+        let (rows, truncated) = self.select_marked(
+            &format!(
+                "SELECT ?window WHERE {{ GRAPH <{bg}> {{ <{iri}> <{}> ?window }} }} LIMIT 2",
+                crate::message::binding_predicate()
+            ),
+            None,
+        )?;
+        if truncated || rows.len() > 1 {
+            return Err(SdError::failed("ambiguous or truncated message binding"));
+        }
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let window = match row.get("window") {
+            Some(Obj::Iri(w)) if crate::message::is_window_of(&self.graph, w) => w.clone(),
+            _ => return Err(SdError::failed("malformed message binding")),
+        };
+        let (rows, truncated) = self.select_marked(
+            &format!("SELECT ?p ?o WHERE {{ GRAPH <{window}> {{ <{iri}> ?p ?o }} }} LIMIT 1000"),
+            None,
+        )?;
+        if truncated || rows.len() >= 1000 {
+            return Err(SdError::failed("truncated bound message"));
+        }
+        let mut facts = Vec::new();
+        for row in rows {
+            match (row.get("p"), row.get("o")) {
+                (Some(Obj::Iri(p)), Some(o)) => facts.push((p.clone(), o.clone())),
+                _ => return Err(SdError::failed("malformed bound message row")),
+            }
+        }
+        let message = crate::message::Message::from_facts(&facts)
+            .filter(|m| m.id == id)
+            .ok_or_else(|| {
+                SdError::failed("message binding points at a missing or malformed message")
+            })?;
+        Ok(Some((window, message)))
     }
 
     fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {

@@ -279,8 +279,16 @@ impl Backend for QuipuBackend {
             )));
         }
         let iri = crate::message::message_iri(&message.id);
+        let bg = self
+            .store
+            .graph_create(&crate::message::binding_graph(&self.graph_iri))?;
         let wg = self.store.graph_create(window)?;
-        if self.facts_of(wg, &iri)?.is_some() {
+        if let Some((_, original)) = self.message_receipt(&message.id)? {
+            if !original.same_delivery(message) {
+                return Err(SdError::conflict(
+                    "delivery key is already bound to a different message",
+                ));
+            }
             // Same id = same delivery key (or same recipient/time/body): already sent.
             return Ok((
                 false,
@@ -325,8 +333,19 @@ impl Backend for QuipuBackend {
                 op: Op::Assert,
             });
         }
+        // Native sd holds the store's exclusive writer lock for this whole verb.
+        // Bind and deliver in one transaction: a failed message write cannot leave
+        // a claim behind, and a retry in any later week checks the same slot.
+        let binding = vec![Datum {
+            entity: e,
+            attribute: self.store.intern(&crate::message::binding_predicate())?,
+            value: Value::Ref(self.store.intern(window)?),
+            valid_from: ctx.now.clone(),
+            valid_to: None,
+            op: Op::Assert,
+        }];
         self.store.transact_graph_batches(
-            &[(pg, prov), (wg, datums)],
+            &[(bg, binding), (pg, prov), (wg, datums)],
             &ctx.now,
             Some(&ctx.actor),
             Some(source),
@@ -335,6 +354,39 @@ impl Backend for QuipuBackend {
             true,
             u64::try_from(self.store.transaction_head()?).unwrap_or(0),
         ))
+    }
+
+    fn message_receipt(&self, id: &str) -> Result<Option<(String, crate::message::Message)>> {
+        let Some(bg) = self
+            .store
+            .lookup(&crate::message::binding_graph(&self.graph_iri))?
+        else {
+            return Ok(None);
+        };
+        let iri = crate::message::message_iri(id);
+        let facts = self.facts_of(bg, &iri)?.unwrap_or_default();
+        let values: Vec<_> = facts
+            .iter()
+            .filter(|(p, _)| p == &crate::message::binding_predicate())
+            .collect();
+        if values.is_empty() {
+            return Ok(None);
+        }
+        let window = match values.as_slice() {
+            [(_, Obj::Iri(w))] if crate::message::is_window_of(&self.graph_iri, w) => w.clone(),
+            _ => return Err(SdError::failed("malformed or ambiguous message binding")),
+        };
+        let wg = self
+            .store
+            .lookup(&window)?
+            .ok_or_else(|| SdError::failed("message binding points at a missing window"))?;
+        let facts = self
+            .facts_of(wg, &iri)?
+            .ok_or_else(|| SdError::failed("message binding points at a missing message"))?;
+        let message = crate::message::Message::from_facts(&facts)
+            .filter(|m| m.id == id)
+            .ok_or_else(|| SdError::failed("message binding points at a malformed message"))?;
+        Ok(Some((window, message)))
     }
 
     fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {

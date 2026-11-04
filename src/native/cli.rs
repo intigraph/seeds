@@ -239,7 +239,7 @@ pub enum Command {
         #[command(subcommand)]
         command: CommentsCommand,
     },
-    /// Crew mail in per-week message graphs, outside the board (aegis-snq)
+    /// Crew mail in per-week message graphs, outside the board
     Msg {
         #[command(subcommand)]
         command: MsgCommand,

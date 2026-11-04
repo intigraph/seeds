@@ -3364,3 +3364,55 @@ fn strict_identity_refuses_unkeyed_local_write_before_opening_a_store() {
         assert!(!s.work().join(".seeds/seeds.db").exists());
     }
 }
+
+#[test]
+fn concurrent_keyed_message_sends_have_one_original_receipt() {
+    let sb = Sandbox::new("message-keyed-race");
+    sb.ok(&["create", "warm store", "--silent"]);
+    let children: Vec<_> = (0..4)
+        .map(|_| {
+            sb.cmd(
+                &sb.work(),
+                &[
+                    "msg",
+                    "send",
+                    "--to",
+                    "reader",
+                    "--key",
+                    "one-native-message",
+                    "-m",
+                    "same message",
+                    "--json",
+                ],
+            )
+            .spawn()
+            .unwrap()
+        })
+        .collect();
+    let mut wrote = 0;
+    let mut receipts = std::collections::BTreeSet::new();
+    for c in children {
+        let out = c.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        wrote += usize::from(v["written"] == true);
+        receipts.insert((
+            v["id"].to_string(),
+            v["sent_at"].to_string(),
+            v["window"].to_string(),
+        ));
+    }
+    assert_eq!(wrote, 1);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(
+        sb.json(&["msg", "list", "--to", "reader"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

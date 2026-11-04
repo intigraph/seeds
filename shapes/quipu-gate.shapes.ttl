@@ -73,7 +73,7 @@ seeds:RemoteAttributionClaimShape a sh:NodeShape ;
     sh:property [ sh:path seeds:session ; sh:maxCount 1 ; sh:datatype xsd:string ] .
 
 # Crew mail lives in per-week message graphs, never in the board graph
-# (aegis-snq, shantytown docs/message-graph.md). Open shape: later lifecycle
+# (shantytown docs/message-graph.md). Open shape: later lifecycle
 # facts (read, ack, expiry) add predicates without a gate change. The label
 # floor holds a short preview; the full body is schema:text.
 seeds:RemoteMessageShape a sh:NodeShape ;

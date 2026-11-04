@@ -34,13 +34,28 @@ own `#seeds-provenance` graph.
 
 ## Idempotence
 
-With `--key`, the id is derived from the key alone, so a resend after a lost
-response names the same message and writes nothing new (`already sent`).
+With `--key`, the id is derived from the key alone. A per-project binding in
+`<project graph>/message-bindings` links that id to its original week with
+`schema:isPartOf`. The binding, message and provenance commit together. Remote
+writes guard the binding under the server's writer lock; local CLI writes hold
+the store's exclusive lock for the whole verb. Two sends in different weeks
+therefore compete for the same slot, rather than each claiming its own week.
+
+A retry returns the original recipient, send time and window, even outside the
+listing's recent-week horizon. Reusing a key with a different sender, recipient,
+body, kind or seed references refuses; it never replaces the original message.
 Without a key, the id comes from recipient, send time and body.
 
-When the server's response is lost, `sd msg send` reads the window back and
-reports the outcome; if it still cannot tell, it says UNKNOWN and that a resend
-with the same key is safe.
+Bindings are retained independently of read marks and window retention. Do not
+expire or archive the binding graph with a week window: forgetting the binding
+would allow an old delivery to be written again. If the original window becomes
+unavailable, resolving its binding fails; it is not permission to resend into a
+new window. No existing production messages are migrated by this command.
+
+When a response is lost, `sd msg send` resolves the binding and reads the original
+message rather than searching only the retry's window. An absent, malformed,
+ambiguous, truncated or unreadable receipt stays UNKNOWN; the write is not
+replayed automatically.
 
 ## Reading
 

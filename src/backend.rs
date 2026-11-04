@@ -276,7 +276,7 @@ pub trait Backend {
     /// `None`).
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot>;
 
-    /// Write one crew message into its window graph (aegis-snq). Idempotent on
+    /// Write one crew message into its window graph. Idempotent across windows on
     /// the message id: an existing message is not rewritten. Returns whether
     /// it was written and the transaction. A backend without named graphs
     /// refuses rather than falling back to a seed.
@@ -289,6 +289,14 @@ pub trait Backend {
     ) -> Result<(bool, u64)> {
         Err(crate::error::SdError::usage(
             "messages need a quipu store or server; this backend has no message graphs",
+        ))
+    }
+
+    /// Resolve a delivery's immutable binding and original message. An unreadable,
+    /// malformed or dangling binding is an error, never evidence of absence.
+    fn message_receipt(&self, _id: &str) -> Result<Option<(String, crate::message::Message)>> {
+        Err(crate::error::SdError::usage(
+            "this backend has no message bindings",
         ))
     }
 

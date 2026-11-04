@@ -4212,7 +4212,7 @@ mod selected_credential_tests {
     }
 }
 
-/// `sd msg ...` (aegis-snq): crew mail in per-week window graphs.
+/// `sd msg ...`: crew mail in per-week window graphs.
 fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Result<Outcome> {
     use crate::message::{message_id, recent_windows, window_graph, Message};
     let graph = b
@@ -4273,6 +4273,12 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 SdError::failed(format!("the clock {sent_at:?} is not a valid instant"))
             })?;
             let (written, tx) = b.message_send(ctx, &window, &m, "sd msg send")?;
+            // The key may already belong to a prior week. Never print the retry's
+            // proposed recipient/time/window as though those were the receipt.
+            let (window, m) = b.message_receipt(&m.id)?.ok_or_else(|| {
+                SdError::new(crate::error::ErrorKind::Indeterminate,
+                    "message write returned without a readable delivery binding; do not assume delivery")
+            })?;
             let text = format!(
                 "{} {} to {} in {}{}",
                 if written { "sent" } else { "already sent" },

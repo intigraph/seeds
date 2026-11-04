@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-11-04
+
+### Added
+
+- *(msg)* Crew mail as schema:Message in per-week window graphs (sd msg) (#220) ([ceb7424](https://github.com/scbrown/seeds/commit/ceb74249771fa47280a7ac1ea42719255e7e9cbe))
+
 ## [0.11.2] - 2026-11-04
 
 ### Added

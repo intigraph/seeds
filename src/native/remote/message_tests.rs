@@ -24,6 +24,30 @@ fn candidate(at: &str, key: &str) -> (Ctx, Message) {
     )
 }
 
+// Older supported appliers return 204 without affected counts. Keep that
+// acknowledgement UNKNOWN; prove the stored effect separately by its binding.
+fn send_checked(
+    b: &mut RemoteBackend,
+    ctx: &Ctx,
+    window: &str,
+    m: &Message,
+    source: &str,
+) -> Option<bool> {
+    match b.message_send(ctx, window, m, source) {
+        Ok((written, _)) => Some(written),
+        Err(error) => {
+            assert_eq!(error.kind, ErrorKind::Indeterminate, "{error:?}");
+            assert!(
+                error.message.contains("did not report what it committed"),
+                "{error:?}"
+            );
+            let (_, original) = b.message_receipt(&m.id).unwrap().unwrap();
+            assert!(original.same_delivery(m));
+            None
+        }
+    }
+}
+
 #[test]
 fn remote_key_binding_is_atomic_across_week_windows() {
     let Some(server) = super::tests::quipu_server() else {
@@ -36,15 +60,13 @@ fn remote_key_binding_is_atomic_across_week_windows() {
     let (retry_ctx, retry) = candidate("2026-11-02T00:00:01Z", "sequential");
     let first_w = window_graph(graph, &first.sent_at).unwrap();
     let retry_w = window_graph(graph, &retry.sent_at).unwrap();
-    assert!(
-        b.message_send(&first_ctx, &first_w, &first, "test")
-            .unwrap()
-            .0
+    assert_ne!(
+        send_checked(&mut b, &first_ctx, &first_w, &first, "test"),
+        Some(false)
     );
-    assert!(
-        !b.message_send(&retry_ctx, &retry_w, &retry, "test")
-            .unwrap()
-            .0
+    assert_ne!(
+        send_checked(&mut b, &retry_ctx, &retry_w, &retry, "test"),
+        Some(true)
     );
     assert_eq!(
         b.message_receipt(&first.id).unwrap().unwrap(),
@@ -72,15 +94,16 @@ fn remote_key_binding_is_atomic_across_week_windows() {
                 let (ctx, m) = candidate(at, "concurrent");
                 let window = window_graph(graph, at).unwrap();
                 barrier.wait();
-                b.message_send(&ctx, &window, &m, "race").unwrap().0
+                send_checked(&mut b, &ctx, &window, &m, "race")
             })
         })
         .collect();
-    let writes = handles
-        .into_iter()
-        .map(|h| usize::from(h.join().unwrap()))
-        .sum::<usize>();
-    assert_eq!(writes, 1);
+    let outcomes: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let known_writes = outcomes.iter().filter(|r| **r == Some(true)).count();
+    assert!(known_writes <= 1);
+    if outcomes.iter().all(Option::is_some) {
+        assert_eq!(known_writes, 1);
+    }
     let messages = b.messages(&[first_w, retry_w], None).unwrap();
     assert_eq!(messages.len(), 2, "one sequential and one concurrent key");
     assert!(b.snapshot(None).unwrap().seeds.is_empty());
@@ -124,7 +147,7 @@ fn committed_message_with_lost_response_is_not_written_again() {
     let mut direct = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
     let (ctx, first) = candidate("2026-11-01T23:59:59Z", "warm");
     let window = window_graph(graph, &ctx.now).unwrap();
-    direct.message_send(&ctx, &window, &first, "warm").unwrap();
+    send_checked(&mut direct, &ctx, &window, &first, "warm");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy_url = format!("http://{}", listener.local_addr().unwrap());
     let base = server.base.clone();
@@ -191,11 +214,9 @@ fn committed_message_with_lost_response_is_not_written_again() {
     assert_eq!(proxy.join().unwrap(), 1);
     let (retry_ctx, retry) = candidate("2026-11-02T00:00:01Z", "lost-real");
     let retry_window = window_graph(graph, &retry_ctx.now).unwrap();
-    assert!(
-        !direct
-            .message_send(&retry_ctx, &retry_window, &retry, "retry")
-            .unwrap()
-            .0
+    assert_ne!(
+        send_checked(&mut direct, &retry_ctx, &retry_window, &retry, "retry"),
+        Some(true)
     );
     assert_eq!(
         direct.message_receipt(&retry.id).unwrap().unwrap(),

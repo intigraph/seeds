@@ -58,9 +58,9 @@ fn messages_land_in_their_week_window_and_never_on_the_board() {
     // Idempotent on the id (same delivery key): nothing is rewritten.
     assert!(!b.message_send(&c, &w, &m1, "st inbox").unwrap().0);
 
-    let wu = b.messages(&[w.clone()], Some("wu")).unwrap();
+    let wu = b.messages(std::slice::from_ref(&w), Some("wu")).unwrap();
     assert_eq!(wu, vec![m1.clone()]);
-    assert_eq!(b.messages(&[w.clone()], None).unwrap().len(), 2);
+    assert_eq!(b.messages(std::slice::from_ref(&w), None).unwrap().len(), 2);
     // A window that does not exist holds nothing.
     let empty = window_graph(GRAPH, "2026-10-01T00:00:00Z").unwrap();
     assert!(b.messages(&[empty], None).unwrap().is_empty());
@@ -99,7 +99,7 @@ fn a_read_mark_is_written_once_and_listing_reports_it() {
     let w = window_graph(GRAPH, at).unwrap();
     let m = msg("k1", "wu", at, "hello");
     b.message_send(&ctx(at), &w, &m, "st inbox").unwrap();
-    assert!(b.messages(&[w.clone()], Some("wu")).unwrap()[0]
+    assert!(b.messages(std::slice::from_ref(&w), Some("wu")).unwrap()[0]
         .read_at
         .is_none());
     assert!(b
@@ -108,7 +108,7 @@ fn a_read_mark_is_written_once_and_listing_reports_it() {
     assert!(!b
         .message_mark_read(&ctx("2026-11-02T06:00:00Z"), &w, &m.id)
         .unwrap());
-    let got = b.messages(&[w.clone()], Some("wu")).unwrap();
+    let got = b.messages(std::slice::from_ref(&w), Some("wu")).unwrap();
     assert_eq!(got[0].read_at.as_deref(), Some("2026-11-02T05:00:00Z"));
     assert!(b.message_mark_read(&ctx(at), &w, "msg-nope").is_err());
 }

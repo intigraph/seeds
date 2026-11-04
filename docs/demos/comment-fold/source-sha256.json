@@ -1,0 +1,7 @@
+{
+  "src/native/show.rs": "502e730f9d03db2fcd5d7ce9dcb316ad71e8ff93c0e6f7f438a74e990f794191",
+  "src/native/cli.rs": "c571b8ecad9a50c9c7d7ccd68acd31efea1fe96577010b0aa007978847e51e0a",
+  "src/native/mod.rs": "dbe643658c5d9e37cb3ed887391e9318c288584a2ae24b7691534d78a3cae718",
+  "src/output.rs": "f05266d8f2916fa807f5f304b5851652f7ce35581ad6e771f4acd53b1d28dee3",
+  "src/schema.rs": "487c1095c29c332571aaf6c05eb0ec0a4e1160917b543aa5248e0deedee98f4a"
+}

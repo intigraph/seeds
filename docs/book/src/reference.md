@@ -119,3 +119,23 @@ Owner-filtered readiness discovers only explicitly open candidates before
 checking dependencies. Closed ownership history does not create readiness
 requests. Deferred inclusion still uses its separate existing read, and all
 remaining filters and claim checks retain their existing semantics.
+
+### Current state and comment history
+
+`sd show ID` displays the description and notes as current state, followed by
+five recent comments. JSON keeps every existing seed, dependency and comment
+field, with `comments_total` and `comments_folded` on each show row. A nonzero
+folded count means the displayed comment array is incomplete.
+
+Use `sd show ID --comments-limit N` for a different bound (zero hides all), or
+`sd show ID --all-comments` for the complete history. `sd comments list ID`
+remains complete. These read options also respect `--at`; they change no stored
+comment, author, index or timestamp. Code that needs full comment history must
+use one of the explicit complete-history commands.
+
+After more than twenty comments, consolidate the current scope with
+`sd rescope ID --spec-file current.md --quote 'original request' --summary 'current scope'`.
+Rescope supersedes the current description atomically and retains its governed
+specification event; it does not delete comments. Do not append prior versions
+of the specification into the new description. Keep current state concise and
+use history for the evidence behind it.

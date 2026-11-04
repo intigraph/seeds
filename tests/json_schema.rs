@@ -189,6 +189,8 @@ fn every_verb_prints_its_documented_keys() {
             SEED_KEYS,
             &[
                 "comments",
+                "comments_total",
+                "comments_folded",
                 "dependencies",
                 "dependents",
                 "external_blockers"

@@ -613,6 +613,18 @@ pub struct ShowArgs {
     /// Seed id(s)
     #[arg(required = true)]
     pub ids: Vec<String>,
+    /// Number of recent comments to display (0 hides all comments).
+    #[arg(long, default_value_t = 5, conflicts_with = "all_comments")]
+    #[serde(default = "default_comment_limit")]
+    pub comments_limit: usize,
+    /// Display the complete comment history instead of folding older entries.
+    #[arg(long)]
+    #[serde(default)]
+    pub all_comments: bool,
+}
+
+fn default_comment_limit() -> usize {
+    5
 }
 
 /// `sd list`.

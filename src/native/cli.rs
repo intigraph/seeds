@@ -448,16 +448,24 @@ pub struct CutoverArgs {
 /// `sd export`.
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// Directory to write (default: the configured [pendant] dir)
-    #[arg(long, value_name = "DIR")]
+    /// Pendant directory (default: configured dir), or github for GitHub Issues.
+    #[arg(long, value_name = "DESTINATION")]
     pub to: Option<String>,
+    #[command(flatten)]
+    pub transfer: super::transfer::Args,
 }
 
 /// `sd import`.
 #[derive(Debug, Args)]
 pub struct ImportArgs {
     /// The pendant directory to read
-    pub dir: String,
+    #[arg(required_unless_present = "from")]
+    pub dir: Option<String>,
+    /// External task manager (pendant import is unchanged when omitted).
+    #[arg(long, value_parser = ["github"])]
+    pub from: Option<String>,
+    #[command(flatten)]
+    pub transfer: super::transfer::Args,
     /// Where the two disagree, take this side: pendant or store
     #[arg(long, value_parser = ["pendant", "store"])]
     pub prefer: Option<String>,
@@ -1517,6 +1525,8 @@ impl Command {
                     | LabelCommand::Remove { .. }
                     | LabelCommand::Rename { .. }
             ),
+            Command::Export(a) if super::transfer::is_target(a.to.as_deref()) => a.transfer.execute,
+            Command::Import(a) if a.from.is_some() => a.transfer.execute,
             Command::Import(_) | Command::Sync(_) | Command::MergeDriver(_) | Command::Init(_) => {
                 true
             }

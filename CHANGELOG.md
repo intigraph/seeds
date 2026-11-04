@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-11-04
+
+### Fixed
+
+- *(read-stream)* Stream the operator bootstrap instead of a 256 MiB read (#223) ([6652891](https://github.com/scbrown/seeds/commit/66528914f0cbcd837353934c88cda41396dd8e0b))
+
 ## [0.11.0] - 2026-11-02
 
 ### Perf

@@ -38,6 +38,7 @@ impl Scope {
             Command::Update(_) => "sd-update",
             Command::Close(_) => "sd-close",
             Command::Comments { .. } => "sd-comments",
+            Command::Msg { .. } => "sd-msg",
             Command::Where => "sd-where",
             Command::Info(_) => "sd-info",
             _ => "sd-other",

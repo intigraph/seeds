@@ -48,6 +48,8 @@ pub mod acquisition;
 mod comment_tests;
 #[cfg(test)]
 mod gateway_tests;
+#[cfg(test)]
+mod message_tests;
 mod owner_query;
 mod summary;
 
@@ -1555,6 +1557,278 @@ fn sparql_obj(o: &Obj) -> String {
 }
 
 impl Backend for RemoteBackend {
+    fn message_send(
+        &mut self,
+        ctx: &Ctx,
+        window: &str,
+        message: &crate::message::Message,
+        source: &str,
+    ) -> Result<(bool, u64)> {
+        if !crate::message::is_window_of(&self.graph, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}; nothing was sent",
+                self.graph
+            )));
+        }
+        let problems = message.problems();
+        if !problems.is_empty() {
+            return Err(SdError::usage(format!(
+                "message not sent: {}",
+                problems.join("; ")
+            )));
+        }
+        // Register the window and its provenance side graph first: a WHERE
+        // only sees registered graphs, so the absence guard below would pass
+        // vacuously on an unregistered window.
+        let pg = provenance_graph(window);
+        let bg = crate::message::binding_graph(&self.graph);
+        let existing = self.graph_iris();
+        for g in [window.to_string(), pg.clone(), bg.clone()] {
+            if !existing.as_ref().is_some_and(|e| e.contains(&g)) {
+                self.post(
+                    "/graph/create",
+                    "application/json",
+                    &json!({ "graph": g }).to_string(),
+                    true,
+                )?;
+            }
+        }
+        let iri = crate::message::message_iri(&message.id);
+        let write_iri = format!(
+            "urn:seeds:write:{}",
+            &crate::pendant::sha256(
+                format!("{}\n{}\n{source}\n{iri}", ctx.now, ctx.actor).as_bytes()
+            )[7..31]
+        );
+        let triples = |subject: &str, facts: &[Fact]| -> String {
+            facts
+                .iter()
+                .map(|(p, o)| format!("<{subject}> <{p}> {} . ", sparql_obj(o)))
+                .collect()
+        };
+        let record: Vec<Fact> = vec![
+            (
+                crate::vocab::RDF_TYPE.into(),
+                Obj::Iri(crate::vocab::seeds("Write")),
+            ),
+            (crate::vocab::seeds("actor"), Obj::Str(ctx.actor.clone())),
+            (crate::vocab::seeds("source"), Obj::Str(source.to_string())),
+            (crate::vocab::seeds("at"), Obj::Str(ctx.now.clone())),
+            (crate::vocab::seeds("wrote"), Obj::Iri(iri.clone())),
+        ];
+        let update = format!(
+            "INSERT {{ GRAPH <{window}> {{ {} }} GRAPH <{pg}> {{ {} }} GRAPH <{bg}> {{ <{iri}> <{binding}> <{window}> }} }} WHERE {{ FILTER NOT EXISTS {{ GRAPH <{bg}> {{ <{iri}> <{binding}> ?original }} }} }}",
+            triples(&iri, &message.facts()),
+            triples(&write_iri, &record),
+            binding = crate::message::binding_predicate()
+        );
+        let form = format!(
+            "update={}&actor={}&source={}",
+            form_encode(&update),
+            form_encode(&ctx.actor),
+            form_encode(source)
+        );
+        if form.len() > self.max_write_bytes {
+            return Err(SdError::refused(format!(
+                "{}: this message is {} bytes and the limit is {} (SEEDS_MAX_WRITE_BYTES); nothing was sent",
+                crate::backend::TOO_LARGE,
+                form.len(),
+                self.max_write_bytes
+            )));
+        }
+        match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
+            Ok(body) => match update_report(&body) {
+                // asserted > 0 exactly when the absence guard matched.
+                Some((changed, tx)) => {
+                    match self.message_receipt(&message.id) {
+                        Ok(Some((_, original))) if original.same_delivery(message) => Ok((changed > 0, tx.unwrap_or(0))),
+                        Ok(Some(_)) => Err(SdError::conflict("delivery key is already bound to a different message")),
+                        other => Err(SdError::new(ErrorKind::Indeterminate, format!(
+                            "message update returned but original delivery binding is unverified ({other:?}); do not assume delivery"))),
+                    }
+                },
+                None => Err(SdError::new(
+                    ErrorKind::Indeterminate,
+                    format!(
+                        "the server took the message write but did not report what it committed; \
+                         check `sd msg show {}` before resending",
+                        message.id
+                    ),
+                )),
+            },
+            Err((false, e)) => Err(e),
+            Err((true, e)) => {
+                // The request may have landed: look before saying anything.
+                match self.message_receipt(&message.id) {
+                    Ok(Some((_, original))) if original.same_delivery(message) => {
+                        eprintln!(
+                            "sd: the server's response was lost ({}); a read-back shows the message landed",
+                            e.message
+                        );
+                        Ok((true, 0))
+                    }
+                    Ok(Some(_)) => Err(SdError::conflict("delivery key is already bound to a different message")),
+                    Ok(None) => Err(SdError::new(
+                        ErrorKind::Indeterminate,
+                        format!(
+                            "the message's outcome is UNKNOWN: the response was lost ({}) and a \
+                             read-back does not show {} yet. A resend with the same delivery key \
+                             is safe: it cannot write a second copy.",
+                            e.message, message.id
+                        ),
+                    )),
+                    Err(read) => Err(SdError::new(
+                        ErrorKind::Indeterminate,
+                        format!(
+                            "the message's outcome is UNKNOWN: the response was lost ({}) and the \
+                             read-back failed ({}). A resend with the same delivery key is safe.",
+                            e.message, read.message
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+
+    fn message_receipt(&self, id: &str) -> Result<Option<(String, crate::message::Message)>> {
+        let bg = crate::message::binding_graph(&self.graph);
+        let iri = crate::message::message_iri(id);
+        let (rows, truncated) = self.select_marked(
+            &format!(
+                "SELECT ?window WHERE {{ GRAPH <{bg}> {{ <{iri}> <{}> ?window }} }} LIMIT 2",
+                crate::message::binding_predicate()
+            ),
+            None,
+        )?;
+        if truncated || rows.len() > 1 {
+            return Err(SdError::failed("ambiguous or truncated message binding"));
+        }
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let window = match row.get("window") {
+            Some(Obj::Iri(w)) if crate::message::is_window_of(&self.graph, w) => w.clone(),
+            _ => return Err(SdError::failed("malformed message binding")),
+        };
+        let (rows, truncated) = self.select_marked(
+            &format!("SELECT ?p ?o WHERE {{ GRAPH <{window}> {{ <{iri}> ?p ?o }} }} LIMIT 1000"),
+            None,
+        )?;
+        if truncated || rows.len() >= 1000 {
+            return Err(SdError::failed("truncated bound message"));
+        }
+        let mut facts = Vec::new();
+        for row in rows {
+            match (row.get("p"), row.get("o")) {
+                (Some(Obj::Iri(p)), Some(o)) => facts.push((p.clone(), o.clone())),
+                _ => return Err(SdError::failed("malformed bound message row")),
+            }
+        }
+        let message = crate::message::Message::from_facts(&facts)
+            .filter(|m| m.id == id)
+            .ok_or_else(|| {
+                SdError::failed("message binding points at a missing or malformed message")
+            })?;
+        Ok(Some((window, message)))
+    }
+
+    fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {
+        if !crate::message::is_window_of(&self.graph, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}",
+                self.graph
+            )));
+        }
+        let s = crate::vocab::SCHEMA;
+        let iri = crate::message::message_iri(id);
+        let (p, o) = crate::message::read_fact(&ctx.now);
+        let update = format!(
+            "INSERT {{ GRAPH <{window}> {{ <{iri}> <{p}> {} . }} }} WHERE {{ GRAPH <{window}> {{ <{iri}> a <{s}Message> FILTER NOT EXISTS {{ <{iri}> <{s}dateRead> ?r }} }} }}",
+            sparql_obj(&o)
+        );
+        let form = format!(
+            "update={}&actor={}&source={}",
+            form_encode(&update),
+            form_encode(&ctx.actor),
+            form_encode("sd msg read")
+        );
+        match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
+            Ok(body) => match update_report(&body) {
+                Some((changed, _)) => Ok(changed > 0),
+                None => Err(SdError::new(
+                    ErrorKind::Indeterminate,
+                    format!(
+                        "the server did not report the read mark of {id}; check `sd msg show {id}`"
+                    ),
+                )),
+            },
+            Err((false, e)) => Err(e),
+            // Marking read is idempotent (the guard keeps the first mark), so
+            // the caller may simply repeat it; say so instead of guessing.
+            Err((true, e)) => Err(SdError::new(
+                ErrorKind::Indeterminate,
+                format!(
+                    "the read mark of {id} is UNKNOWN ({}); repeating `sd msg read {id}` is safe",
+                    e.message
+                ),
+            )),
+        }
+    }
+
+    fn messages(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<Vec<crate::message::Message>> {
+        let s = crate::vocab::SCHEMA;
+        let mut out = Vec::new();
+        for window in windows {
+            if !crate::message::is_window_of(&self.graph, window) {
+                return Err(SdError::usage(format!(
+                    "{window} is not a message window of {}",
+                    self.graph
+                )));
+            }
+            let filter = recipient
+                .map(|r| format!(" ; <{s}recipient> <{}>", crate::vocab::principal_iri(r)))
+                .unwrap_or_default();
+            let q = format!(
+                "SELECT ?m ?p ?o WHERE {{ GRAPH <{window}> {{ ?m a <{s}Message>{filter} . ?m ?p ?o }} }}"
+            );
+            let (rows, truncated) = self.select_marked(&q, None)?;
+            if truncated {
+                return Err(SdError::failed(format!(
+                    "the server cut the message listing of {window} short; refusing a partial answer"
+                )));
+            }
+            let mut by: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
+            for row in rows {
+                let (Some(Obj::Iri(m)), Some(Obj::Iri(p)), Some(o)) =
+                    (row.get("m"), row.get("p"), row.get("o"))
+                else {
+                    return Err(SdError::failed(format!(
+                        "a malformed row in the message listing of {window}"
+                    )));
+                };
+                by.entry(m.clone())
+                    .or_default()
+                    .push((p.clone(), o.clone()));
+            }
+            for (m, facts) in by {
+                match crate::message::Message::from_facts(&facts) {
+                    Some(msg) => out.push(msg),
+                    None => {
+                        return Err(SdError::failed(format!(
+                            "{m} in {window} is malformed; refusing a partial listing"
+                        )))
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.sent_at, &a.id).cmp(&(&b.sent_at, &b.id)));
+        Ok(out)
+    }
+
     fn spec_change_ids(&self) -> Result<Vec<String>> {
         let branches: Vec<_> = [&self.graph, &vocab::ephemeral_graph(&self.graph)]
             .iter()

@@ -276,6 +276,50 @@ pub trait Backend {
     /// `None`).
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot>;
 
+    /// Write one crew message into its window graph. Idempotent across windows on
+    /// the message id: an existing message is not rewritten. Returns whether
+    /// it was written and the transaction. A backend without named graphs
+    /// refuses rather than falling back to a seed.
+    fn message_send(
+        &mut self,
+        _ctx: &Ctx,
+        _window: &str,
+        _message: &crate::message::Message,
+        _source: &str,
+    ) -> Result<(bool, u64)> {
+        Err(crate::error::SdError::usage(
+            "messages need a quipu store or server; this backend has no message graphs",
+        ))
+    }
+
+    /// Resolve a delivery's immutable binding and original message. An unreadable,
+    /// malformed or dangling binding is an error, never evidence of absence.
+    fn message_receipt(&self, _id: &str) -> Result<Option<(String, crate::message::Message)>> {
+        Err(crate::error::SdError::usage(
+            "this backend has no message bindings",
+        ))
+    }
+
+    /// Mark one message read (append `schema:dateRead` once; a message already
+    /// read keeps its first mark). Returns whether a mark was written.
+    fn message_mark_read(&mut self, _ctx: &Ctx, _window: &str, _id: &str) -> Result<bool> {
+        Err(crate::error::SdError::usage(
+            "messages need a quipu store or server; this backend has no message graphs",
+        ))
+    }
+
+    /// Messages in the named windows, for one recipient or all. A window that
+    /// does not exist holds no messages; an unreadable one is an error.
+    fn messages(
+        &self,
+        _windows: &[String],
+        _recipient: Option<&str>,
+    ) -> Result<Vec<crate::message::Message>> {
+        Err(crate::error::SdError::usage(
+            "messages need a quipu store or server; this backend has no message graphs",
+        ))
+    }
+
     /// An indexed search page. The backend selects and counts matches before
     /// retrieving the full facts of just the requested page.
     fn search_page(

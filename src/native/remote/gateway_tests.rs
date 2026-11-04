@@ -524,3 +524,88 @@ fn an_unusable_stats_refuses_before_anything_is_signed() {
         );
     }
 }
+
+#[test]
+fn lost_message_response_resolves_original_binding_without_replaying_update() {
+    use crate::message::{binding_graph, message_id, window_graph, Message};
+    let graph = "https://example.org/project/mail";
+    let first_at = "2026-11-01T23:59:59Z";
+    let retry_at = "2026-11-02T00:00:01Z";
+    let original = Message {
+        id: message_id(Some("lost"), "reader", first_at, "body"),
+        recipient: "reader".into(),
+        sender: Some("sender".into()),
+        sent_at: first_at.into(),
+        text: "body".into(),
+        kind: "note".into(),
+        delivery_key: Some("lost".into()),
+        about: vec![],
+        read_at: None,
+    };
+    let old = window_graph(graph, first_at).unwrap();
+    let new = window_graph(graph, retry_at).unwrap();
+    let bg = binding_graph(graph);
+    let graphs =
+        json!({"graphs":[{"iri":new},{"iri":provenance_graph(&new)},{"iri":bg}]}).to_string();
+    let binding =
+        json!({"results":{"bindings":[{"window":{"type":"uri","value":old}}]}}).to_string();
+    let facts: Vec<_> = original
+        .facts()
+        .into_iter()
+        .map(|(p, o)| {
+            let value = match o {
+                Obj::Iri(v) => json!({"type":"uri","value":v}),
+                Obj::Str(v) => json!({"type":"literal","value":v}),
+                Obj::Typed { lexical, datatype } => {
+                    json!({"type":"literal","value":lexical,"datatype":datatype})
+                }
+                _ => panic!("unexpected fixture fact"),
+            };
+            json!({"p":{"type":"uri","value":p},"o":value})
+        })
+        .collect();
+    let body = json!({"results":{"bindings":facts}}).to_string();
+    for outcome in ["present", "absent", "unreadable"] {
+        let mut replies = vec![
+            (200, "ok"),
+            (200, Box::leak(graphs.clone().into_boxed_str()) as &str),
+            (502, "lost"),
+        ];
+        match outcome {
+            "present" => replies.extend([
+                (200, Box::leak(binding.clone().into_boxed_str()) as &str),
+                (200, Box::leak(body.clone().into_boxed_str()) as &str),
+            ]),
+            "absent" => replies.push((200, r#"{"results":{"bindings":[]}}"#)),
+            _ => replies.push((408, "unreadable")),
+        }
+        let (base, worker) = server(replies);
+        let mut b = RemoteBackend::connect(&base, graph, None, None, &[]).unwrap();
+        let mut retry = original.clone();
+        retry.sent_at = retry_at.into();
+        let ctx = Ctx {
+            now: retry_at.into(),
+            actor: "sender".into(),
+            prefix: "test".into(),
+            claims: Default::default(),
+        };
+        let result = b.message_send(&ctx, &new, &retry, "test");
+        if outcome == "present" {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Indeterminate);
+        }
+        let requests = worker.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.starts_with("POST /update "))
+                .count(),
+            1
+        );
+        assert!(requests[3].contains("message-bindings"));
+        if outcome == "present" {
+            assert!(requests[4].contains("2026-W44"));
+        }
+    }
+}

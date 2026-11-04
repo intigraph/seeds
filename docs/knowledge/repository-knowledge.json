@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "f25f3a1e6527e9f1f1e1171063e720567dc418e20414041aae32f6b21514f8cf",
+      "source_sha256": "1c981c3ce240d3428f560fd336a440fccd9b9a4ac20d06c2cf7cea4d11d20c4c",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -60,7 +60,7 @@
       "source": "src/lib.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Flib.rs",
       "summary": "The Rust library exposes the work-item model and backend abstraction independently of native process, file, clock and network integration.",
-      "source_sha256": "9f24520e4d6a049c3db070b4fc2abd451fe81cc145de4e17b024f3132fc89be3",
+      "source_sha256": "2feb98a528f24a092825a25d1470684a2dbe12365f3eefff6ac2cd7f8cc4386d",
       "properties": {
         "interfaceKind": "library",
         "publicName": "seeds Rust core"

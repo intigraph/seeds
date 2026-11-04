@@ -34,7 +34,7 @@ use crate::quipu_backend::QuipuBackend;
 use crate::sync;
 use cli::{
     BlockersCommand, Cli, Command, CommentsCommand, ConfigCommand, DepCommand, EpicCommand,
-    LabelCommand,
+    LabelCommand, MsgCommand,
 };
 use config::{Location, Resolved};
 use serde_json::json;
@@ -3590,6 +3590,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             "export, import, sync, merge-driver, completions, init, version, where and the mapped verbs are handled before dispatch",
         )),
         Command::Label { command } => label(json, at, ctx, b, command),
+        Command::Msg { command } => msg(json, ctx, b, command),
         Command::Comments { command } => match command {
             CommentsCommand::Add {
                 id,
@@ -4208,5 +4209,188 @@ mod selected_credential_tests {
             .unwrap_err()
             .to_string()
             .contains("selected credential unavailable"));
+    }
+}
+
+/// `sd msg ...`: crew mail in per-week window graphs.
+fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Result<Outcome> {
+    use crate::message::{message_id, recent_windows, window_graph, Message};
+    let graph = b
+        .project_graph()
+        .ok_or_else(|| SdError::usage("sd msg needs a project graph (a quipu store or server)"))?
+        .to_string();
+    let windows = |weeks: u32| {
+        recent_windows(&graph, &ctx.now, weeks).ok_or_else(|| {
+            SdError::failed(format!("the clock {:?} is not a valid instant", ctx.now))
+        })
+    };
+    let view = |m: &Message| {
+        serde_json::json!({
+            "id": m.id, "to": m.recipient, "from": m.sender, "sent_at": m.sent_at,
+            "kind": m.kind, "key": m.delivery_key, "about": m.about, "text": m.text,
+            "read_at": m.read_at,
+        })
+    };
+    match command {
+        MsgCommand::Send {
+            to,
+            from,
+            kind,
+            key,
+            about,
+            text,
+            message,
+            file,
+        } => {
+            let given = [!text.is_empty(), file.is_some(), message.is_some()]
+                .iter()
+                .filter(|x| **x)
+                .count();
+            if given != 1 {
+                return Err(SdError::usage(
+                    "give the message text exactly one way: positional, --message or --file",
+                ));
+            }
+            let body = match (file, message) {
+                (Some(f), _) => read_text(f)?,
+                (None, Some(m)) => m.clone(),
+                (None, None) => text.join(" "),
+            };
+            let sent_at =
+                crate::model::canonical_time(&ctx.now, false).unwrap_or_else(|| ctx.now.clone());
+            let m = Message {
+                id: message_id(key.as_deref(), to, &sent_at, &body),
+                recipient: to.clone(),
+                sender: Some(from.clone().unwrap_or_else(|| ctx.actor.clone())),
+                sent_at: sent_at.clone(),
+                text: body,
+                kind: kind.clone(),
+                delivery_key: key.clone(),
+                about: about.clone(),
+                read_at: None,
+            };
+            let window = window_graph(&graph, &sent_at).ok_or_else(|| {
+                SdError::failed(format!("the clock {sent_at:?} is not a valid instant"))
+            })?;
+            let (written, tx) = b.message_send(ctx, &window, &m, "sd msg send")?;
+            // The key may already belong to a prior week. Never print the retry's
+            // proposed recipient/time/window as though those were the receipt.
+            let (window, m) = b.message_receipt(&m.id)?.ok_or_else(|| {
+                SdError::new(crate::error::ErrorKind::Indeterminate,
+                    "message write returned without a readable delivery binding; do not assume delivery")
+            })?;
+            let text = format!(
+                "{} {} to {} in {}{}",
+                if written { "sent" } else { "already sent" },
+                m.id,
+                m.recipient,
+                window,
+                tx_note(tx)
+            );
+            let mut v = view(&m);
+            v["window"] = serde_json::json!(window);
+            v["written"] = serde_json::json!(written);
+            Ok(ok(json, output::with_tx(v, Some(tx)), text, vec![]))
+        }
+        MsgCommand::List { to, unread, weeks } => {
+            let mut ms = b.messages(&windows(*weeks)?, to.as_deref())?;
+            if *unread {
+                ms.retain(|m| m.read_at.is_none());
+            }
+            let text = if ms.is_empty() {
+                "no messages".to_string()
+            } else {
+                ms.iter()
+                    .map(|m| {
+                        format!(
+                            "{} {} -> {} [{}] {}",
+                            m.id,
+                            m.sender.as_deref().unwrap_or("?"),
+                            m.recipient,
+                            m.sent_at,
+                            crate::message::label_preview(&m.text)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok(ok(
+                json,
+                serde_json::json!(ms.iter().map(view).collect::<Vec<_>>()),
+                text,
+                vec![],
+            ))
+        }
+        MsgCommand::Count { to, unread, weeks } => {
+            let n = b
+                .messages(&windows(*weeks)?, to.as_deref())?
+                .iter()
+                .filter(|m| !*unread || m.read_at.is_none())
+                .count();
+            Ok(ok(
+                json,
+                serde_json::json!({ "count": n }),
+                n.to_string(),
+                vec![],
+            ))
+        }
+        MsgCommand::Read { ids, weeks } => {
+            // Find each message's window from a bounded listing, then mark it.
+            let mut found = Vec::new();
+            for w in windows(*weeks)? {
+                for m in b.messages(std::slice::from_ref(&w), None)? {
+                    if ids.contains(&m.id) {
+                        found.push((w.clone(), m));
+                    }
+                }
+            }
+            let missing: Vec<&String> = ids
+                .iter()
+                .filter(|i| !found.iter().any(|(_, m)| &m.id == *i))
+                .collect();
+            if !missing.is_empty() {
+                return Err(SdError::new(
+                    crate::error::ErrorKind::NotFound,
+                    format!(
+                        "no message {} in the last {weeks} week(s); nothing was marked",
+                        missing
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+            let mut out = Vec::new();
+            for (w, m) in &found {
+                let marked = b.message_mark_read(ctx, w, &m.id)?;
+                out.push(serde_json::json!({ "id": m.id, "marked": marked }));
+            }
+            let text = format!("marked {} read", out.len());
+            Ok(ok(json, serde_json::json!(out), text, vec![]))
+        }
+        MsgCommand::Show { id, weeks } => {
+            let ms = b.messages(&windows(*weeks)?, None)?;
+            match ms.iter().find(|m| &m.id == id) {
+                Some(m) => Ok(ok(
+                    json,
+                    view(m),
+                    format!(
+                        "{} from {} to {} at {} ({})\n{}",
+                        m.id,
+                        m.sender.as_deref().unwrap_or("?"),
+                        m.recipient,
+                        m.sent_at,
+                        m.kind,
+                        m.text
+                    ),
+                    vec![],
+                )),
+                None => Err(SdError::new(
+                    crate::error::ErrorKind::NotFound,
+                    format!("no message {id} in the last {weeks} week(s)"),
+                )),
+            }
+        }
     }
 }

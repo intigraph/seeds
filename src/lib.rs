@@ -33,6 +33,7 @@ pub mod blockers;
 pub mod engine;
 pub mod error;
 pub mod ids;
+pub mod message;
 pub mod model;
 pub mod output;
 pub mod pendant;

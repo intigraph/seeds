@@ -154,3 +154,75 @@ fn duplicate_version_control_keeps_its_focus_and_path() {
         "scheduled full-board validation must retain its seeded version control"
     );
 }
+
+#[test]
+fn remote_gate_admits_producer_messages_and_refuses_malformed_ones() {
+    use seeds::message::{message_id, Message};
+    let shapes = include_str!("../shapes/quipu-gate.shapes.ttl");
+    let at = "2026-11-02T04:00:00Z";
+    let m = Message {
+        id: message_id(Some("key-1"), "wu", at, "hello"),
+        recipient: "wu".into(),
+        sender: Some("grant".into()),
+        sent_at: at.into(),
+        text: "hello\nsecond line".into(),
+        kind: "alert".into(),
+        delivery_key: Some("key-1".into()),
+        about: vec!["sd-example".into()],
+        read_at: None,
+    };
+    let subject = seeds::message::message_iri(&m.id);
+    let render = |facts: &Vec<seeds::model::Fact>| {
+        let mut data = String::new();
+        push_ntriples(&mut data, &subject, facts);
+        data
+    };
+    let good = m.facts();
+    assert!(
+        quipu::validate_shapes(shapes, &render(&good))
+            .unwrap()
+            .conforms
+    );
+    // Each required field, once removed, is refused.
+    for predicate in [
+        "https://schema.org/identifier",
+        "http://www.w3.org/2000/01/rdf-schema#label",
+        "https://schema.org/recipient",
+        "https://schema.org/dateSent",
+        "https://schema.org/text",
+    ] {
+        let without: Vec<_> = good
+            .iter()
+            .filter(|(p, _)| p != predicate)
+            .cloned()
+            .collect();
+        assert!(
+            !quipu::validate_shapes(shapes, &render(&without))
+                .unwrap()
+                .conforms,
+            "missing {predicate} must be refused"
+        );
+    }
+    // An unknown kind is refused; a second recipient is refused.
+    let mut bad_kind = good.clone();
+    for (p, o) in bad_kind.iter_mut() {
+        if p == "https://seeds.local/ontology/messageKind" {
+            *o = seeds::model::Obj::Str("task".into());
+        }
+    }
+    assert!(
+        !quipu::validate_shapes(shapes, &render(&bad_kind))
+            .unwrap()
+            .conforms
+    );
+    let mut two = good.clone();
+    two.push((
+        "https://schema.org/recipient".into(),
+        seeds::model::Obj::Iri(seeds::vocab::principal_iri("tim")),
+    ));
+    assert!(
+        !quipu::validate_shapes(shapes, &render(&two))
+            .unwrap()
+            .conforms
+    );
+}

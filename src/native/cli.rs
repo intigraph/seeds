@@ -239,6 +239,11 @@ pub enum Command {
         #[command(subcommand)]
         command: CommentsCommand,
     },
+    /// Crew mail in per-week message graphs, outside the board
+    Msg {
+        #[command(subcommand)]
+        command: MsgCommand,
+    },
     /// Manage labels
     Label {
         #[command(subcommand)]
@@ -1329,6 +1334,78 @@ pub enum CommentsCommand {
     },
 }
 
+/// `sd msg ...`: messages are not seeds; they never appear on the board.
+#[derive(Debug, Subcommand)]
+pub enum MsgCommand {
+    /// Send one message into the window of its send time
+    Send {
+        /// Recipient
+        #[arg(long)]
+        to: String,
+        /// Sender (default: the actor)
+        #[arg(long)]
+        from: Option<String>,
+        /// note or alert
+        #[arg(long, default_value = "note")]
+        kind: String,
+        /// Idempotence key: a resend with the same key names the same message
+        #[arg(long)]
+        key: Option<String>,
+        /// A seed this message refers to (repeatable)
+        #[arg(long)]
+        about: Vec<String>,
+        /// Message text (joined with spaces)
+        text: Vec<String>,
+        /// Message text (flag form)
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Read the text from a file
+        #[arg(short, long)]
+        file: Option<String>,
+    },
+    /// List messages, oldest first
+    List {
+        /// Only messages to this recipient
+        #[arg(long)]
+        to: Option<String>,
+        /// Only messages not yet marked read
+        #[arg(long)]
+        unread: bool,
+        /// How many ISO weeks back, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Count messages
+    Count {
+        /// Only messages to this recipient
+        #[arg(long)]
+        to: Option<String>,
+        /// Only messages not yet marked read
+        #[arg(long)]
+        unread: bool,
+        /// How many ISO weeks back, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Mark messages read (the first mark is kept; nothing is deleted)
+    Read {
+        /// Message ids (msg-...)
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// How many ISO weeks back to look, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Show one message by id
+    Show {
+        /// The message id (msg-...)
+        id: String,
+        /// How many ISO weeks back to look, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+}
+
 /// `sd label ...`. Same shapes as br: `label add <id...> <label>` or
 /// `label add <id...> -l <label>`.
 #[derive(Debug, Subcommand)]
@@ -1431,6 +1508,9 @@ impl Command {
                 matches!(command, EpicCommand::CloseEligible { dry_run: false, .. })
             }
             Command::Comments { command } => matches!(command, CommentsCommand::Add { .. }),
+            Command::Msg { command } => {
+                matches!(command, MsgCommand::Send { .. } | MsgCommand::Read { .. })
+            }
             Command::Label { command } => matches!(
                 command,
                 LabelCommand::Add { .. }
@@ -1543,6 +1623,13 @@ impl Command {
             Command::Comments { command } => match command {
                 CommentsCommand::Add { .. } => "comments add",
                 CommentsCommand::List { .. } => "comments list",
+            },
+            Command::Msg { command } => match command {
+                MsgCommand::Send { .. } => "msg send",
+                MsgCommand::List { .. } => "msg list",
+                MsgCommand::Count { .. } => "msg count",
+                MsgCommand::Show { .. } => "msg show",
+                MsgCommand::Read { .. } => "msg read",
             },
             Command::Label { command } => match command {
                 LabelCommand::Add { .. } => "label add",

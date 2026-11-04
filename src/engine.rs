@@ -2476,13 +2476,27 @@ pub fn update(
             "a move needs exactly one item and cannot change priority or claim",
         ));
     }
-    let mut snap = if req.parent.is_some() {
-        b.snapshot(None)?
-    } else if req.claim {
+    let mut snap = if req.claim {
         blocking_snapshot(b, ids, false)?
     } else {
         b.snapshot_items(ids)?
     };
+    if let Some(parent) = req
+        .parent
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        // Reparenting needs the proposed ancestors, not the whole board.
+        // Keep claim's blocking context too, and refuse mixed observations.
+        let ancestors = parent_snapshot(b, &[parent.to_string()])?;
+        if ancestors.tx != snap.tx {
+            return Err(SdError::conflict(
+                "parent context changed while reading; nothing was written",
+            ));
+        }
+        merge_snapshots(&mut snap, ancestors);
+    }
     let move_rank = if let Some(anchor) = moving {
         let target = snap.get(&ids[0])?;
         if anchor == &target.id {

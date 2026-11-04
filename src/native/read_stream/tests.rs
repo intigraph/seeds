@@ -375,6 +375,33 @@ fn private_inputs_refuse_fifo_symlink_and_growth_before_reading() {
 }
 
 #[test]
+fn bootstrap_streams_up_to_the_cut_ceiling_and_still_refuses_bad_input() {
+    // A measured full-board cut is ~0.8 GB; the old 256 MiB in-memory read
+    // refused it outright. The ceiling now matches the server's cut spool quota.
+    const { assert!(MAX_BOOTSTRAP >= 8 * 1024 * 1024 * 1024) };
+    const { assert!(MAX_BOOTSTRAP > 256 * 1024 * 1024) };
+    let fx = Fixture::new();
+    let len = fs::metadata(&fx.config.bootstrap).unwrap().len();
+    // Exactly at the ceiling streams to a complete, requestable board.
+    let board = fx.config.bootstrap_bounded(len).unwrap();
+    assert!(board.stream_request().is_ok());
+    // One byte over the ceiling refuses before reading any frame.
+    assert!(fx.config.bootstrap_bounded(len - 1).is_err());
+    // A truncated bootstrap is never an empty success, streamed or not.
+    let full = fs::read(&fx.config.bootstrap).unwrap();
+    fs::write(&fx.config.bootstrap, &full[..full.len() / 2]).unwrap();
+    assert!(fx.config.bootstrap_bounded(MAX_BOOTSTRAP).is_err());
+    // A bootstrap with an extra trailing frame fragment is refused, not applied.
+    let mut grown = full.clone();
+    grown.extend_from_slice(b"event: quipu.asof\ndata: {}");
+    fs::write(&fx.config.bootstrap, &grown).unwrap();
+    assert!(fx.config.bootstrap_bounded(MAX_BOOTSTRAP).is_err());
+    // Restored exact bytes stream again.
+    fs::write(&fx.config.bootstrap, &full).unwrap();
+    assert!(fx.config.bootstrap_bounded(MAX_BOOTSTRAP).is_ok());
+}
+
+#[test]
 fn replication_credential_is_separate_rotated_and_never_falls_back() {
     let f = Fixture::new();
     let file = &f.config.replication_credential_file;

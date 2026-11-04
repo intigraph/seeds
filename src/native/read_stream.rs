@@ -59,7 +59,14 @@ fn uid() -> u32 {
     // SAFETY: getter only; no identity or privilege operation.
     unsafe { libc::geteuid() }
 }
-fn private_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+/// Largest bootstrap a source can produce: the server's as-of cut spool quota
+/// (quipu `/share/asof`, 8 GiB). The bootstrap is streamed frame by frame, so
+/// this bounds disk input, not memory; each line keeps `MAX_FRAME_BYTES`.
+const MAX_BOOTSTRAP: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Open a regular file owned by this UID with no group/other bits, refusing
+/// links, FIFOs and anything longer than `limit`. Returns the file and length.
+fn private_open(path: &Path, limit: u64) -> Result<(fs::File, u64)> {
     let file = io(OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -70,6 +77,10 @@ fn private_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
             "input must be bounded, private and owned by this UID",
         ));
     }
+    Ok((file, meta.len()))
+}
+fn private_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let (file, _) = private_open(path, limit)?;
     let mut bytes = Vec::new();
     io(file.take(limit + 1).read_to_end(&mut bytes))?;
     if bytes.len() as u64 > limit {
@@ -146,6 +157,9 @@ impl Config {
         }
     }
     fn bootstrap(&self) -> Result<StreamBoard> {
+        self.bootstrap_bounded(MAX_BOOTSTRAP)
+    }
+    fn bootstrap_bounded(&self, ceiling: u64) -> Result<StreamBoard> {
         let bytes = private_file(&self.manifest, 1024 * 1024)?;
         if super::attest::sha256_hex(&bytes) != self.manifest_sha256 {
             return Err(unknown("bootstrap manifest differs from its operator pin"));
@@ -154,10 +168,17 @@ impl Config {
         let mut board =
             StreamBoard::empty(&self.graph, manifest, &self.binding(), &self.stream_key)?;
         // Bounded regular input only; no network cut, symlink, FIFO or import.
-        let bytes = private_file(&self.bootstrap, 256 * 1024 * 1024)?;
-        let mut frames = Frames::new(BufReader::new(bytes.as_slice()));
+        // Streamed: a full-board cut (~2.1M facts, ~0.8 GB measured) is far
+        // larger than any in-memory read budget, and Frames bounds every line.
+        let (file, len) = private_open(&self.bootstrap, ceiling)?;
+        let mut frames = Frames::new(BufReader::new(file.take(len + 1)));
         while let Some((event, data)) = frames.next_frame()? {
             board.apply_frame(&event, &data, 0)?;
+        }
+        // Exactly the bytes measured at open: a file that grew or shrank while
+        // it was read is not the cut the operator pinned.
+        if frames.reader.get_ref().limit() != 1 {
+            return Err(unknown("bootstrap changed while it was read"));
         }
         board.stream_request()?; // incomplete/aborted bootstrap is never empty success
         Ok(board)

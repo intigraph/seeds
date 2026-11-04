@@ -12,6 +12,7 @@ Every document in this repository, and where it lives.
 | `clippy.toml` | the rule that keeps the core wasm-clean ([WebAssembly](wasm.md)) |
 | `docs/book/src/push-reads.md` | operator-pinned push consumer and private local reads |
 | Release comparison adapter and API controls | [Reproducible release API comparison](semver-baseline.md) |
+| `docs/demos/task-transfer/` | loopback GitHub transfer recording, before transcript and replay caption |
 | `docs/demos/push-read/` | isolated push/IPC CLI replay and caption |
 | `docs/demos/locked-semver/` | recorded source-fixture API comparisons and replay caption |
 

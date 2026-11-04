@@ -13,11 +13,13 @@ recording at the published candidate commit. It proves source behavior, not a
 production rollout; separate tests exercise the actual shared-server applier,
 concurrent writers and lost-response recovery.
 
-The [output recording](output.txt) is also a readable transcript. Download it
-with [timing.txt](timing.txt), then replay with:
+The [readable transcript](output.txt) normalizes terminal line endings. Download
+the [lossless output recording](output.txt.gz) with [timing.txt](timing.txt), then
+replay the original bytes with:
 
 ```sh
-scriptreplay --log-out output.txt --log-timing timing.txt
+gzip -dc output.txt.gz > output.raw
+scriptreplay --log-out output.raw --log-timing timing.txt
 ```
 
 Replay was checked locally. This is a terminal recording, not an inline video.

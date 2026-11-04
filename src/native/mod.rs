@@ -1128,7 +1128,13 @@ fn error_outcome(json: bool, e: &SdError, warnings: Vec<String>) -> Outcome {
     Outcome {
         code: e.exit_code(),
         stdout: if json {
-            output::error_json(e.kind.name(), &e.message).to_string()
+            {
+                let mut value = output::error_json(e.kind.name(), &e.message);
+                if let Some(details) = &e.details {
+                    value["error"]["details"] = details.clone();
+                }
+                value.to_string()
+            }
         } else {
             String::new()
         },

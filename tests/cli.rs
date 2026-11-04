@@ -3416,3 +3416,80 @@ fn concurrent_keyed_message_sends_have_one_original_receipt() {
         1
     );
 }
+
+#[test]
+fn expected_revision_reports_bounded_conflict_and_requires_explicit_rebase() {
+    let s = Sandbox::new("revision-conflict-diff");
+    let created = s.json(&["create", "concurrent notes"]);
+    let id = created["id"].as_str().unwrap();
+    let first = s.json(&["show", id]);
+    let second = s.json(&["show", id]);
+    assert_eq!(first[0]["revision"], second[0]["revision"]);
+    let revision = first[0]["revision"].to_string();
+    let long = "🦀".repeat(300);
+    s.ok(&["update", id, "--notes", &long, "--if-revision", &revision]);
+    let failed = s.run(&[
+        "update",
+        id,
+        "--notes",
+        "second",
+        "--force",
+        "--if-revision",
+        &revision,
+        "--json",
+    ]);
+    assert_eq!(code(&failed), 4);
+    let error: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let details = &error["error"]["details"];
+    assert_eq!(details["schema"], "seed-update-conflict/v1");
+    assert_eq!(details["item_id"], id);
+    assert_eq!(details["expected_revision"], first[0]["revision"]);
+    assert_eq!(details["current_revision"], 2);
+    assert_eq!(details["field_differences"][0]["field"], "notes");
+    assert_eq!(
+        details["field_differences"][0]["current"]["text"],
+        "🦀".repeat(256)
+    );
+    assert_eq!(
+        details["field_differences"][0]["current"]["truncated"],
+        true
+    );
+    let now = s.json(&["show", id]);
+    assert_eq!(now[0]["notes"], long);
+    assert_eq!(now[0]["revision"], 2);
+    s.ok(&[
+        "update",
+        id,
+        "--notes",
+        "explicitly merged",
+        "--force",
+        "--if-revision",
+        "2",
+    ]);
+    assert_eq!(s.json(&["show", id])[0]["notes"], "explicitly merged");
+}
+
+#[test]
+fn expected_revision_is_item_wide_even_for_nonoverlapping_fields() {
+    let s = Sandbox::new("revision-independent-fields");
+    let created = s.json(&["create", "two fields"]);
+    let id = created["id"].as_str().unwrap();
+    s.ok(&["update", id, "--notes", "first", "--if-revision", "1"]);
+    let failed = s.run(&[
+        "update",
+        id,
+        "--priority",
+        "1",
+        "--if-revision",
+        "1",
+        "--json",
+    ]);
+    assert_eq!(code(&failed), 4);
+    let unchanged = s.json(&["show", id]);
+    assert_eq!(unchanged[0]["notes"], "first");
+    assert_eq!(unchanged[0]["priority"], 2);
+    s.ok(&["update", id, "--priority", "1", "--if-revision", "2"]);
+    let merged = s.json(&["show", id]);
+    assert_eq!(merged[0]["notes"], "first");
+    assert_eq!(merged[0]["priority"], 1);
+}

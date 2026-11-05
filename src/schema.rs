@@ -188,6 +188,8 @@ pub fn target(name: &str) -> Option<Json> {
             ),
             ("dependents", json!({"type": "array", "items": edge})),
             ("comments", json!({"type": "array", "items": comment})),
+            ("comments_total", kind(Kind::Int)),
+            ("comments_folded", kind(Kind::Int)),
         ]),
         "blocked-issue" => seed_with(&[
             dependent_count,

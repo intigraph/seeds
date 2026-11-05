@@ -166,8 +166,8 @@ signing_introducer = "<lead>"
   without write), `revoked`/`expired`, `replay`, `badsig`.
 
 See [sd key](verbs/key.md). To set up an agent end to end (its own user, its key,
-enrollment on the Quipu host, verification and revocation), follow CABOODLE's
-[agent identity and write access](https://scbrown.github.io/caboodle/agents.html#agent-identity-and-write-access)
+enrollment on the Quipu host, verification and revocation), follow TAMBO's
+[agent identity and write access](https://intigraph.github.io/tambo/agents.html#agent-identity-and-write-access)
 guide.
 
 ## The project id
@@ -268,3 +268,31 @@ agent's private key. Do not enable strict server policy while required clients
 still depend on unsigned endpoints. The signed server profile currently covers
 read routes and the four audited mutation routes, without URL query strings;
 unsupported mutations refuse rather than silently using bearer authentication.
+
+## Private HTTPS trust roots
+
+Set these keys in the **user** config (`$XDG_CONFIG_HOME/seeds/config.toml`,
+otherwise `~/.config/seeds/config.toml`):
+
+```toml
+[quipu]
+url = "https://graph.example.invalid"
+ca_file = "roots.pem"
+# Optional: exactly 64 lowercase hex digits for the PEM file's SHA-256.
+# ca_sha256 = "<reviewed SHA-256 of roots.pem>"
+```
+
+`ca_file` is a PEM certificate bundle. A relative path resolves against the
+`seeds` directory containing this user config; `~/` resolves against HOME.
+Configured roots **replace** built-in roots. TLS chain and hostname verification
+remain enabled for all requests, including health, identity attestation,
+queries, signed writes and sync. The endpoint must use HTTPS when a CA is set.
+Without `ca_file`, the existing default TLS roots remain in use.
+
+A missing/unreadable file, an empty or invalid bundle, or a `ca_sha256` mismatch
+is a hard error identifying the configured file. There is no system-root fallback
+and no insecure mode. A digest without `ca_file` is refused. These keys are
+user-level only: a cloned project's `.seeds/config.toml` cannot change your
+trust roots or file digest. There is no CA environment-variable override.
+For an isolated job, its protected launcher must carry the reviewed user-config
+directory into that job identity and retain the job's own enrolled signing key.

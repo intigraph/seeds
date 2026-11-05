@@ -37,7 +37,7 @@
 | **`sd capabilities --json`** | intent 4 of [the intent map](intent-map.md) | not started |
 | **`sd release <id> --if-assignee X`** | intent 1: a conditional release | `update --claim` is the claim half |
 | **desire-path redirect** (`dp alias --cmd bd --replace sd`) | agents keep typing `bd` | lives in desire-path |
-| **caboodle install and verify** | stack installation | lives in caboodle |
+| **tambo install and verify** | stack installation | lives in tambo |
 | **signed or delta pendants** | verifiable ledger history between teams | quipu's attestation and delta shares; seeds writes full, unsigned shares today |
 
 Every `bd` verb seeds does not know is a usage error (exit 2), which is what

@@ -113,6 +113,10 @@ pub struct SyncSection {
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QuipuSection {
+    /// User-level PEM trust roots for HTTPS; replaces built-in roots.
+    pub ca_file: Option<String>,
+    /// Optional lowercase SHA-256 of the exact PEM file bytes.
+    pub ca_sha256: Option<String>,
     /// Operator-owned push read packet; USER config only, never a project redirect.
     pub read_stream_config: Option<String>,
     /// A local store file. Relative paths resolve against the directory that
@@ -185,6 +189,8 @@ pub enum Location {
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
+    pub ca_file: Option<PathBuf>,
+    pub ca_sha256: Option<String>,
     pub read_stream_config: Option<PathBuf>,
     pub spec_byte_cap: usize,
     pub due_priority_days: Option<[u32; 5]>,
@@ -537,7 +543,9 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         )));
     }
     if let Some(p) = &project {
-        if p.quipu.token_file.is_some()
+        if p.quipu.ca_file.is_some()
+            || p.quipu.ca_sha256.is_some()
+            || p.quipu.token_file.is_some()
             || p.quipu.trusted_hosts.is_some()
             || p.quipu.allow_plain_http_hosts.is_some()
             || p.quipu.signing_key_file.is_some()
@@ -549,7 +557,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             || p.quipu.actor_principal_mode.is_some()
         {
             return Err(config_error(format!(
-                "{} sets [quipu] token_file, trusted_hosts, allow_plain_http_hosts, signing_* or identity policy; only your \
+                "{} sets [quipu] ca_file, ca_sha256, token_file, trusted_hosts, allow_plain_http_hosts, signing_* or identity policy; only your \
                  user config \
 (~/.config/seeds/config.toml) or SEEDS_QUIPU_TOKEN_FILE may, because a \
                  cloned repository could otherwise send your token to a server it chose",
@@ -674,7 +682,25 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     if !(1..=65536).contains(&spec_byte_cap) {
         return Err(config_error("[specs] byte_cap must be 1..65536".into()));
     }
+    let ca_file = user.as_ref().and_then(|u| u.quipu.ca_file.as_ref());
+    let ca_sha256 = user.as_ref().and_then(|u| u.quipu.ca_sha256.clone());
+    if ca_file.is_some_and(|p| p.trim().is_empty())
+        || ca_sha256.as_ref().is_some_and(|pin| {
+            ca_file.is_none()
+                || pin.len() != 64
+                || !pin
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    {
+        return Err(config_error(
+            "[quipu] ca_file must be nonempty; ca_sha256 needs ca_file and 64 lowercase hex digits"
+                .into(),
+        ));
+    }
     Ok(Resolved {
+        ca_file: ca_file.map(|p| expand(p, &user_base, home)),
+        ca_sha256,
         read_stream_config: user
             .as_ref()
             .and_then(|u| u.quipu.read_stream_config.as_ref())
@@ -991,6 +1017,36 @@ mod tests {
     impl Drop for Sandbox {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn custom_ca_is_user_config_only_and_relative_to_that_file() {
+        let s = Sandbox::new("custom-ca");
+        let pin = "a".repeat(64);
+        s.user_toml(&format!(
+            "[quipu]\nca_file = 'roots.pem'\nca_sha256 = '{pin}'\n"
+        ));
+        let resolved = resolve(&s.inputs()).unwrap();
+        assert_eq!(
+            resolved.ca_file,
+            Some(s.root.join("home/.config/seeds/roots.pem"))
+        );
+        assert_eq!(resolved.ca_sha256.as_deref(), Some(pin.as_str()));
+        s.project_toml("[quipu]\nca_file = 'untrusted.pem'\n");
+        assert!(resolve(&s.inputs()).is_err());
+    }
+
+    #[test]
+    fn custom_ca_rejects_empty_paths_and_invalid_or_orphan_pins() {
+        let s = Sandbox::new("invalid-ca");
+        for text in [
+            "ca_file = ''",
+            "ca_sha256 = 'abcd'",
+            "ca_file = 'roots.pem'\nca_sha256 = 'BAD'",
+        ] {
+            s.user_toml(&format!("[quipu]\n{text}\n"));
+            assert!(resolve(&s.inputs()).is_err());
         }
     }
 

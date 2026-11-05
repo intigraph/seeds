@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "838b3cbf0c8e449452e22753775865238bf4c2e5ae0079c4e478595119063610",
+      "source_sha256": "9e2a861b79c97a2a82b37e3753aaf19618d141855386c0532ea2861c5969c072",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "3d065358bfba9923d090c3ee5954da9d269732a023515d950aa6cba12d5f81a4",
+      "source_sha256": "7079a3d6ff71cf905bc0d348c19a04e8f133614b63ee30832b29cc25f885817c",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"
@@ -101,7 +101,7 @@
       "source": "docs/book/src/reference.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Freference.md",
       "summary": "Read the sd global options, verbs, JSON and exit-code contracts before changing a caller-facing behavior.",
-      "source_sha256": "26dba2856d9c95ec4c7c5d27ca6526398340cc37920004ee13e35dacc046d789",
+      "source_sha256": "cb04e51af583595f1f592ec3661a5df5edcce4dc4e98c2d98a1bd66cd333619e",
       "properties": {
         "startHereOrder": 2
       }
@@ -111,7 +111,7 @@
       "source": "AGENTS.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/AGENTS.md",
       "summary": "Contributions preserve the wasm-clean core, documented storage semantics, public-safe source and full just check quality gate.",
-      "source_sha256": "6d8e86de0683b473b0988f370d5bc3c0e2ef1dda3e9a55df2b2dda0c809250f2",
+      "source_sha256": "cacff5ce9cc4fccf922a57ee2bf652a4db15cb1cd14dcca849eeb807760d9a4e",
       "properties": {
         "startHereOrder": 3
       }

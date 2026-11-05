@@ -172,7 +172,7 @@ pub enum Command {
     Q(QArgs),
     /// Saved queries live in quipu (stored queries), not in sd
     Query(MappedArgs),
-    /// sd is installed and upgraded by caboodle
+    /// sd is installed and upgraded by tambo
     Upgrade(MappedArgs),
     /// Workflow gates live in shuttle
     Gate(MappedArgs),
@@ -448,16 +448,24 @@ pub struct CutoverArgs {
 /// `sd export`.
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// Directory to write (default: the configured [pendant] dir)
-    #[arg(long, value_name = "DIR")]
+    /// Pendant directory (default: configured dir), or github for GitHub Issues.
+    #[arg(long, value_name = "DESTINATION")]
     pub to: Option<String>,
+    #[command(flatten)]
+    pub transfer: super::transfer::Args,
 }
 
 /// `sd import`.
 #[derive(Debug, Args)]
 pub struct ImportArgs {
     /// The pendant directory to read
-    pub dir: String,
+    #[arg(required_unless_present = "from")]
+    pub dir: Option<String>,
+    /// External task manager (pendant import is unchanged when omitted).
+    #[arg(long, value_parser = ["github"])]
+    pub from: Option<String>,
+    #[command(flatten)]
+    pub transfer: super::transfer::Args,
     /// Where the two disagree, take this side: pendant or store
     #[arg(long, value_parser = ["pendant", "store"])]
     pub prefer: Option<String>,
@@ -613,6 +621,15 @@ pub struct ShowArgs {
     /// Seed id(s)
     #[arg(required = true)]
     pub ids: Vec<String>,
+    /// Recent comments to display (text defaults to 5; JSON defaults to all).
+    /// An explicit zero hides all comments, including in JSON.
+    #[arg(long, conflicts_with = "all_comments")]
+    #[serde(default)]
+    pub comments_limit: Option<usize>,
+    /// Display the complete comment history instead of folding older entries.
+    #[arg(long)]
+    #[serde(default)]
+    pub all_comments: bool,
 }
 
 /// `sd list`.
@@ -1523,6 +1540,8 @@ impl Command {
                     | LabelCommand::Remove { .. }
                     | LabelCommand::Rename { .. }
             ),
+            Command::Export(a) if super::transfer::is_target(a.to.as_deref()) => a.transfer.execute,
+            Command::Import(a) if a.from.is_some() => a.transfer.execute,
             Command::Import(_) | Command::Sync(_) | Command::MergeDriver(_) | Command::Init(_) => {
                 true
             }

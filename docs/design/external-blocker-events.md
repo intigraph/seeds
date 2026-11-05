@@ -9,6 +9,19 @@ write. An actual feature-owned blocked-to-open transition increments the
 persisted readiness generation and creates an intent in the same seed write.
 Manual blocked, deferred, in-progress and closed states are preserved.
 
+For a reaction with one known seed, scope both operations to that exact ID:
+
+```sh
+sd blockers reconcile example-1 --json
+sd blockers events example-1 --json
+```
+
+These calls do not enumerate other seeds. A missing target fails; it never
+falls back to a project-wide sweep. Conditions and internal dependencies of
+the selected seed are still checked normally. Repeated reconciliation preserves
+the event identity. Omitting the ID retains the project-wide interface for
+existing consumers. This targeted interface does not install or enable a reaction.
+
 `sd blockers events --json` returns persistent, currently eligible pending
 intents. Unknown delivery must leave them pending. The event ID survives
 ordinary item and assignee edits, consumer restart, and repeated reads.

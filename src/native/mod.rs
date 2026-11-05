@@ -3502,17 +3502,20 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let value = match command {
                 BlockersCommand::Receipt { issue, event_id } => json!({"event":crate::blockers::engine::receipt(b, issue, event_id)?}),
                 BlockersCommand::Migrate { execute, .. } => crate::blockers::migration::migrate(b, ctx, *execute)?,
-                BlockersCommand::Events {} => {
-                    let events = crate::blockers::engine::events(b)?;
+                BlockersCommand::Events { issue } => {
+                    let events = crate::blockers::engine::events_for(b, issue.as_deref())?;
                     json!({"events": events})
                 }
                 BlockersCommand::Ack { issue, event_id, receipt } => {
                     json!({"tx": crate::blockers::engine::ack(b, ctx, issue, event_id, receipt)?})
                 }
-                BlockersCommand::Reconcile {} => {
-                    let snap = b.blocker_snapshot(None)?;
+                BlockersCommand::Reconcile { issue } => {
                     let mut changed = Vec::new();
-                    for id in snap.seeds.keys() {
+                    let ids = match issue {
+                        Some(id) => vec![id.clone()],
+                        None => b.blocker_snapshot(None)?.seeds.into_keys().collect(),
+                    };
+                    for id in &ids {
                         if let Some(tx) = crate::blockers::engine::reconcile(b, ctx, id)? {
                             changed.push(json!({"issue_id": id, "tx": tx}));
                         }

@@ -357,6 +357,69 @@ fn external_blocker_cli_is_persistent_and_has_live_show_and_graph() {
 }
 
 #[test]
+fn targeted_blocker_reconcile_does_not_unlock_other_seeds() {
+    let sb = Sandbox::new("targeted-blocker-reconcile");
+    let first = sb.ok(&["create", "first", "--silent"]).trim().to_string();
+    let second = sb.ok(&["create", "second", "--silent"]).trim().to_string();
+    for id in [&first, &second] {
+        sb.ok(&[
+            "dep",
+            "add",
+            id,
+            "--blocker",
+            "urn:test:gate",
+            "--blocker-graph",
+            "urn:test:foreign",
+            "--ask",
+            "ASK { FILTER(false) }",
+        ]);
+    }
+    // A matching reaction cannot certify a condition which is still pending.
+    assert_eq!(
+        sb.json(&["blockers", "reconcile", &first])["changed"],
+        serde_json::json!([])
+    );
+    assert_eq!(sb.json(&["show", &first])[0]["status"], "blocked");
+    for id in [&first, &second] {
+        sb.ok(&["dep", "remove", id, "--blocker", "urn:test:gate"]);
+    }
+    let result = sb.json(&["blockers", "reconcile", &first]);
+    assert_eq!(result["changed"].as_array().unwrap().len(), 1);
+    assert_eq!(result["changed"][0]["issue_id"], first);
+    assert_eq!(sb.json(&["show", &second])[0]["status"], "blocked");
+    assert_eq!(
+        sb.json(&["blockers", "reconcile", &first])["changed"],
+        serde_json::json!([])
+    );
+    let events = sb.json(&["blockers", "events"]);
+    assert_eq!(events["events"].as_array().unwrap().len(), 1);
+    assert_eq!(events["events"][0]["issue_id"], first);
+    // An unknown target must fail, never fall back to a project-wide sweep.
+    assert!(!sb
+        .run(&["blockers", "reconcile", "sd-does-not-exist"])
+        .status
+        .success());
+    assert_eq!(sb.json(&["show", &second])[0]["status"], "blocked");
+    // Existing unscoped invocation remains compatible.
+    sb.ok(&["blockers", "reconcile"]);
+    assert_eq!(sb.json(&["show", &second])[0]["status"], "open");
+    assert_eq!(
+        sb.json(&["blockers", "events"])["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let scoped = sb.json(&["blockers", "events", &first]);
+    assert_eq!(scoped["events"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped["events"][0]["issue_id"], first);
+    assert!(!sb
+        .run(&["blockers", "events", "sd-does-not-exist"])
+        .status
+        .success());
+}
+
+#[test]
 fn a_blocker_that_has_its_own_blocker_can_be_added() {
     // c -> b -> a. Adding the c -> b edge used to be refused by the shapes:
     // b was validated with its own blockedOn edge to a, and a was not in the

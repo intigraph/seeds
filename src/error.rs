@@ -34,7 +34,7 @@ pub enum ErrorKind {
     /// A configured capability exists in the design but is not built yet.
     NotBuilt,
     /// A br verb whose capability lives in another tool of the stack (quipu,
-    /// shuttle, caboodle). The message names where; desire-path records it.
+    /// shuttle, tambo). The message names where; desire-path records it.
     Elsewhere,
 }
 

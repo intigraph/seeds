@@ -21,7 +21,7 @@ failing silently or pretending:
 | verb | where it lives |
 |---|---|
 | `query` | quipu stored queries |
-| `upgrade` | caboodle (`caboodle update-release --tool seeds`) |
+| `upgrade` | tambo (`tambo update-release --tool seeds`) |
 | `gate`, `scheduler` | shuttle |
 | `audit` | quipu provenance: every sd write is a transaction with its actor; read past states with `sd show --at <tx>` |
 | `robot-docs` | this book and `sd <verb> --help` |

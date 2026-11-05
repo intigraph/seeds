@@ -10,3 +10,6 @@ __pycache__/
 !/docs/demos/acquisition-api/timing.log
 !/docs/demos/comment-fold/output.log
 !/docs/demos/comment-fold/timing.log
+
+# Legacy local tracker state is never published.
+.beads/

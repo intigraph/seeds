@@ -1014,7 +1014,7 @@ fn q_captures_status_aliases_stats_and_mapped_verbs_point_elsewhere() {
     // and touches nothing.
     for (verb, needle) in [
         ("query", "quipu"),
-        ("upgrade", "caboodle"),
+        ("upgrade", "tambo"),
         ("gate", "shuttle"),
     ] {
         let o = sb.run(&[verb, "anything", "--flag"]);

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-11-05
+
+### Added
+
+- Add one-shot GitHub issue transfers (#233) ([3432f22](https://github.com/scbrown/seeds/commit/3432f224821e764b271b49afd33e34b989efab9a))
+
 ## [0.14.0] - 2026-11-05
 
 ### Added

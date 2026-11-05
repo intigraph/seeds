@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-11-05
+
+### Added
+
+- *(tls)* Configure pinned CA roots for Quipu HTTPS (#240) ([79e3f8d](https://github.com/scbrown/seeds/commit/79e3f8dbd732b4d6fad2e08c8dd16111768c382f))
+
+### Documentation
+
+- Use Tambo in current installer guidance and CLI pointers (#237) ([b50b9c5](https://github.com/scbrown/seeds/commit/b50b9c5e7e034d3281b9da90474c906a2e469b77))
+
 ## [0.13.0] - 2026-11-05
 
 ### Fixed

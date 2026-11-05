@@ -28,3 +28,20 @@ sd show sd-a3f --at 12       # read any one version in full
 - `--at` does not apply: history is every version.
 
 **`--json`**: `{meaning, id, versions: [<seed object> + tx + changes]}`.
+
+## Explicit retained-fact SDK read
+
+`RemoteBackend::retained_history` is a separate, opt-in library API. Supply a
+`HistoryRequest` containing the trusted MAIN `source_store_id`, exact subject
+and project (or ephemeral) graph, row/byte caps, and an observed generation for
+explicit transaction bounds. It first requires the server's
+`quipu-entity-history/main-v1` contract, then validates the source receipt and
+qualified transactions. Refusals and incomplete or malformed responses never
+fall back to ROOT, SPARQL, current state, or transaction bisection.
+
+`RetainedHistory::source_bytes()` preserves the original response bytes,
+including the source receipt, typed values, authenticated evidence and separate
+caller declarations. Its completeness covers only retained physical MAIN facts
+in that subject/graph/range. It does not prove continuous seed versions, include
+comment children automatically, authenticate a physical host, or make a local
+transaction ID a cross-store pin. This API does not change the CLI behavior above.

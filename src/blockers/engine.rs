@@ -123,7 +123,19 @@ pub fn reconcile(b: &mut dyn Backend, ctx: &Ctx, id: &str) -> Result<Option<u64>
 
 /// Persistent pending intents; only the shared consumer sends notifications.
 pub fn events(b: &dyn Backend) -> Result<Vec<UnlockEvent>> {
-    let snap = b.blocker_snapshot(None)?;
+    events_for(b, None)
+}
+
+/// A reaction reads only its target; a missing target is an error, not an empty page.
+pub fn events_for(b: &dyn Backend, id: Option<&str>) -> Result<Vec<UnlockEvent>> {
+    let snap = match id {
+        Some(id) => {
+            let snap = b.snapshot_seeds(&[id.into()])?;
+            snap.get(id)?;
+            snap
+        }
+        None => b.blocker_snapshot(None)?,
+    };
     let mut out = Vec::new();
     for seed in snap.seeds.values() {
         let ledger = load(seed)?;

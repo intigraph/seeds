@@ -20,6 +20,7 @@ pub mod provenance;
 pub mod read_stream;
 pub mod remote;
 mod replica;
+mod show;
 pub mod store;
 pub mod stream_projection;
 
@@ -2693,19 +2694,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             Ok(ok(json, value, seed.id.clone(), vec![]))
         }
         Command::Show(a) => {
-            let views = engine::show(b, &a.ids, at)?;
-            let mut text = views
-                .iter()
-                .map(output::view_text)
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            let mut value = output::show_json(&views);
-            for (view, row) in views.iter().zip(value.as_array_mut().into_iter().flatten()) {
-                let external = crate::blockers::display(b, &view.seed, at);
-                if crate::blockers::has_metadata(&view.seed) { text.push_str(&format!("\nexternal blockers: {external}")); }
-                row["external_blockers"] = external;
-            }
-            Ok(ok(json, value, text, vec![]))
+            show::run(a, b, at, json)
         }
         Command::List(a) => {
             let req = engine::ListReq {

@@ -43,6 +43,7 @@
   - [comments](verbs/comments.md)
   - [msg](verbs/msg.md)
   - [export, import, sync](verbs/sync.md)
+  - [GitHub Issues transfers](task-managers.md)
   - [version, where, info](verbs/about.md)
   - [config](verbs/config.md)
   - [capabilities](verbs/capabilities.md)

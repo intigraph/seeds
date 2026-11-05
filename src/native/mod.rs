@@ -23,6 +23,7 @@ mod replica;
 mod show;
 pub mod store;
 pub mod stream_projection;
+pub mod transfer;
 
 use serde_json::Value as Json;
 
@@ -1195,6 +1196,7 @@ fn actor(cli: &Cli) -> String {
 /// - **sync** (`[sync] remote`): a local store (with or without a pendant)
 ///   that `sd sync` merges with a remote.
 pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
+    transfer::validate_selection(&cli.command)?;
     // Admit before opening the backend: even connection/provenance reads
     // must stay behind the host budget. Keep the guard through the command.
     let _search_admission = match &cli.command {
@@ -1224,6 +1226,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
     // The graph: configured, or derived from the project id, which is created
     // on first write or first use of a server (never by a plain local read).
     let create = match &cfg.location {
+        Location::Store(_) if transfer::selected(&cli.command) && !cli.command.writes() => false,
         Location::Url(_) => true,
         Location::Store(_) => {
             cli.command.writes()
@@ -1664,6 +1667,9 @@ fn run_connected(
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
         refuse_old_vocabulary(&ledger_label(cfg), remote)?;
     }
+    if transfer::selected(&cli.command) {
+        return transfer::run(cli, cfg, ctx, remote);
+    }
     match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;
@@ -1812,7 +1818,11 @@ fn export_outcome(
 }
 
 fn import_into(cli: &Cli, ctx: &Ctx, b: &mut dyn Backend, a: &cli::ImportArgs) -> Result<Outcome> {
-    let dir = std::path::Path::new(&a.dir);
+    let dir = std::path::Path::new(
+        a.dir
+            .as_deref()
+            .ok_or_else(|| SdError::usage("pendant directory required"))?,
+    );
     let p = store::read_pendant_dir(dir)?.ok_or_else(|| {
         SdError::new(
             ErrorKind::NotFound,
@@ -1874,6 +1884,37 @@ fn report_text(verb: &str, r: &sync::Report) -> String {
 }
 
 fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Result<Outcome> {
+    if transfer::selected(&cli.command) {
+        if cli.command.writes() {
+            let mut h = store::open_for_write(path, cfg.graph())?;
+            refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
+            let notes = if let Some(dir) = &cfg.pendant {
+                store::hydrate(&mut h.backend, path, dir, ctx)?
+            } else {
+                Vec::new()
+            };
+            let outcome = with_notes(transfer::run(cli, cfg, ctx, &mut h.backend)?, notes);
+            if let Some(dir) = &cfg.pendant {
+                store::export_to_pendant(&h.backend, path, dir)?;
+            }
+            return Ok(outcome);
+        }
+        let mut backend = match store::open_for_read(path, cfg.graph())? {
+            Some(backend) => backend,
+            None if cfg.pendant.is_some() => QuipuBackend::in_memory(cfg.graph())?,
+            None => {
+                return Err(SdError::new(
+                    ErrorKind::NotFound,
+                    "transfer requires an existing ledger",
+                ))
+            }
+        };
+        refuse_old_vocabulary(&ledger_label(cfg), &backend)?;
+        if let Some(dir) = &cfg.pendant {
+            backend = store::preview_hydrated(&backend, path, dir, ctx, cfg.graph())?;
+        }
+        return transfer::run(cli, cfg, ctx, &mut backend);
+    }
     match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;

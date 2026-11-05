@@ -13,3 +13,7 @@ __pycache__/
 
 # Legacy local tracker state is never published.
 .beads/
+
+# Deliberate, checked-in GitHub transfer demo recordings.
+!/docs/demos/task-transfer/output.log
+!/docs/demos/task-transfer/timing.log

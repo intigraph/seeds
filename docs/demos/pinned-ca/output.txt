@@ -1,0 +1,29 @@
+Script started on 2026-11-05 02:35:04-05:00 [COMMAND="python3 docs/demos/pinned-ca/demo.py --before /usr/bin/sd --after target/debug/sd" <not executed on terminal>]
+before sd 0.11.1 (seeds)
+after sd 0.13.0 (seeds)
+before / valid CA: exit=6, HTTPS health requests=0
+{"error":{"code":"CONFIG","message":"$FIXTURE/.config/seeds/config.toml: not a valid seeds config: TOML parse error at line 2, column 1\n  |\n2 | ca_file = '$FIXTURE/roots.pem'\n  | ^^^^^^^\nunknown field `ca_file`, expected one of `read_stream_config`, `store`, `url`, `token_file`, `trusted_hosts`, `allow_plain_http_hosts`, `signing_key_file`, `signing_session`, `signing_introducer`, `signing_version`, `signing_store_id`, `require_identity`, `actor_principal_mode`\n"}}
+sd: $FIXTURE/.config/seeds/config.toml: not a valid seeds config: TOML parse error at line 2, column 1
+  |
+2 | ca_file = '$FIXTURE/roots.pem'
+  | ^^^^^^^
+unknown field `ca_file`, expected one of `read_stream_config`, `store`, `url`, `token_file`, `trusted_hosts`, `allow_plain_http_hosts`, `signing_key_file`, `signing_session`, `signing_introducer`, `signing_version`, `signing_store_id`, `require_identity`, `actor_principal_mode`
+after / valid CA: exit=5, HTTPS health requests=1
+{"error":{"code":"REFUSED","message":"identity requires an enrolled signing key"}}
+sd: identity requires an enrolled signing key
+TLS succeeded; identity correctly refuses because this fixture has no signing key.
+after / foreign CA: exit=7, HTTPS health requests=0
+{"error":{"code":"UNREACHABLE","message":"cannot reach quipu at https://localhost:35123: https://localhost:35123/health: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer. seeds does not fall back to a local store, because that would fork the ledger."}}
+sd: cannot reach quipu at https://localhost:35123: https://localhost:35123/health: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer. seeds does not fall back to a local store, because that would fork the ledger.
+after / wrong hostname: exit=7, HTTPS health requests=0
+{"error":{"code":"UNREACHABLE","message":"cannot reach quipu at https://127.0.0.1:45751: https://127.0.0.1:45751/health: Connection Failed: tls connection init failed: invalid peer certificate: certificate not valid for name \"127.0.0.1\"; certificate is only valid for DnsName(\"localhost\"). seeds does not fall back to a local store, because that would fork the ledger."}}
+sd: cannot reach quipu at https://127.0.0.1:45751: https://127.0.0.1:45751/health: Connection Failed: tls connection init failed: invalid peer certificate: certificate not valid for name "127.0.0.1"; certificate is only valid for DnsName("localhost"). seeds does not fall back to a local store, because that would fork the ledger.
+after / missing CA: exit=5, HTTPS health requests=0
+{"error":{"code":"REFUSED","message":"CA file $FIXTURE/roots.pem: cannot read configured PEM trust roots"}}
+sd: CA file $FIXTURE/roots.pem: cannot read configured PEM trust roots
+after / changed CA bytes: exit=5, HTTPS health requests=0
+{"error":{"code":"REFUSED","message":"CA file $FIXTURE/roots.pem: SHA-256 mismatch"}}
+sd: CA file $FIXTURE/roots.pem: SHA-256 mismatch
+All trust controls passed. This is a localhost fixture, not native identity acceptance.
+
+Script done on 2026-11-05 02:35:08-05:00 [COMMAND_EXIT_CODE="0"]

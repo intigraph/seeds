@@ -1,0 +1,1 @@
+The offline TLS controls generate disposable localhost certificates in a temporary directory using Python 3 and OpenSSL. No private keys or long-lived certificates are retained in Git. The demo uses the same generator.

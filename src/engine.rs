@@ -2425,6 +2425,58 @@ pub struct UpdateReq {
     pub force: bool,
 }
 
+fn revision_conflict(current: &Seed, expected: u64, req: &UpdateReq) -> SdError {
+    // Compare only supplied fields with the exact current item. These are NOT
+    // historical changes since the caller read it: no preimage was supplied.
+    let current_json = current.to_json();
+    let mut differences = Vec::new();
+    for (name, proposed) in [
+        ("title", &req.title),
+        ("description", &req.description),
+        ("notes", &req.notes),
+        ("design", &req.design),
+        ("acceptance_criteria", &req.acceptance_criteria),
+        ("agent_context", &req.agent_context),
+        ("external_ref", &req.external_ref),
+        ("status", &req.status),
+        ("priority", &req.priority),
+        ("assignee", &req.assignee),
+        ("owner", &req.owner),
+        ("due_at", &req.due),
+        ("rank", &req.rank),
+        ("estimated_minutes", &req.estimate),
+        ("parent", &req.parent),
+    ] {
+        let Some(proposed) = proposed else { continue };
+        let value = &current_json[name];
+        let observed = value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string());
+        if observed != *proposed {
+            let preview = |text: &str| {
+                serde_json::json!({
+                    "text": text.chars().take(256).collect::<String>(),
+                    "characters": text.chars().count(),
+                    "truncated": text.chars().count() > 256,
+                })
+            };
+            differences.push(serde_json::json!({
+                "field": name, "current": preview(&observed), "requested": preview(proposed),
+            }));
+        }
+    }
+    SdError::conflict(format!(
+        "{}: expected revision {}, current revision {}; nothing written; reread and rebase",
+        current.id, expected, current.revision,
+    ))
+    .with_details(serde_json::json!({
+        "schema": "seed-update-conflict/v1", "item_id": current.id,
+        "expected_revision": expected, "current_revision": current.revision,
+        "comparison": "requested-fields-against-current", "field_differences": differences,
+    }))
+}
+
 /// `sd update`: all named seeds change in one transaction, or none do.
 pub fn update(
     b: &mut dyn Backend,
@@ -2570,7 +2622,7 @@ pub fn update(
         let before = snap.get(id)?;
         let mut s = before.clone();
         if req.if_revision.is_some_and(|r| r != before.revision) {
-            return Err(SdError::conflict("item revision changed; nothing written"));
+            return Err(revision_conflict(before, req.if_revision.unwrap(), req));
         }
         if req.status.is_some() && crate::blockers::has_metadata(before) {
             let mut ledger = crate::blockers::load(before)?;
@@ -2745,7 +2797,7 @@ pub fn update(
             expected_revision: Some(before.revision),
         });
     }
-    finish_with(
+    let result = finish_with(
         b,
         ctx,
         &snap,
@@ -2753,7 +2805,25 @@ pub fn update(
         writes,
         "seeds:update",
         req.transition_comment.as_deref(),
-    )
+    );
+    match result {
+        Err(error)
+            if error.kind == crate::error::ErrorKind::Conflict && req.if_revision.is_some() =>
+        {
+            // A second writer can win AFTER our first read. Keep the backend's
+            // atomic refusal; a bounded reread adds diagnostics, never retries.
+            if let Ok(latest) = b.snapshot_items(ids) {
+                if let Ok(current) = latest.get(&ids[0]) {
+                    let expected = req.if_revision.unwrap();
+                    if current.revision != expected {
+                        return Err(revision_conflict(current, expected, req));
+                    }
+                }
+            }
+            Err(error)
+        }
+        other => other,
+    }
 }
 
 // ---------------------------------------------------------------- labels

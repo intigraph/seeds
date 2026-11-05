@@ -63,7 +63,8 @@ Exit codes are a contract. A code is never reused or renumbered.
 In `--json` mode an error prints `{"error": {"code": "<NAME>", "message":
 "..."}}` on stdout, where `<NAME>` is `FAILED`, `USAGE`, `NOT_FOUND`,
 `CONFLICT`, `REFUSED`, `CONFIG`, `UNREACHABLE`, `INDETERMINATE`, `NOT_BUILT` or `ELSEWHERE`. The message
-always goes to stderr as well.
+always goes to stderr as well. An optional `error.details` object carries
+command-specific structured diagnostics; see [caller revision guards](storage.md#caller-revision-guards).
 
 ### Reading from a Quipu read replica
 

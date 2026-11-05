@@ -205,6 +205,35 @@ So a verb that touches several seeds (`close a b c`, `update a b`) lands all
 of it or none of it, and the transaction id it prints is the cursor for
 [`--at`](pinning.md).
 
+### Caller revision guards
+
+For edits prepared from an earlier read, pass that read's `revision` to
+`sd update ID --if-revision N`. This is an item-wide token: even a change to
+an independent field invalidates it. Reread the exact item and explicitly
+rebase the intended edit before submitting the new revision. `--force` permits
+text replacement; it never overrides the revision guard. Without a caller token,
+the existing backend guard still protects the command's own read-to-commit
+interval, but cannot detect an editor's stale preimage.
+
+A stale revision exits 4 and writes nothing. Its JSON error adds `details` with
+schema `seed-update-conflict/v1`, `item_id`, `expected_revision`,
+`current_revision`, and `field_differences`. Each difference compares a supplied
+scalar field against the observed current item; it is **not** a historical diff
+since the expected revision. Preview objects include `text` (at most 256 Unicode
+characters), full `characters`, and `truncated`. Do not reconstruct a complete
+preimage from a preview. Diagnostics read only the target item; a commit-time
+race may trigger one exact reread, never another write. If that reread is
+unavailable, the original atomic conflict remains the result.
+
+After a lost remote response, Seeds confirms both the exact post-state and this
+operation's write-provenance marker, including for field updates. Another
+writer's matching values do not confirm this operation. Unproved readback stays
+UNKNOWN (exit 8), with no automatic resend. Its optional `error.details`
+(`seed-write-outcome/v1`) names the `operation_id`, configured
+`provenance_graph`, affected `item_ids`, and UNKNOWN outcome for exact readback.
+Do not treat that identifier as a resend instruction. The marker is declared provenance;
+it does not replace signing or authenticate a writer.
+
 ### Concurrency
 
 Two `sd` processes writing the same store are serialised by an exclusive lock

@@ -382,3 +382,31 @@ fn real_output_conforms_to_the_published_schemas() {
     bad["surprise"] = Value::Bool(true);
     assert!(conforms(&bad, &schema("issue-details"), "bad").is_err());
 }
+
+#[test]
+fn structured_revision_conflict_conforms_without_loosening_error_envelope() {
+    let st = Store::new("revision-error-schema");
+    let made = st.json(&["create", "revision schema fixture"]);
+    let id = made["id"].as_str().unwrap();
+    st.json(&["update", id, "--notes", "first", "--if-revision", "1"]);
+    let failed = st.run(&[
+        "update",
+        id,
+        "--notes",
+        "second",
+        "--force",
+        "--if-revision",
+        "1",
+        "--json",
+    ]);
+    assert_eq!(failed.status.code(), Some(4));
+    let value: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let schema = st.json(&["schema", "error"]);
+    conforms(&value, &schema, "revision conflict").unwrap();
+    let mut invalid = value;
+    invalid["error"]
+        .as_object_mut()
+        .unwrap()
+        .insert("unexpected".into(), Value::Bool(true));
+    assert!(conforms(&invalid, &schema, "closed envelope").is_err());
+}

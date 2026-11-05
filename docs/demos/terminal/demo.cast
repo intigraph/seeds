@@ -1,0 +1,4 @@
+{"version": 2, "width": 65, "height": 14, "title": "Seeds: capture work, then read the ready queue", "env": {"TERM": "dumb"}}
+[0.0, "o", "\u001b[2J\u001b[H$ sd --store demo.db --graph urn:seeds:readme-demo --actor demo \r\ncreate 'Write the parser' -p 1\r\ncreated \u25cb demo-7vl [P1] [task] Write the parser (tx 2)\r\n"]
+[5.0, "o", "\u001b[2J\u001b[H$ sd --store demo.db --graph urn:seeds:readme-demo --actor demo \r\nready\r\n\u25cb demo-7vl [P1] [task] Write the parser\r\n"]
+[12.0, "o", "\u001b[2J\u001b[H$ sd --store demo.db --graph urn:seeds:readme-demo --actor demo \r\nstats --no-activity\r\ntotal 1\r\n  open 1 \u00b7 in progress 0 \u00b7 blocked 0 \u00b7 deferred 0 \u00b7 closed 0\r\n  ready now 1\r\n  epics ready to close 0\r\n  average lead time 0.0 h\r\n"]

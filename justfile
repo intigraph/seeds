@@ -50,6 +50,7 @@ check:
     cargo build --locked --bin sd
     CREDENTIAL_SD="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/sd")')" python3 tests/credential_descriptor.py
     HISTORY_SD="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/sd")')" python3 tests/history_wire.py
+    TRANSFER_SD="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/sd")')" python3 tests/task_transfer.py
     cargo test --no-default-features
     python3 tests/rank_migration.py
     bash scripts/ci/crates-publish-guard.sh --selftest
@@ -73,3 +74,15 @@ acquisition-fixture-test:
 installer-check:
     sh -n install.sh
     python3 scripts/test-install-release.py
+
+# Prime contract checks; default features only.
+prime action="test":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{quote(action)}} in
+        check) cargo check --locked --all-targets ;;
+        fmt) cargo fmt --check ;;
+        lint) cargo clippy --locked --all-targets -- -D warnings ;;
+        test) cargo test --locked --lib native::prime::probe::tests && cargo test --locked --test prime --test prime_sync ;;
+        *) echo 'Use: just prime check|fmt|lint|test' >&2; exit 2 ;;
+    esac

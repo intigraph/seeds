@@ -39,6 +39,8 @@ fn view_json(v: &SeedView) -> Json {
         .map(|(id, ty, s)| edge(id, ty, s))
         .collect();
     o["comments"] = v.comments.iter().map(Comment::to_json).collect();
+    o["comments_total"] = json!(v.comments.len());
+    o["comments_folded"] = json!(0);
     // The native adapter replaces this with a live observation.
     o["external_blockers"] = json!({"status":"not_observed","blockers":[]});
     o
@@ -80,7 +82,7 @@ pub fn search_json(r: &SearchPage) -> Json {
     o["search_notice"] = json!(if r.full {
         format!("{} full-field matches", r.page.total)
     } else {
-        format!("{} title matches", r.page.total)
+        format!("{} title+description matches", r.page.total)
     });
     o
 }
@@ -88,7 +90,7 @@ pub fn search_json(r: &SearchPage) -> Json {
 /// `search` as text: the hits, then how many closed ones were hidden.
 pub fn search_text(r: &SearchPage, query: &str, layout: Layout) -> String {
     let mut out = if !r.full && r.page.total == 0 {
-        "0 title matches".into()
+        "0 title+description matches".into()
     } else {
         page_text_layout(&r.page, "matching", layout)
     };
@@ -107,13 +109,13 @@ pub fn search_text(r: &SearchPage, query: &str, layout: Layout) -> String {
     out
 }
 
-/// Scope travels with every result, so a title-only zero cannot claim absence
-/// from the descriptions or comments that were not queried.
+/// Scope travels with every result, so a routine zero cannot claim absence
+/// from comments or identifiers that were not queried.
 pub fn search_scope(r: &SearchPage) -> &'static str {
     if r.full {
         "searched: IDs, titles, descriptions and comments (--full)"
     } else {
-        "searched: titles only (IDs/descriptions/comments NOT searched by the query; full: sd search --full)"
+        "searched: title+description (IDs/comments NOT searched by the query; full: sd search --full)"
     }
 }
 
@@ -515,6 +517,7 @@ pub fn view_text(v: &SeedView) -> String {
     }
     if let Some(d) = &s.description {
         out.push(String::new());
+        out.push("  CURRENT STATE:".into());
         out.extend(d.lines().map(|l| format!("  {l}")));
     }
     for (label, text) in [

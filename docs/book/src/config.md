@@ -18,6 +18,8 @@ store = ".seeds/seeds.db"            # a local quipu store file (the default)
 # signing_key_file = "~/.config/seeds/keys/<session>.key"  # signed writes: USER config only
 # signing_session = "<session>"
 # signing_introducer = "<who registered it>"
+# signing_version = "v2"              # default; "v1-legacy" only for a pre-write-v2 server
+# signing_store_id = "urn:uuid:..."   # optional pin: refuse any other store (GET /stats)
 
 [project]
 prefix = "sd"                        # id prefix for new seeds (default sd)
@@ -120,8 +122,10 @@ leaves your machine; its public half is registered **once** on the server by
 someone else (your lead or a human, never you). After that every write carries
 an `x-quipu-attestation` header: a signature over that one request (method,
 path, content type, body hash) with a single-use nonce. Nothing in it can be
-reused, so plain `http://` is no longer an authentication risk, and the server
-records the write as yours, not as "whoever holds the token".
+reused as another request. Use HTTPS or an explicitly trusted local transport.
+The destination trust guard still applies to signed evidence; the plain-HTTP
+transport refusal covers bearer tokens only. The server records the protected binding principal as authenticated
+evidence separately from declared payload metadata.
 
 ```toml
 # ~/.config/seeds/config.toml (USER config only; sd key init prints these)
@@ -132,14 +136,28 @@ signing_introducer = "<lead>"
 ```
 
 - A signed write never also sends the bearer.
-- A key is used only for a server you would send your token to: a URL from a
-  project file needs its host in `trusted_hosts`. The signature does not name
-  the server, so a server a cloned project chose could otherwise pass your
-  signed write on to yours.
+- Every signed request is `quipu-write-v2`: the signature names the receiving
+  store, so another store that trusts the same key refuses it. **This needs
+  quipu `quipu-ai-v0.12.0` or later**, the first release that verifies
+  write-v2 and reports `store_id` in `GET /stats`. Against an older quipu every
+  signed request is refused until you set `signing_version = "v1-legacy"`. sd reads that
+  id from the server's `GET /stats` once, before it signs anything, and refuses
+  to connect when `/stats` fails or names no usable `store_id`. It never falls
+  back to the audience-free v1 on its own.
+- `signing_store_id` pins the store: when it is set, sd refuses a server whose
+  `/stats` reports any other id, so a server answering at that URL cannot get
+  your key to sign for itself. Leave it unset if one key signs for several
+  stores.
+- `signing_version = "v1-legacy"` signs the old `quipu-write-v1`, which names no
+  server, for a quipu server older than write-v2. It cannot be combined with
+  `signing_store_id`. An operator can refuse a session's v1 writes with
+  `quipu attest require-v2 <session>`.
+- A key is still used only for a server you would send your token to: a URL
+  from a project file needs its host in `trusted_hosts`, and a project file
+  cannot set any `signing_*` key.
 - `/graph/create` is signed too. seeds creates a graph only when the server
-  does not already list it (`GET /graphs`). Against a server too old to
-  accept a signed `/graph/create`, seeds retries that one idempotent call
-  with your token, if you have one.
+  does not already list it (`GET /graphs`). A server too old to accept a signed
+  route refuses; the client does not retry that operation with a bearer.
 - The key must be registered **with write granted** (`--allow-write`, or
   `quipu attest allow-write <session>` later). A key registered only to trust
   someone's shares is refused with `scope`.
@@ -148,8 +166,8 @@ signing_introducer = "<lead>"
   without write), `revoked`/`expired`, `replay`, `badsig`.
 
 See [sd key](verbs/key.md). To set up an agent end to end (its own user, its key,
-enrollment on the Quipu host, verification and revocation), follow CABOODLE's
-[agent identity and write access](https://scbrown.github.io/caboodle/agents.html#agent-identity-and-write-access)
+enrollment on the Quipu host, verification and revocation), follow TAMBO's
+[agent identity and write access](https://intigraph.github.io/tambo/agents.html#agent-identity-and-write-access)
 guide.
 
 ## The project id
@@ -179,3 +197,102 @@ core never reads a file or an environment variable; it is handed a storage
 backend that is already open, which is what keeps it
 [wasm-clean](wasm.md). The precedence rules above are unit-tested there, and
 end to end in `tests/cli.rs`.
+
+
+## Key-derived identity profile
+
+`sd identity --json` sends an existing session-attestation signature to the
+server's protected `/identity` endpoint. Its principal comes from the enrolled
+public-key binding, not `SEEDS_ACTOR`, `USER`, or caller headers. A bearer alone
+cannot answer this command. The client checks the returned key ID and session.
+
+Set `require_identity = true` in the **user** `[quipu]` configuration only after
+installing the matching server and enrolling that user's own signing key using
+the existing introducer. In this profile, writes require a remote signing key;
+a local or unkeyed write refuses before opening a store. Signed requests do not
+carry caller-declared agent/session headers, and signature refusal never falls
+back to a shared bearer.
+
+The **user** `[quipu]` setting `actor_principal_mode` independently controls a
+declared `--actor` / `SEEDS_ACTOR` differing from the verified signing principal:
+
+Read the resolved host mode with `sd config get quipu.actor_principal_mode`.
+
+| Mode | Mismatched declared actor |
+| --- | --- |
+| `off` | Keep the actor without an identity observation. |
+| `observe` (default) | Keep the actor, record the mismatch, and warn. |
+| `enforce` | Refuse before a destination write. |
+
+A project cannot set this host policy. Unknown mode names refuse configuration.
+Enforce also requires an enrolled remote signing key; local and unkeyed writes
+refuse before opening a store, even without `require_identity = true`.
+In observe and enforce, an omitted actor uses the verified principal. The
+signature still authenticates the key principal; a claimed actor is attribution,
+not proof that the named agent owns that key. Identity/signature errors remain
+errors. Neither a mismatch nor a failed observation counter refuses an observe
+write.
+
+Observe stores a cumulative `mismatches_total` and the latest 64 mismatch
+attempts in `$XDG_STATE_HOME/seeds/actor-principal.json`, falling back to
+`~/.local/state/seeds/actor-principal.json`. Entries contain actor, principal,
+verb and time, each bounded to 128 characters. The host lock serializes counter
+updates and the file is replaced atomically. Waiting for that lock is bounded
+to one second; contention warns UNKNOWN and the write continues. These are attempted writes, not
+commit receipts. Counter failure warns `UNKNOWN`, rather than claiming zero.
+A deliberately mismatched canary must increment the counter before a zero
+mismatch interval can establish anything. Do not turn on enforce for agents
+still sharing one host key: enroll individual principals, observe a measured
+interval with a daily positive control, then canary enforcement separately.
+
+Signed requests without a bearer retain the same plain-HTTP exposure as 0.6.7.
+The bearer-token refusal above is unchanged, including its explicit host
+allowlist. Signatures bind the method, path, content type and body; server time
+and nonce checks constrain replay, but do not encrypt traffic or bind the
+destination. An interceptor can read or relay a captured request within its
+validity window. Use a trusted route; moving signed traffic to HTTPS requires
+the server write route and client CA trust, rather than a changed client default.
+
+Keep the key in an owner-only regular file owned by the current effective Unix
+UID. Symlinks, foreign owners, group/world permissions and oversized files are
+refused through the same descriptor used to read the seed. This protects the
+file boundary only when agents have **different OS users**; mode 0600 under one
+shared user cannot prevent borrowing another agent's key.
+
+Migration order: install compatible binaries; prepare distinct private user
+homes; enroll each user's public binding; verify own-key identity, wrong-key,
+replay and cross-user refusal; configure required identity; then activate server
+key enforcement in the separately reviewed migration window. Preserve the old
+configuration and public binding inventory for rollback. Never copy another
+agent's private key. Do not enable strict server policy while required clients
+still depend on unsigned endpoints. The signed server profile currently covers
+read routes and the four audited mutation routes, without URL query strings;
+unsupported mutations refuse rather than silently using bearer authentication.
+
+## Private HTTPS trust roots
+
+Set these keys in the **user** config (`$XDG_CONFIG_HOME/seeds/config.toml`,
+otherwise `~/.config/seeds/config.toml`):
+
+```toml
+[quipu]
+url = "https://graph.example.invalid"
+ca_file = "roots.pem"
+# Optional: exactly 64 lowercase hex digits for the PEM file's SHA-256.
+# ca_sha256 = "<reviewed SHA-256 of roots.pem>"
+```
+
+`ca_file` is a PEM certificate bundle. A relative path resolves against the
+`seeds` directory containing this user config; `~/` resolves against HOME.
+Configured roots **replace** built-in roots. TLS chain and hostname verification
+remain enabled for all requests, including health, identity attestation,
+queries, signed writes and sync. The endpoint must use HTTPS when a CA is set.
+Without `ca_file`, the existing default TLS roots remain in use.
+
+A missing/unreadable file, an empty or invalid bundle, or a `ca_sha256` mismatch
+is a hard error identifying the configured file. There is no system-root fallback
+and no insecure mode. A digest without `ca_file` is refused. These keys are
+user-level only: a cloned project's `.seeds/config.toml` cannot change your
+trust roots or file digest. There is no CA environment-variable override.
+For an isolated job, its protected launcher must carry the reviewed user-config
+directory into that job identity and retain the job's own enrolled signing key.

@@ -82,6 +82,107 @@ fn comment_reader() -> (CommentReads, String, String, u64) {
     )
 }
 
+/// A concurrent writer that wins the comment index: before each of the first
+/// `wins` comment writes reaches the store, a rival comment takes the same
+/// index, as when two writers read the same count (aegis-epi). The loser's
+/// write then fails the store's own guard, exactly as it does in production.
+struct Racing {
+    inner: QuipuBackend,
+    wins: usize,
+    rivals: usize,
+    commits: usize,
+}
+
+impl Backend for Racing {
+    fn snapshot(&self, at: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.inner.snapshot(at)
+    }
+    fn snapshot_items(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.inner.snapshot_items(ids)
+    }
+    fn ready_ids(&self, at: Option<u64>) -> seeds::error::Result<Vec<String>> {
+        self.inner.ready_ids(at)
+    }
+    fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+        self.inner.claims_of(id)
+    }
+    fn commit(&mut self, batch: &WriteBatch, ctx: &Ctx) -> seeds::error::Result<u64> {
+        self.commits += 1;
+        if self.rivals < self.wins {
+            if let [c] = batch.comments.as_slice() {
+                self.rivals += 1;
+                let mut rival = c.clone();
+                rival.text = format!("rival {}", self.rivals);
+                rival.author = "rival".into();
+                let race = WriteBatch {
+                    comments: vec![rival],
+                    source: "seeds:comment".into(),
+                    ..WriteBatch::default()
+                };
+                self.inner.commit(&race, ctx)?;
+            }
+        }
+        self.inner.commit(batch, ctx)
+    }
+}
+
+fn racing(wins: usize) -> (Racing, String) {
+    let mut inner = backend();
+    let id = mk(&mut inner, "contended item", 1);
+    engine::comment_add(&mut inner, &ctx(2), &id, "before", None).unwrap();
+    let b = Racing {
+        inner,
+        wins,
+        rivals: 0,
+        commits: 0,
+    };
+    (b, id)
+}
+
+#[test]
+fn a_comment_that_loses_its_index_takes_the_next_one() {
+    let (mut b, id) = racing(3);
+    let (c, _) = engine::comment_add(&mut b, &ctx(3), &id, "mine", None).unwrap();
+    assert_eq!(c.index, 5, "1 before + 3 rivals, so mine is fifth");
+    assert_eq!(b.commits, 4, "three lost rounds and one that landed");
+    let all = engine::comment_list(&b.inner, &id, None).unwrap();
+    let indexes: Vec<u64> = all.iter().map(|c| c.index).collect();
+    assert_eq!(indexes, vec![1, 2, 3, 4, 5]);
+    assert_eq!(all.iter().filter(|c| c.text == "mine").count(), 1);
+    assert_eq!(all.iter().filter(|c| c.author == "rival").count(), 3);
+}
+
+#[test]
+fn a_comment_that_never_wins_is_a_conflict_that_wrote_nothing() {
+    let (mut b, id) = racing(usize::MAX);
+    let e = engine::comment_add(&mut b, &ctx(3), &id, "mine", None).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Conflict);
+    assert!(
+        e.message.contains("taken by a concurrent comment") && e.message.contains(&id),
+        "{}",
+        e.message
+    );
+    assert_eq!(b.commits, 16, "bounded: it gives up rather than spinning");
+    let all = engine::comment_list(&b.inner, &id, None).unwrap();
+    assert!(
+        all.iter().all(|c| c.text != "mine"),
+        "a lost race wrote nothing"
+    );
+}
+
+#[test]
+fn a_comment_on_a_missing_item_is_not_retried() {
+    let mut b = Racing {
+        inner: backend(),
+        wins: usize::MAX,
+        rivals: 0,
+        commits: 0,
+    };
+    let e = engine::comment_add(&mut b, &ctx(3), "sd-absent", "mine", None).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::NotFound);
+    assert_eq!(b.commits, 0);
+}
+
 #[test]
 fn comment_list_reads_only_the_named_current_item() {
     let (reader, id, other, _) = comment_reader();
@@ -509,6 +610,155 @@ fn parent_dependency_reads_only_exact_ancestor_context_and_refuses_cycles() {
     assert!(b.items.borrow().iter().flatten().any(|id| id == &root));
     assert!(engine::dep_add(&mut b, &ctx(7), &root, &child, "parent-child").is_err());
     assert!(b.snapshots.borrow().is_empty());
+}
+
+#[test]
+fn update_parent_reads_only_proposed_ancestors_and_detaches_without_them() {
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let root = mk(&mut inner, "root", 3);
+    let unrelated = mk(&mut inner, "unrelated", 4);
+    engine::dep_add(&mut inner, &ctx(5), &parent, &root, "parent-child").unwrap();
+    let mut b = CommentReads {
+        inner,
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    let (changed, _) = engine::update(
+        &mut b,
+        &ctx(6),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(format!(" {parent} ")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(changed[0].parent.as_ref(), Some(&parent));
+    assert!(b.snapshots.borrow().is_empty());
+    let read: std::collections::BTreeSet<_> = b.items.borrow().iter().flatten().cloned().collect();
+    assert_eq!(read, [child.clone(), parent.clone(), root.clone()].into());
+    assert!(!read.contains(&unrelated));
+
+    // The scoped path must retain the descendant/self-cycle veto.
+    let error = engine::update(
+        &mut b,
+        &ctx(7),
+        std::slice::from_ref(&root),
+        &UpdateReq {
+            parent: Some(child.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Refused);
+    assert!(b.snapshots.borrow().is_empty());
+
+    b.items.borrow_mut().clear();
+    let (changed, _) = engine::update(
+        &mut b,
+        &ctx(8),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(" ".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(changed[0].parent, None);
+    assert_eq!(*b.items.borrow(), vec![vec![child]]);
+    assert!(b.snapshots.borrow().is_empty());
+}
+
+#[test]
+fn update_parent_and_claim_still_refuses_an_open_blocker() {
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let blocker = mk(&mut inner, "open blocker", 3);
+    engine::dep_add(&mut inner, &ctx(4), &child, &blocker, "blocks").unwrap();
+    let mut b = CommentReads {
+        inner,
+        indexed: true,
+        fail_items: false,
+        snapshots: Default::default(),
+        items: Default::default(),
+    };
+    let error = engine::update(
+        &mut b,
+        &ctx(5),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(parent),
+            claim: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert!(error.message.contains("blocked by"));
+    assert!(b.snapshots.borrow().is_empty());
+    assert!(b.items.borrow().iter().flatten().any(|id| id == &blocker));
+    let unchanged = b.inner.snapshot(None).unwrap();
+    assert_eq!(unchanged.get(&child).unwrap().parent, None);
+    assert_eq!(unchanged.get(&child).unwrap().assignee, None);
+}
+
+#[test]
+fn update_parent_refuses_mixed_snapshot_transactions_without_writing() {
+    struct ChangedContext {
+        inner: QuipuBackend,
+        reads: std::cell::Cell<usize>,
+    }
+    impl Backend for ChangedContext {
+        fn snapshot(&self, _: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+            panic!("reparenting must not read the whole board");
+        }
+        fn snapshot_items(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+            let mut snap = self.inner.snapshot_items(ids)?;
+            let n = self.reads.get();
+            self.reads.set(n + 1);
+            if n > 0 {
+                snap.tx += 1;
+            }
+            Ok(snap)
+        }
+        fn commit(&mut self, _: &WriteBatch, _: &Ctx) -> seeds::error::Result<u64> {
+            panic!("a mixed parent context must not commit");
+        }
+        fn ready_ids(&self, at: Option<u64>) -> seeds::error::Result<Vec<String>> {
+            self.inner.ready_ids(at)
+        }
+        fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+            self.inner.claims_of(id)
+        }
+    }
+    let mut inner = backend();
+    let child = mk(&mut inner, "child", 1);
+    let parent = mk(&mut inner, "parent", 2);
+    let mut b = ChangedContext {
+        inner,
+        reads: Default::default(),
+    };
+    let error = engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&child),
+        &UpdateReq {
+            parent: Some(parent),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert!(error.message.contains("parent context changed"));
+    assert_eq!(
+        b.inner.snapshot(None).unwrap().get(&child).unwrap().parent,
+        None
+    );
 }
 
 #[test]
@@ -5140,4 +5390,95 @@ fn rank_moves_preserve_neighbors_and_deadlines() {
         b.snapshot(None).unwrap().get(&items[2].id).unwrap().rank,
         None
     );
+}
+
+#[test]
+fn default_search_covers_description_but_not_comments_or_notes() {
+    let mut b = backend();
+    let (seed, _) = engine::create(
+        &mut b,
+        &ctx(1),
+        &CreateReq {
+            title: "visible title".into(),
+            description: Some("read process pool".into()),
+            ..CreateReq::default()
+        },
+    )
+    .unwrap();
+    engine::comment_add(&mut b, &ctx(2), &seed.id, "comment-only-zebra", None).unwrap();
+    engine::update(
+        &mut b,
+        &ctx(3),
+        std::slice::from_ref(&seed.id),
+        &UpdateReq {
+            notes: Some("notes-only-quokka".into()),
+            ..UpdateReq::default()
+        },
+    )
+    .unwrap();
+    let hits = |q: &str, full| {
+        engine::search(
+            &b,
+            &engine::SearchReq {
+                query: q.into(),
+                full,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+        .page
+        .total
+    };
+    assert_eq!(hits("visible title", false), 1, "populated title control");
+    assert_eq!(
+        hits("READ PROCESS POOL", false),
+        1,
+        "description-only match"
+    );
+    assert_eq!(
+        hits("comment-only-zebra", false),
+        0,
+        "comments excluded by default"
+    );
+    assert_eq!(
+        hits("comment-only-zebra", true),
+        1,
+        "--full comment positive"
+    );
+    assert_eq!(
+        hits("notes-only-quokka", true),
+        0,
+        "notes remain outside scope"
+    );
+    assert_eq!(hits("absent-needle", false), 0, "real zero control");
+    engine::close(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&seed.id),
+        Some("done"),
+        false,
+    )
+    .unwrap();
+    let closed = engine::search(
+        &b,
+        &engine::SearchReq {
+            query: "read process pool".into(),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!((closed.page.total, closed.hidden_closed), (0, 1));
+    let all = engine::search(
+        &b,
+        &engine::SearchReq {
+            query: "read process pool".into(),
+            all: true,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(all.page.total, 1);
 }

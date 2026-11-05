@@ -3,9 +3,13 @@
 //! instead of a bearer token. Nothing reusable crosses the wire: each header
 //! binds one request (method, path, content type, body hash) and one nonce.
 //!
-//! The byte format is quipu's `quipu-write-v1`, pinned by the test vector quipu
-//! publishes (`tests/vectors/write-attestation-v1.json`, copied here). seeds does
-//! not depend on quipu for this; the vector is the contract.
+//! The byte format is quipu's `quipu-write-v2` (aegis-2idcev): v1 plus the
+//! receiving store's id as the audience, so a signed request is accepted only by
+//! the store it was signed for. `quipu-write-v1` names no store and remains only
+//! behind the explicit `signing_version = "v1-legacy"` setting. Both are pinned
+//! by the test vectors quipu publishes (`tests/vectors/write-attestation-v*.json`,
+//! copied here). seeds does not depend on quipu for this; the vectors are the
+//! contract.
 
 use std::path::{Path, PathBuf};
 
@@ -16,10 +20,35 @@ use sha2::{Digest, Sha256};
 use crate::error::{ErrorKind, Result, SdError};
 
 pub const HEADER: &str = "x-quipu-attestation";
-pub const VERSION: &str = "quipu-write-v1";
+/// The audience-free format, kept only for `signing_version = "v1-legacy"`.
+pub const VERSION_V1: &str = "quipu-write-v1";
+/// The default: the signature also binds the receiving store's id.
+pub const VERSION_V2: &str = "quipu-write-v2";
 
-/// The paths quipu accepts a signed write on. Anything else still needs a bearer.
-pub const SIGNED_PATHS: [&str; 4] = ["/knot", "/update", "/episode", "/graph/create"];
+/// The longest store id sd will sign for. quipu's are `urn:uuid:` ids; the
+/// bound only stops a hostile `/stats` from growing every signed request.
+const MAX_AUDIENCE: usize = 256;
+
+/// Whether `audience` is a store id sd will put in a signed message.
+pub fn audience_ok(audience: &str) -> bool {
+    !audience.is_empty() && audience.len() <= MAX_AUDIENCE && clean(audience)
+}
+
+/// Audited mutation paths and the identity read. Signed general reads are
+/// dispatched separately; unsupported signed mutations refuse without fallback.
+pub const SIGNED_PATHS: [&str; 5] = ["/knot", "/update", "/episode", "/graph/create", "/identity"];
+
+/// Which format a [`Signer`] signs, and against which store (aegis-2idcev).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Audience {
+    /// `quipu-write-v2` (the default): the store id is read from the server's
+    /// `/stats` at connect and pinned for the connection; when `pin` is set the
+    /// server must report exactly that id or nothing is signed.
+    Store { pin: Option<String> },
+    /// `quipu-write-v1`, which names no store. Only by explicit
+    /// `signing_version = "v1-legacy"`; never a fallback.
+    LegacyV1,
+}
 
 /// A registered signing identity: the private key and the binding it was
 /// registered under (`quipu attest register --session S --introducer I`).
@@ -27,6 +56,7 @@ pub struct Signer {
     key: SigningKey,
     pub session: String,
     pub introducer: String,
+    pub audience: Audience,
 }
 
 /// Lowercase hex of `bytes`.
@@ -76,15 +106,26 @@ impl Signer {
             key: SigningKey::from_bytes(&seed),
             session: session.to_string(),
             introducer: introducer.to_string(),
+            audience: Audience::Store { pin: None },
         })
+    }
+
+    /// The same identity under another [`Audience`] policy.
+    #[must_use]
+    pub fn with_audience(mut self, audience: Audience) -> Self {
+        self.audience = audience;
+        self
     }
 
     /// Load the key file: 64 hex characters (the Ed25519 seed), readable by the
     /// owner only.
     pub fn load(path: &Path, session: &str, introducer: &str) -> Result<Self> {
-        check_private(path)?;
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| key_error(format!("reading signing key {}: {e}", path.display())))?;
+        use std::io::Read as _;
+        let file = check_private(path)?;
+        let mut text = String::new();
+        file.take(256)
+            .read_to_string(&mut text)
+            .map_err(|_| key_error("cannot read signing key".into()))?;
         let seed: [u8; 32] = unhex(text.trim())
             .and_then(|v| v.try_into().ok())
             .ok_or_else(|| {
@@ -106,7 +147,9 @@ impl Signer {
         format!("sha256:{}", sha256_hex(self.key.verifying_key().as_bytes()))
     }
 
-    /// The exact bytes signed for one write.
+    /// The exact bytes signed for one write: v2 when `audience` names the
+    /// receiving store (its line comes LAST), v1 when it is `None`.
+    #[allow(clippy::too_many_arguments)]
     pub fn canonical_message(
         &self,
         issued_at: u64,
@@ -115,17 +158,29 @@ impl Signer {
         path: &str,
         content_type: &str,
         body_sha256: &str,
+        audience: Option<&str>,
     ) -> String {
-        format!(
-            "{VERSION}\nkey_id={}\nsession={}\nintroducer={}\nissued_at={issued_at}\nnonce={nonce}\n\
+        let version = if audience.is_some() {
+            VERSION_V2
+        } else {
+            VERSION_V1
+        };
+        let mut message = format!(
+            "{version}\nkey_id={}\nsession={}\nintroducer={}\nissued_at={issued_at}\nnonce={nonce}\n\
              method={method}\npath={path}\ncontent_type={content_type}\nbody_sha256={body_sha256}\n",
             self.key_id(),
             self.session,
             self.introducer,
-        )
+        );
+        if let Some(audience) = audience {
+            message.push_str(&format!("audience={audience}\n"));
+        }
+        message
     }
 
     /// The header value for one write: base64url (unpadded) of the envelope JSON.
+    /// `audience` is the receiving store's id (v2), or `None` for legacy v1.
+    #[allow(clippy::too_many_arguments)]
     pub fn header(
         &self,
         issued_at: u64,
@@ -134,11 +189,18 @@ impl Signer {
         path: &str,
         content_type: &str,
         body: &[u8],
+        audience: Option<&str>,
     ) -> Result<String> {
         if path.contains('?') || ![method, path, content_type].iter().all(|f| clean(f)) {
             return Err(SdError::failed(format!(
                 "cannot sign {method} {path}: a signed write has no query string or control \
                  characters"
+            )));
+        }
+        if audience.is_some_and(|a| !audience_ok(a)) {
+            return Err(SdError::failed(format!(
+                "cannot sign {method} {path}: the store id is empty, longer than \
+                 {MAX_AUDIENCE} bytes, or has a control character"
             )));
         }
         let message = self.canonical_message(
@@ -148,14 +210,20 @@ impl Signer {
             path,
             content_type,
             &sha256_hex(body),
+            audience,
         );
         let signature = hex(&self.key.sign(message.as_bytes()).to_bytes());
         // Field order matches quipu's envelope; the server parses JSON, so order
-        // is not load-bearing, but it keeps the vector byte-identical.
+        // is not load-bearing, but it keeps the vectors byte-identical. A v1
+        // envelope must carry NO audience field; a v2 one carries it last.
+        let (version, audience_field) = match audience {
+            Some(a) => (VERSION_V2, format!(",\"audience\":{}", json_str(a))),
+            None => (VERSION_V1, String::new()),
+        };
         let envelope = format!(
             "{{\"version\":{},\"key_id\":{},\"session\":{},\"introducer\":{},\
-             \"issued_at_epoch\":{issued_at},\"nonce\":{},\"signature\":{}}}",
-            json_str(VERSION),
+             \"issued_at_epoch\":{issued_at},\"nonce\":{},\"signature\":{}{audience_field}}}",
+            json_str(version),
             json_str(&self.key_id()),
             json_str(&self.session),
             json_str(&self.introducer),
@@ -172,12 +240,21 @@ impl Signer {
         path: &str,
         content_type: &str,
         body: &[u8],
+        audience: Option<&str>,
     ) -> Result<String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| SdError::failed(format!("system clock before 1970: {e}")))?
             .as_secs();
-        self.header(now, &fresh_nonce()?, method, path, content_type, body)
+        self.header(
+            now,
+            &fresh_nonce()?,
+            method,
+            path,
+            content_type,
+            body,
+            audience,
+        )
     }
 
     /// The command the introducer runs, once, on the quipu host. Someone else
@@ -230,12 +307,36 @@ fn fresh_nonce() -> Result<String> {
 }
 
 /// Refuse a key file anyone but its owner can read.
-fn check_private(path: &Path) -> Result<()> {
+fn check_private(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let meta = std::fs::metadata(path)
-            .map_err(|e| key_error(format!("signing key {}: {e}", path.display())))?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // Validate the opened descriptor before reading: a FIFO must not wait
+        // for a writer, and a device path must not become our controlling tty.
+        options
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOCTTY);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| key_error("cannot open owned signing key (symlinks are refused)".into()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let meta = file
+            .metadata()
+            .map_err(|_| key_error("cannot inspect signing key".into()))?;
+        // SAFETY: geteuid has no pointer arguments or mutable caller state.
+        let effective_uid = unsafe { libc::geteuid() };
+        if !meta.is_file() || meta.file_type().is_symlink() || meta.uid() != effective_uid {
+            return Err(key_error(
+                "signing key must be a regular file owned by the effective Unix user".into(),
+            ));
+        }
+        if meta.len() > 128 {
+            return Err(key_error("signing key file is oversized".into()));
+        }
         if meta.permissions().mode() & 0o077 != 0 {
             return Err(key_error(format!(
                 "signing key {} is readable by others; run: chmod 600 {}",
@@ -244,7 +345,7 @@ fn check_private(path: &Path) -> Result<()> {
             )));
         }
     }
-    Ok(())
+    Ok(file)
 }
 
 /// Generate a new key file at `path` (owner-only), refusing to overwrite one.
@@ -283,6 +384,84 @@ mod tests {
     use super::*;
 
     const VECTOR: &str = include_str!("../../tests/vectors/write-attestation-v1.json");
+    const VECTOR_V2: &str = include_str!("../../tests/vectors/write-attestation-v2.json");
+
+    /// quipu's published v2 vector, reproduced byte for byte: the audience line
+    /// LAST in the signed message, the audience field LAST in the envelope.
+    #[test]
+    fn reproduces_quipus_published_v2_vector_byte_for_byte() {
+        let v: serde_json::Value = serde_json::from_str(VECTOR_V2).unwrap();
+        let (i, d) = (&v["inputs"], &v["derived"]);
+        let s = |x: &serde_json::Value| x.as_str().unwrap().to_string();
+        let seed: [u8; 32] = unhex(&s(&i["ed25519_seed_hex"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let signer = Signer::from_seed(seed, &s(&i["session"]), &s(&i["introducer"])).unwrap();
+        let body = s(&i["body"]);
+        let issued = i["issued_at_epoch"].as_u64().unwrap();
+        let audience = s(&i["audience"]);
+        let (method, path, ct, nonce) = (
+            s(&i["method"]),
+            s(&i["path"]),
+            s(&i["content_type"]),
+            s(&i["nonce"]),
+        );
+        assert_eq!(signer.key_id(), s(&d["key_id"]));
+        let message = signer.canonical_message(
+            issued,
+            &nonce,
+            &method,
+            &path,
+            &ct,
+            &s(&d["body_sha256"]),
+            Some(&audience),
+        );
+        assert_eq!(message, s(&d["canonical_message"]));
+        assert_eq!(
+            hex(&signer.key.sign(message.as_bytes()).to_bytes()),
+            s(&d["signature_hex"])
+        );
+        let header = signer
+            .header(
+                issued,
+                &nonce,
+                &method,
+                &path,
+                &ct,
+                body.as_bytes(),
+                Some(&audience),
+            )
+            .unwrap();
+        assert_eq!(header, s(&d["header_value"]));
+        let envelope = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&header)
+            .unwrap();
+        assert_eq!(String::from_utf8(envelope).unwrap(), s(&d["envelope_json"]));
+    }
+
+    #[test]
+    fn a_store_id_that_could_break_the_message_is_refused() {
+        let signer = Signer::from_seed([7; 32], "s", "i").unwrap();
+        let long = "u".repeat(257);
+        for bad in [
+            "",
+            "urn:uuid:a\naudience=urn:uuid:b",
+            "urn:uuid:\t",
+            long.as_str(),
+        ] {
+            assert!(
+                signer
+                    .header(1, "00", "POST", "/update", "a/b", b"", Some(bad))
+                    .is_err(),
+                "{bad:?} accepted"
+            );
+        }
+        let ok = "u".repeat(256);
+        assert!(signer
+            .header(1, "00", "POST", "/update", "a/b", b"", Some(&ok))
+            .is_ok());
+    }
 
     #[test]
     fn reproduces_quipus_published_vector_byte_for_byte() {
@@ -307,11 +486,19 @@ mod tests {
         assert_eq!(signer.key_id(), s(&d["key_id"]));
         assert_eq!(sha256_hex(body.as_bytes()), s(&d["body_sha256"]));
         assert_eq!(
-            signer.canonical_message(issued, &nonce, &method, &path, &ct, &s(&d["body_sha256"])),
+            signer.canonical_message(
+                issued,
+                &nonce,
+                &method,
+                &path,
+                &ct,
+                &s(&d["body_sha256"]),
+                None
+            ),
             s(&d["canonical_message"])
         );
         let header = signer
-            .header(issued, &nonce, &method, &path, &ct, body.as_bytes())
+            .header(issued, &nonce, &method, &path, &ct, body.as_bytes(), None)
             .unwrap();
         assert_eq!(header, s(&d["header_value"]));
         let envelope = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -324,10 +511,10 @@ mod tests {
     fn a_query_string_or_control_character_is_refused() {
         let signer = Signer::from_seed([7; 32], "s", "i").unwrap();
         assert!(signer
-            .header(1, "00", "POST", "/update?x=1", "a/b", b"")
+            .header(1, "00", "POST", "/update?x=1", "a/b", b"", None)
             .is_err());
         assert!(signer
-            .header(1, "00", "POST", "/update", "a/b\n", b"")
+            .header(1, "00", "POST", "/update", "a/b\n", b"", None)
             .is_err());
         assert!(Signer::from_seed([7; 32], "s\nintroducer=x", "i").is_err());
     }
@@ -387,8 +574,12 @@ mod tests {
     #[test]
     fn fresh_headers_never_reuse_a_nonce() {
         let signer = Signer::from_seed([7; 32], "s", "i").unwrap();
-        let a = signer.header_now("POST", "/update", "a/b", b"x").unwrap();
-        let b = signer.header_now("POST", "/update", "a/b", b"x").unwrap();
+        let a = signer
+            .header_now("POST", "/update", "a/b", b"x", Some("urn:uuid:s"))
+            .unwrap();
+        let b = signer
+            .header_now("POST", "/update", "a/b", b"x", Some("urn:uuid:s"))
+            .unwrap();
         assert_ne!(a, b);
     }
 
@@ -412,5 +603,105 @@ mod tests {
             "a world-readable key is refused"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod owned_key_tests {
+    use super::*;
+    #[test]
+    fn key_descriptor_refuses_symlink_and_public_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temp = std::env::temp_dir().join(format!(
+            "sd-owned-key-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp).unwrap();
+        let path = temp.join("synthetic-key");
+        std::fs::write(&path, "31".repeat(32)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Signer::load(&path, "synthetic-session", "synthetic-introducer").is_ok());
+        let alias = temp.join("alias");
+        symlink(&path, &alias).unwrap();
+        assert!(Signer::load(&alias, "synthetic-session", "synthetic-introducer").is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(Signer::load(&path, "synthetic-session", "synthetic-introducer").is_err());
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn fifo_key_is_refused_without_waiting_for_a_writer() {
+        const CHILD_PATH: &str = "SEEDS_TEST_FIFO_KEY";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let error = Signer::load(Path::new(&path), "fixture-session", "fixture-introducer")
+                .err()
+                .expect("FIFO must be refused");
+            assert!(error.to_string().contains("regular file"), "{error}");
+            println!("FIFO_CHILD_REGULAR_FILE_REFUSAL");
+            return;
+        }
+        use std::os::unix::{ffi::OsStrExt as _, fs::PermissionsExt as _};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        let temp = std::env::temp_dir().join(format!(
+            "sd-fifo-key-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&temp).unwrap();
+        let regular = temp.join("regular");
+        std::fs::write(&regular, "31".repeat(32)).unwrap();
+        std::fs::set_permissions(&regular, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Signer::load(&regular, "fixture-session", "fixture-introducer").is_ok());
+        let fifo = temp.join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a live NUL-terminated synthetic path; no pointer escapes.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "fifo_key_is_refused_without_waiting_for_a_writer",
+                "--nocapture",
+            ])
+            .env(CHILD_PATH, &fifo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let completed = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        if completed.is_none() {
+            let _ = child.kill();
+        }
+        let output = child.wait_with_output().unwrap();
+        std::fs::remove_dir_all(&temp).unwrap();
+        assert!(
+            completed.is_some(),
+            "FIFO key load blocked; child killed and reaped"
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("FIFO_CHILD_REGULAR_FILE_REFUSAL"),
+            "child did not execute the falsifier"
+        );
     }
 }

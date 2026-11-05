@@ -2,6 +2,164 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-11-05
+
+### Added
+
+- Add one-shot GitHub issue transfers (#233) ([3432f22](https://github.com/scbrown/seeds/commit/3432f224821e764b271b49afd33e34b989efab9a))
+
+## [0.14.0] - 2026-11-05
+
+### Added
+
+- *(tls)* Configure pinned CA roots for Quipu HTTPS (#240) ([79e3f8d](https://github.com/scbrown/seeds/commit/79e3f8dbd732b4d6fad2e08c8dd16111768c382f))
+
+### Documentation
+
+- Use Tambo in current installer guidance and CLI pointers (#237) ([b50b9c5](https://github.com/scbrown/seeds/commit/b50b9c5e7e034d3281b9da90474c906a2e469b77))
+
+## [0.13.0] - 2026-11-05
+
+### Fixed
+
+- Require pinned embedding providers in repository shares (#235) ([33b6eca](https://github.com/scbrown/seeds/commit/33b6eca8755ccb3a63edaa72cc9793534a6c77f7))
+- *(show)* Bound human comment display while preserving complete default JSON (#229) ([71300ad](https://github.com/scbrown/seeds/commit/71300ad4b44343ddc179f31eb11e958a647f979c))
+- *(demos)* Track the comment-fold demo recordings (#236) ([ca1735f](https://github.com/scbrown/seeds/commit/ca1735f022a5dae66eaac6bcaeb1c8f8442d5d66))
+
+### Perf
+
+- *(list)* Correlate owner type checks after indexed selection (#232) ([9c43c74](https://github.com/scbrown/seeds/commit/9c43c748c04f415c53b0688b279b4f9d5514ff66))
+
+## [0.12.0] - 2026-11-04
+
+### Added
+
+- *(msg)* Crew mail as schema:Message in per-week window graphs (sd msg) (#220) ([ceb7424](https://github.com/scbrown/seeds/commit/ceb74249771fa47280a7ac1ea42719255e7e9cbe))
+
+## [0.11.2] - 2026-11-04
+
+### Added
+
+- *(share)* Publish pendant entities under w3id.org/intigraph names (#225) ([d12bd1c](https://github.com/scbrown/seeds/commit/d12bd1cf3eeca1d121f93eba23b7bf3843b8d5ea))
+
+### Fixed
+
+- Scope reparent validation to ancestor reads (#227) ([6c2eafe](https://github.com/scbrown/seeds/commit/6c2eafe80288c2aa9298d28a490a0b9126e862a6))
+
+## [0.11.1] - 2026-11-04
+
+### Fixed
+
+- *(read-stream)* Stream the operator bootstrap instead of a 256 MiB read (#223) ([6652891](https://github.com/scbrown/seeds/commit/66528914f0cbcd837353934c88cda41396dd8e0b))
+
+## [0.11.0] - 2026-11-02
+
+### Perf
+
+- *(list)* Sd list --all on the live board in ~32s instead of ~620s (#219) ([53ca1d1](https://github.com/scbrown/seeds/commit/53ca1d117cb9e5a200ecf26605b6e668a88c693d))
+
+## [0.10.3] - 2026-11-02
+
+### Perf
+
+- *(count)* Drive scoped counts from the assignee/priority cohort (#218) ([9721304](https://github.com/scbrown/seeds/commit/97213044bc80bb98dbd4c1b468304ba35306be42))
+
+## [0.10.2] - 2026-11-02
+
+### CI/CD
+
+- *(release)* Build macOS arm64 archives on macos-15 (#213) ([f827d80](https://github.com/scbrown/seeds/commit/f827d806b8e3edd630242f9ae039c0501fb10aff))
+
+### Fixed
+
+- *(share)* Admit tracked agent-file aliases in the release snapshot (#215) ([2be764c](https://github.com/scbrown/seeds/commit/2be764ca16f07fa8ffe9b0c628973f174f78f2a1))
+- *(reads)* Pin quipu to main and require signed transaction bodies (#216) ([a609176](https://github.com/scbrown/seeds/commit/a6091768dfd9633b0ba01d7ad445773d5e7124d3))
+- *(release)* Depend on the published quipu-ai 0.16.6, not a git pin (#217) ([0bbc868](https://github.com/scbrown/seeds/commit/0bbc868a6ed025765003557f6979e29e2009d1fc))
+
+## [0.10.1] - 2026-10-30
+
+### Fixed
+
+- *(comments)* Confirm the intended writer after a lost response (#211) ([ffa40aa](https://github.com/scbrown/seeds/commit/ffa40aa3cc2af40b98d58622e8c0bb133597c5f2))
+
+## [0.10.0] - 2026-10-30
+
+### Added
+
+- *(cli)* Sd prime per the stack prime contract (#204) ([a50d2ac](https://github.com/scbrown/seeds/commit/a50d2ac4e218b983612a92fd64b124ee4b98f8bd))
+- *(reads)* Consume push projections through private IPC (#210) ([81d16bc](https://github.com/scbrown/seeds/commit/81d16bc4d3d7a21e4769976dbe02d05fb34aa89f))
+
+### Documentation
+
+- *(readme)* Record native work capture in an isolated fixture (#208) ([1c8b4d8](https://github.com/scbrown/seeds/commit/1c8b4d877963aee44d9e103a2309bd5f0c140904))
+- *(readme)* Follow the shared stack sections (#209) ([46c05b1](https://github.com/scbrown/seeds/commit/46c05b1e2f1452069abd2bdce667d92846de960c))
+
+### Fixed
+
+- *(shapes)* Exempt explicit quechua:ScheduledJob from board constraints; keep the Action target (#206) ([d1c31e8](https://github.com/scbrown/seeds/commit/d1c31e8a43a93c4b14085dc5d6e461fdb414ff26))
+
+## [0.9.0] - 2026-10-26
+
+### Added
+
+- *(attest)* [**breaking**] Sign quipu-write-v2, bound to the receiving store (needs quipu-ai >= 0.12.0) (#198) ([b1f2acd](https://github.com/scbrown/seeds/commit/b1f2acd1129a9feff27b7c1b3d1e19a3bbc1da64))
+
+## [0.8.3] - 2026-10-25
+
+### Added
+
+- *(projection)* Consume the shared applier for board reads (#193) ([adfd266](https://github.com/scbrown/seeds/commit/adfd266837a1cd01682077472e4980eed7a20c88))
+
+## [0.8.2] - 2026-10-25
+
+### Added
+
+- *(remote)* Say when a read comes from a Quipu read replica, and how stale it is (#199) ([1fe6560](https://github.com/scbrown/seeds/commit/1fe65608e22005021533613fa1c19cdbbce8df0e))
+
+## [0.8.1] - 2026-10-25
+
+### Fixed
+
+- *(provenance)* Label Quipu requests by CLI command (#196) ([02b6127](https://github.com/scbrown/seeds/commit/02b61272739d16343929b13831f49230ae8fa3ec))
+
+## [0.8.0] - 2026-10-24
+
+### Fixed
+
+- *(auth)* Observe shared-key actor mismatches by default (#194) ([76b2563](https://github.com/scbrown/seeds/commit/76b2563dd5e42a511501a1a9c268f549be68b040))
+
+## [0.7.2] - 2026-10-24
+
+### Added
+
+- *(shapes)* Govern optional deferral provenance (#185) ([8e35ce9](https://github.com/scbrown/seeds/commit/8e35ce9b768aa71896aaf8965705c97a8cab234f))
+
+### Fixed
+
+- *(work)* Keep ASK-class decisions visible (#184) ([e324b0c](https://github.com/scbrown/seeds/commit/e324b0c8d363ac95808fac22f3bb52f3dc55c4eb))
+
+## [0.7.1] - 2026-10-23
+
+### Documentation
+
+- Synchronize the canonical stack overview (#191) ([d96f6a0](https://github.com/scbrown/seeds/commit/d96f6a063e768fae505693f1a464bb5608cee312))
+
+### Fixed
+
+- *(search)* Include descriptions in default search (#161) ([02feead](https://github.com/scbrown/seeds/commit/02feead38d71ccb3ca1128195c547eb590482226))
+
+## [0.7.0] - 2026-10-23
+
+### Added
+
+- Derive signed write actors from authenticated identity (reland #167) (#190) ([fbacbde](https://github.com/scbrown/seeds/commit/fbacbde827e9cad269a6a986943683c5ab4151d2))
+
+## [0.6.7] - 2026-10-22
+
+### Perf
+
+- *(remote)* Read a seed and its comments in one query (#182) ([82d746a](https://github.com/scbrown/seeds/commit/82d746aecbdbd54793f38000e0aee3ebb74e3b7e))
+
 ## [0.6.6] - 2026-10-22
 
 ### Added

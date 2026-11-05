@@ -3,6 +3,7 @@
 [Introduction](introduction.md)
 
 - [Getting started](getting-started.md)
+- [Agent orientation](agent-primer.md)
 - [Why facts, not snapshots](why-facts.md)
 - [The bd intent map](intent-map.md)
 - [How it works](architecture.md)
@@ -40,7 +41,9 @@
   - [dep](verbs/dep.md)
   - [External prerequisites and unlock events](external-blockers.md)
   - [comments](verbs/comments.md)
+  - [msg](verbs/msg.md)
   - [export, import, sync](verbs/sync.md)
+  - [GitHub Issues transfers](task-managers.md)
   - [version, where, info](verbs/about.md)
   - [config](verbs/config.md)
   - [capabilities](verbs/capabilities.md)
@@ -56,3 +59,5 @@
   - [Reproducible release API comparison](semver-baseline.md)
 
 - [Specification replacement and acknowledgement](rescope.md)
+
+- [Push-backed local reads](push-reads.md)

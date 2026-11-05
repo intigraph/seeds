@@ -29,6 +29,31 @@ seed no clone can resolve. br accepts such an edge, and its own
 edge instead (exit 2, nothing written). An ephemeral seed may depend on
 anything.
 
+## Stream-backed read integration
+
+The native library's `StreamBoard` owns a local store and Quipu's shared
+applier together. A caller first supplies an independently trusted scoped
+bootstrap manifest, expected source/epoch/scope/policy binding and pinned
+stream public key. The scope must include the project and its ephemeral
+sibling. Bootstrap frames and signed replication frames go unchanged to the
+shared applier; Seeds does not implement another record applier.
+
+Board, plate and ready reads reuse the existing engine definitions at the
+local committed transaction. They require the shared applier's signed
+challenge proof within the requested freshness budget. A heartbeat is not
+such a proof. Disconnect, clock discontinuity, an ended epoch or a revoked
+scope prevents bounded reads. Source transaction numbers remain separate
+from local transaction numbers. Claims and writes stay on the authoritative
+backend; this reader exposes no writable backend.
+
+This is a library integration, not CLI routing or a background subscriber.
+The caller still owns authenticated bootstrap acquisition, transport,
+random challenge nonces and a monotonic clock. Normal CLI and Telegram
+readers are unchanged until that integration and its live acceptance are
+complete. The pinned Git dependency includes the shared-applier repairs;
+a registry release with the same required behavior is a separate release
+prerequisite.
+
 ## The vocabulary
 
 A seed is a `schema:Action`. The terms follow one order of preference: W3C
@@ -68,6 +93,7 @@ These are vocabulary names, not hosts anyone contacts.
 | created, updated, closed | `schema:dateCreated`, `schema:dateModified`, `schema:endTime` | `xsd:dateTime` |
 | due | `ical:due` | `xsd:date` when a bare `YYYY-MM-DD`, else `xsd:dateTime` |
 | defer | `schema:scheduledTime` | `xsd:date` or `xsd:dateTime`, as for due |
+| latest explicit deferral | `seeds:deferredAt`, `seeds:deferredBy` | canonical `xsd:dateTime` and the writer context actor's principal IRI |
 | estimate | `schema:timeRequired` | `xsd:duration` of the minutes, canonical (`PT30M`, `PT1H30M`, `P1D`) |
 | close reason | `schema:result` | string |
 | outcome | `quechua:outcome` | `"done"` (the default), `abandoned`, `superseded` or `failed`, only when closed |
@@ -75,6 +101,18 @@ These are vocabulary names, not hosts anyone contacts.
 | `parent-child`, `related`, `discovered-from` | `schema:isPartOf`, `dcterms:relation`, `prov:wasDerivedFrom` | item IRI |
 | notes, design, acceptance criteria, agent context, external ref | `seeds:notes`, `seeds:design`, `seeds:acceptanceCriteria`, `seeds:agentContext`, `seeds:externalRef` | string (an external ref need not be a URL) |
 | driving workflow run | `seeds:workflowRun` | a shuttle run IRI, `urn:shuttle:run:<id>` ([Formulas](formulas.md)) |
+
+Explicit deferred creates, `sd defer`, and updates supplying deferred status or
+a defer date record the latest deferral time and actor in the same atomic
+write. Redefer replaces that pair; undefer and unrelated edits preserve it.
+The actor comes from the normal writer context, not its optional identity claims.
+Missing or invalid context refuses the deferral before commit.
+
+These optional fields are not backfilled. A report using them covers only
+writes made after deployment of this writer and must say **since <actual
+activation date>**. Missing historical provenance is UNKNOWN. Load the matching
+remote admission profile before deploying the new writer; client-side profile
+validation alone is not proof that the server profile has been loaded.
 
 **Times are typed, validated and written in canonical form.** A value that
 is not a valid `xsd:dateTime` (or, for due and defer, a bare `YYYY-MM-DD`
@@ -187,6 +225,14 @@ primitive the shared-server backend needs (below).
 Reads take no lock. quipu keeps the store in SQLite WAL mode, so a reader sees
 the last committed transaction while a write is in flight.
 
+Remote comment writes distinguish a failed insertion from an exact replay.
+A zero-change response succeeds only when the intended comment and its
+existing write-provenance marker both match. An occupied index without that
+marker is a conflict; `comments add` rereads and renumbers within its bounded
+retry limit. If the response is lost, a matching comment from another writer
+cannot confirm our write: the result stays UNKNOWN (exit 8) and is not retried.
+The marker records declared provenance; it does not authenticate the writer.
+
 ## Why the default is an embedded quipu
 
 The original brief sketched reads through quipu's SPARQL `/query` and writes
@@ -222,3 +268,19 @@ client-side profile, migrate data, or change stored class and predicate names. A
 write operation against its complete loaded shape set before deployment.
 Write timestamps remain strings because that is the provenance producer's
 contract; item creation times remain typed `xsd:dateTime`.
+
+The Action target stays broad so missing work-item fields still refuse.
+An Action explicitly marked `quechua:ScheduledJob` may instead use the
+scheduled-job profile's constraints; install that profile alongside the gate.
+The job branch forbids Seeds status, priority, issue type and deferral fields,
+so mixed job/work-item records must still pass every board constraint.
+The marker is a declaration discriminator, never execution authority.
+
+### Embedded ephemeral reference types
+
+When an embedded transaction writes the configured ephemeral graph, its referenced
+`rdf:type` context is exactly that graph plus the configured project graph. This
+allows ephemeral items to depend on shared items without joining property values
+or discovering unrelated projects. ROOT is not selected for those referenced
+types. The existing batch keeps its provenance, project and ephemeral writes
+atomic, and shared-to-ephemeral edges remain refused.

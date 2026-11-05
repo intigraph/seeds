@@ -1,0 +1,3 @@
+[project]
+prefix = "demo"
+graph = "urn:seeds:readme-demo"

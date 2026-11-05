@@ -1,0 +1,72 @@
+{
+  "title": "Seeds: capture work, then read the ready queue",
+  "description": "Real native CLI using a new isolated local store and explicit public fixture graph/prefix/actor; no server, sync, production ledger or crew backend change.",
+  "width": 1000,
+  "height": 620,
+  "font_size": 24,
+  "line_height": 32,
+  "version_args": {
+    "sd": [
+      "version"
+    ]
+  },
+  "inputs": [
+    ".seeds/config.toml"
+  ],
+  "steps": [
+    {
+      "tool": "sd",
+      "args": [
+        "--store",
+        "demo.db",
+        "--graph",
+        "urn:seeds:readme-demo",
+        "--actor",
+        "demo",
+        "create",
+        "Write the parser",
+        "-p",
+        "1"
+      ],
+      "hold": 5,
+      "requires": [
+        "Write the parser",
+        "demo-"
+      ]
+    },
+    {
+      "tool": "sd",
+      "args": [
+        "--store",
+        "demo.db",
+        "--graph",
+        "urn:seeds:readme-demo",
+        "--actor",
+        "demo",
+        "ready"
+      ],
+      "hold": 7,
+      "requires": [
+        "Write the parser",
+        "demo-"
+      ]
+    },
+    {
+      "tool": "sd",
+      "args": [
+        "--store",
+        "demo.db",
+        "--graph",
+        "urn:seeds:readme-demo",
+        "--actor",
+        "demo",
+        "stats",
+        "--no-activity"
+      ],
+      "hold": 8,
+      "requires": [
+        "1"
+      ]
+    }
+  ]
+}

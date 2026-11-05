@@ -492,7 +492,7 @@ mod shape_tests {
                 ));
             }),
             "status/actionStatus disagree",
-            "Xone",
+            "status, outcome and schema:actionStatus disagree",
         );
     }
 
@@ -546,7 +546,7 @@ mod shape_tests {
                 f.push((vocab::RDFS_LABEL.into(), Obj::Str("different".into())));
             }),
             "label != name",
-            "EqualsConstraintComponent",
+            "schema:name, equal to its rdfs:label",
         );
     }
 

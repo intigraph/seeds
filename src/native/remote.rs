@@ -45,10 +45,15 @@ use crate::vocab::{self, term};
 
 pub mod acquisition;
 #[cfg(test)]
+mod comment_tests;
+#[cfg(test)]
 mod gateway_tests;
+#[cfg(test)]
+mod message_tests;
 mod owner_query;
 mod projection;
 mod summary;
+mod tls;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
 /// dozen facts, so a chunk stays well under quipu's 10,000-row result cap (a
@@ -202,6 +207,10 @@ pub struct RemoteBackend {
     /// Signs writes on the paths quipu accepts signed (aegis-bys8d1); those
     /// then carry no bearer.
     signer: Option<super::attest::Signer>,
+    /// The store id every signed request names (`quipu-write-v2`), read from
+    /// the server's `/stats` once at connect and pinned for this connection.
+    /// `None` with a signer only under the explicit `v1-legacy` setting.
+    audience: Option<String>,
     agent: ureq::Agent,
     graph_registered: bool,
     ephemeral_registered: bool,
@@ -216,7 +225,7 @@ pub struct RemoteBackend {
     /// [`ItemRead`]). A commit takes it; it is never read twice.
     last_items: std::cell::RefCell<Option<ItemRead>>,
     /// Refuse, unsent, a write request larger than this many bytes.
-    /// Scoped to one full-search call; never a cached readiness observation.
+    /// Scoped to one search call; never a cached readiness observation.
     require_substring: std::cell::Cell<bool>,
     max_write_bytes: usize,
     /// Refuse, unsent, a write nesting more guard clauses than this.
@@ -224,17 +233,20 @@ pub struct RemoteBackend {
     /// Subjects per page of a subject listing ([`SUBJECT_PAGE`]; smaller in
     /// tests, so a small graph still spans pages).
     subject_page: usize,
+    /// The server is a read replica, and how stale its health answer said it
+    /// was (aegis-0aua).
+    replica: Option<super::replica::Staleness>,
 }
 
 /// Every request seeds sends to quipu names its client and carries the
 /// process's structured write provenance (`X-Quipu-Agent`, `-Harness`,
 /// `-Model`, `-Session`, `-Host`; see [`super::provenance`]).
 fn quipu_request(req: ureq::Request) -> ureq::Request {
-    super::provenance::apply(req.set("X-Quipu-Client", "seeds"))
+    super::provenance::apply(req)
 }
 
 fn quipu_read_request(req: ureq::Request, operation: &str) -> ureq::Request {
-    super::provenance::apply_read(req.set("X-Quipu-Client", "seeds"), operation)
+    super::provenance::apply_read(req, operation)
 }
 
 fn transport(url: &str, e: &ureq::Transport) -> SdError {
@@ -256,8 +268,14 @@ fn is_query_timeout(e: &SdError) -> bool {
     e.message.starts_with(QUERY_TIMEOUT)
 }
 
+/// Whether `/query` definitely refused a read (HTTP 4xx other than 408): the
+/// server evaluated nothing it could answer, so a different read may succeed.
+fn is_query_refusal(e: &SdError) -> bool {
+    e.message.starts_with("quipu /query failed (HTTP 4")
+}
+
 fn status_error(what: &str, code: u16, body: &str) -> SdError {
-    if let Some(verdict) = attestation_verdict(code, body) {
+    if let Some((verdict, reason)) = attestation_verdict(code, body) {
         let hint = match verdict.as_str() {
             "skew" => {
                 " This machine's clock is more than 5 minutes off the server's; fix the clock."
@@ -279,8 +297,11 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
             }
             _ => "",
         };
+        // The server says WHICH check refused; the verdict alone does not
+        // (aegis-wn3: "invalid" hid the #687 declared-identity check).
+        let reason = reason.map(|r| format!(": {r}")).unwrap_or_default();
         return SdError::failed(format!(
-            "quipu {what}: signed write refused ({verdict}).{hint}"
+            "quipu {what}: signed write refused ({verdict}){reason}.{hint}"
         ));
     }
     let hint = if code == 401 || code == 403 {
@@ -293,14 +314,39 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
     SdError::failed(format!("quipu {what} failed (HTTP {code}): {body}{hint}"))
 }
 
-/// The verdict of a refused signed write: quipu answers 401 with
-/// `{"reason":"attestation_refused","verdict":...}`.
-fn attestation_verdict(code: u16, body: &str) -> Option<String> {
+/// The longest server reason sd repeats, in characters.
+const REFUSAL_REASON_CHARS: usize = 200;
+
+/// The verdict of a refused signed write, and the server's reason when it
+/// gives one: quipu answers 401 with
+/// `{"reason":"attestation_refused","verdict":...,"message":...}`.
+///
+/// The reason is server text going to a terminal, so it is cut to one line of
+/// printable characters, at most [`REFUSAL_REASON_CHARS`].
+fn attestation_verdict(code: u16, body: &str) -> Option<(String, Option<String>)> {
     if code != 401 {
         return None;
     }
     let v: Json = serde_json::from_str(body).ok()?;
-    (v["reason"] == "attestation_refused").then(|| v["verdict"].as_str().unwrap_or("?").to_string())
+    if v["reason"] != "attestation_refused" {
+        return None;
+    }
+    let verdict = v["verdict"].as_str().unwrap_or("?").to_string();
+    let reason = v["message"]
+        .as_str()
+        .map(|m| {
+            m.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(REFUSAL_REASON_CHARS)
+                .collect::<String>()
+        })
+        .filter(|m| !m.is_empty());
+    Some((verdict, reason))
 }
 
 /// Retry only explicit transient gateway responses to idempotent reads.
@@ -333,25 +379,32 @@ impl RemoteBackend {
         signer: Option<super::attest::Signer>,
         plain_http_ok: &[String],
     ) -> Result<Self> {
-        if token.is_some() && !secure_enough(base) && !plain_http_allowed(base, plain_http_ok) {
-            return Err(SdError::new(
-                ErrorKind::Config,
-                format!(
-                    "refusing to send a bearer token to {base} over plain http; use https (or a \
-                     localhost server), or, if you trust the network path to it, add its host to \
-                     [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
-                ),
+        Self::connect_with_ca(base, graph, token, signer, plain_http_ok, None, None)
+    }
+
+    /// All requests, including identity and signed writes, share these roots.
+    pub fn connect_with_ca(
+        base: &str,
+        graph: &str,
+        token: Option<String>,
+        signer: Option<super::attest::Signer>,
+        plain_http_ok: &[String],
+        ca_file: Option<&std::path::Path>,
+        ca_sha256: Option<&str>,
+    ) -> Result<Self> {
+        require_token_transport(base, token.is_some(), plain_http_ok)?;
+        if ca_file.is_some() && !base.starts_with("https://") {
+            return Err(SdError::refused(
+                "a configured CA requires an HTTPS Quipu endpoint",
             ));
         }
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(5))
-            .timeout(Duration::from_secs(120))
-            .build();
-        let b = Self {
+        let agent = tls::agent(ca_file, ca_sha256)?;
+        let mut b = Self {
             base: base.trim_end_matches('/').to_string(),
             graph: graph.to_string(),
             token,
             signer,
+            audience: None,
             agent,
             graph_registered: false,
             ephemeral_registered: false,
@@ -361,15 +414,24 @@ impl RemoteBackend {
             max_write_bytes: super::config::DEFAULT_MAX_WRITE_BYTES,
             max_write_clauses: super::config::DEFAULT_MAX_WRITE_CLAUSES,
             subject_page: SUBJECT_PAGE,
+            replica: None,
         };
-        match retry_read(|| {
-            quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
-                .call()
-                .map_err(Box::new)
-        })
-        .map_err(|error| *error)
-        {
-            Ok(_) => Ok(b),
+        b.audience = b.resolve_audience()?;
+        let health = if b.signer.is_some() {
+            b.signed_request("GET", "/health", "", b"")?.call()
+        } else {
+            retry_read(|| {
+                quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .map_err(|e| *e)
+        };
+        match health {
+            Ok(response) => {
+                b.replica = super::replica::Staleness::from_headers(|name| response.header(name));
+                Ok(b)
+            }
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
             Err(ureq::Error::Status(code, r)) => Err(status_error(
                 "health check",
@@ -379,9 +441,119 @@ impl RemoteBackend {
         }
     }
 
+    /// The store id to sign for (aegis-2idcev): this server's own `store_id`
+    /// from its unauthenticated `/stats`, before anything is signed. Never a
+    /// caller choice, and never a silent v1: a missing, unreadable or
+    /// unpinned-mismatching id refuses the connection.
+    fn resolve_audience(&self) -> Result<Option<String>> {
+        use super::attest::{audience_ok, Audience};
+        let Some(signer) = &self.signer else {
+            return Ok(None);
+        };
+        let pin = match &signer.audience {
+            Audience::LegacyV1 => return Ok(None),
+            Audience::Store { pin } => pin,
+        };
+        let refuse = |why: String| {
+            SdError::refused(format!(
+                "not signing for {}: {why}. Signed writes are bound to the receiving store \
+                 (quipu-write-v2); sd does not fall back to the audience-free v1. A server \
+                 older than write-v2 needs signing_version = \"v1-legacy\" in \
+                 ~/.config/seeds/config.toml.",
+                self.base
+            ))
+        };
+        let response = retry_read(|| {
+            quipu_read_request(self.agent.get(&format!("{}/stats", self.base)), "stats")
+                .call()
+                .map_err(Box::new)
+        })
+        .map_err(|e| *e);
+        let body = match response {
+            Ok(r) => r
+                .into_string()
+                .map_err(|e| refuse(format!("reading /stats: {e}")))?,
+            Err(ureq::Error::Transport(t)) => return Err(transport(&self.base, &t)),
+            Err(ureq::Error::Status(code, _)) => {
+                return Err(refuse(format!("GET /stats answered {code}")));
+            }
+        };
+        let store_id = serde_json::from_str::<Json>(&body)
+            .ok()
+            .and_then(|v| v["store_id"].as_str().map(str::to_owned))
+            .ok_or_else(|| refuse("its /stats names no store_id".into()))?;
+        if !audience_ok(&store_id) {
+            return Err(refuse(
+                "its /stats store_id is not a usable store id".into(),
+            ));
+        }
+        if let Some(pin) = pin {
+            if *pin != store_id {
+                return Err(refuse(format!(
+                    "it reports store {store_id}, but signing_store_id pins {pin}"
+                )));
+            }
+        }
+        Ok(Some(store_id))
+    }
+
+    /// The store id signed requests on this connection name, if any.
+    pub fn signing_audience(&self) -> Option<&str> {
+        self.audience.as_deref()
+    }
+
+    fn signed_request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<ureq::Request> {
+        let request = self.agent.request(method, &format!("{}{path}", self.base));
+        let mut req = super::provenance::apply_signed(request).set("Content-Type", content_type);
+        if let Some(signer) = &self.signer {
+            req = req.set(
+                super::attest::HEADER,
+                &signer.header_now(method, path, content_type, body, self.audience.as_deref())?,
+            );
+        }
+        Ok(req)
+    }
+
+    /// Identity returned by the protected binding selected by our signing key.
+    /// No environment-provided actor participates in this request or decision.
+    pub fn authenticated_identity(&self) -> Result<Json> {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| SdError::refused("identity requires an enrolled signing key"))?;
+        let value: Json =
+            serde_json::from_str(&self.post("/identity", "application/json", "{}", true)?)
+                .map_err(|_| SdError::refused("invalid authenticated identity response"))?;
+        let principal = value["principal"]
+            .as_str()
+            .filter(|p| !p.is_empty() && p.len() <= 2048 && !p.chars().any(char::is_control));
+        if value["authenticated"] != true
+            || value["auth_class"] != "attested_session"
+            || value["key_id"] != signer.key_id()
+            || value["session"] != signer.session
+            || principal.is_none()
+        {
+            return Err(SdError::refused(
+                "identity response does not match the signing key/session",
+            ));
+        }
+        Ok(value)
+    }
+
     /// The server URL.
     pub fn url(&self) -> &str {
         &self.base
+    }
+
+    /// The staleness the server stated at connect, when it is a read replica.
+    pub fn replica(&self) -> Option<&super::replica::Staleness> {
+        self.replica.as_ref()
     }
 
     /// Cap write requests at `bytes` (see [`Backend::max_write_bytes`]).
@@ -417,7 +589,10 @@ impl RemoteBackend {
     ) -> std::result::Result<String, (bool, SdError)> {
         let url = format!("{}{path}", self.base);
         let request = self.agent.post(&url);
-        let request = if path == "/query" && !auth {
+        let request = if self.signer.is_some() {
+            self.signed_request("POST", path, content_type, body.as_bytes())
+                .map_err(|e| (false, e))?
+        } else if path == "/query" && !auth {
             quipu_read_request(request, "query")
         } else {
             quipu_request(request)
@@ -429,12 +604,18 @@ impl RemoteBackend {
         if require_substring {
             req = req.set("X-Quipu-Require-Substring", "v6");
         }
-        if auth {
+        if auth && self.signer.is_none() {
             match &self.signer {
                 // A signed write carries the attestation and never the bearer.
                 Some(s) if super::attest::SIGNED_PATHS.contains(&path) => {
                     let header = s
-                        .header_now("POST", path, content_type, body.as_bytes())
+                        .header_now(
+                            "POST",
+                            path,
+                            content_type,
+                            body.as_bytes(),
+                            self.audience.as_deref(),
+                        )
                         .map_err(|e| (false, e))?;
                     req = req.set(super::attest::HEADER, &header);
                 }
@@ -445,14 +626,14 @@ impl RemoteBackend {
                 }
             }
         }
-        let response = if path == "/query" && !auth {
+        let response = if path == "/query" && !auth && self.signer.is_none() {
             retry_read(|| req.clone().send_string(body).map_err(Box::new)).map_err(|error| *error)
         } else {
             req.send_string(body)
         };
         match response {
             Ok(r) if require_substring && r.header("X-Quipu-Substring-Index") != Some("v6") => Err((false,
-                SdError::refused("remote full-field search requires the supported complete substring index; server did not acknowledge readiness, refusing a snapshot fallback"))),
+                SdError::refused("remote title+description/full search requires the supported complete substring index; server did not acknowledge readiness, refusing a snapshot fallback"))),
             Ok(r) => r.into_string().map_err(|e| {
                 (
                     true,
@@ -502,30 +683,10 @@ impl RemoteBackend {
             body["tx"] = json!(t);
         }
         let text = self.post("/query", "application/json", &body.to_string(), false)?;
-        let v: Json = serde_json::from_str(&text).map_err(|e| {
-            SdError::failed(format!(
-                "quipu /query returned something that is not JSON: {e}"
-            ))
-        })?;
-        let Some(rows) = v["results"]["bindings"].as_array() else {
-            return Err(SdError::failed(format!(
-                "quipu /query did not return SPARQL results JSON: {}",
-                text.chars().take(300).collect::<String>()
-            )));
-        };
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut m = BTreeMap::new();
-            if let Some(obj) = row.as_object() {
-                for (k, t) in obj {
-                    if let Some(o) = term(t) {
-                        m.insert(k.clone(), o);
-                    }
-                }
-            }
-            out.push(m);
+        match decode_select_typed(&text) {
+            Some(decoded) => Ok(decoded),
+            None => decode_select_general(&text),
         }
-        Ok((out, v["truncated"].as_bool().unwrap_or(false)))
     }
 
     fn count(&self, graph: &str, at: Option<u64>) -> Result<usize> {
@@ -814,6 +975,97 @@ impl RemoteBackend {
     }
 
     fn subjects_scoped(&self, pattern: &str, graph: &str, at: Option<u64>) -> Result<Vec<String>> {
+        match self.subjects_keyset(pattern, graph, at)? {
+            Some(found) => Ok(found),
+            None => self.subjects_bisected(pattern, graph, at),
+        }
+    }
+
+    /// The subjects matching `pattern`, read in key order one page after
+    /// another (`STR(?s) > last ... ORDER BY STR(?s) LIMIT page`), or `None`
+    /// to fall back to [`Self::subjects_bisected`].
+    ///
+    /// Bisection re-reads every full page after splitting it, and each page
+    /// scans the whole pattern: on the live board `sd list --all` spent 33.6s
+    /// in ~49 subject queries returning ~208k rows for 87,782 seeds. Ordered
+    /// pages read each subject once (18 pages, 12.9s). A bounded `ORDER BY
+    /// ... LIMIT` is a top-k quipu answers inside its sort budget. Only an
+    /// ordered read quipu refuses (an HTTP 4xx such as that budget) or a page
+    /// that cannot be trusted (out of order, not past the last key, no
+    /// progress, an invalid binding) falls back to bisection. A 5xx, an
+    /// unreachable server, a timeout, a truncated or undecodable answer is a
+    /// real failure and is reported as it is: bisection would only ask the
+    /// same failing server again and report something else (aegis-ek4.1).
+    fn subjects_keyset(
+        &self,
+        pattern: &str,
+        graph: &str,
+        at: Option<u64>,
+    ) -> Result<Option<Vec<String>>> {
+        // Every ordered page scans the whole pattern, so its cost is per page:
+        // use the largest page that is never also a truncated one (quipu's
+        // 10,000-row cap), unless a smaller page was set (tests use tiny ones).
+        let page = if self.subject_page < SUBJECT_PAGE {
+            self.subject_page
+        } else {
+            ROW_CAP - 1
+        };
+        let mut out = BTreeSet::new();
+        let mut lower: Option<String> = None;
+        loop {
+            let bound = lower
+                .as_ref()
+                .map(|l| format!("FILTER(STR(?s) > \"{}\") ", escape_literal(l)))
+                .unwrap_or_default();
+            let answer = self.select_marked(
+                &format!(
+                    "SELECT ?s WHERE {{ {pattern} FILTER(isIRI(?s)) {bound}}} \
+                     ORDER BY STR(?s) LIMIT {page}",
+                ),
+                at,
+            );
+            let (rows, truncated) = match answer {
+                Err(e) if is_query_refusal(&e) => return Ok(None),
+                other => other?,
+            };
+            if truncated {
+                return Err(SdError::failed(format!(
+                    "quipu truncated an ordered subject page of {graph}; refusing a partial \
+                     snapshot"
+                )));
+            }
+            if rows.len() > page {
+                return Ok(None);
+            }
+            let mut last: Option<String> = None;
+            for row in &rows {
+                let Some(Obj::Iri(subject)) = row.get("s") else {
+                    return Ok(None);
+                };
+                if lower.as_ref().is_some_and(|l| subject <= l)
+                    || last.as_ref().is_some_and(|l| subject < l)
+                {
+                    return Ok(None);
+                }
+                out.insert(subject.clone());
+                last = Some(subject.clone());
+            }
+            if rows.len() < page {
+                return Ok(Some(out.into_iter().collect()));
+            }
+            if last.is_none() || last == lower {
+                return Ok(None);
+            }
+            lower = last;
+        }
+    }
+
+    fn subjects_bisected(
+        &self,
+        pattern: &str,
+        graph: &str,
+        at: Option<u64>,
+    ) -> Result<Vec<String>> {
         let mut out = BTreeSet::new();
         let mut ranges: Vec<(Option<String>, Option<String>)> = vec![(None, None)];
         while let Some((lower, upper)) = ranges.pop() {
@@ -1001,9 +1253,6 @@ impl RemoteBackend {
                 // A server older than signed /graph/create refuses the signed
                 // request. Creating a graph is idempotent, so retry once with
                 // the bearer when one is configured.
-                Err(_) if self.signer.is_some() && self.token.is_some() => {
-                    self.send_bearer("/graph/create", "application/json", &body)?;
-                }
                 Err(e) => return Err(e),
             }
         }
@@ -1012,37 +1261,23 @@ impl RemoteBackend {
         Ok(())
     }
 
-    /// POST with the bearer even when a signer is configured.
-    fn send_bearer(&self, path: &str, content_type: &str, body: &str) -> Result<String> {
-        let mut req = quipu_request(self.agent.post(&format!("{}{path}", self.base)))
-            .set("Content-Type", content_type);
-        if let Some(t) = &self.token {
-            req = req.set("Authorization", &format!("Bearer {t}"));
-        }
-        match req.send_string(body) {
-            Ok(r) => r
-                .into_string()
-                .map_err(|e| SdError::failed(format!("quipu {path}: reading the response: {e}"))),
-            Err(ureq::Error::Transport(t)) => Err(transport(&self.base, &t)),
-            Err(ureq::Error::Status(code, r)) => Err(status_error(
-                path,
-                code,
-                &r.into_string().unwrap_or_default(),
-            )),
-        }
-    }
-
     /// The server's registered graph IRIs, or `None` if it would not say (an
     /// older server, or any failure): then every graph is created, as before.
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
-        let text = retry_read(|| {
-            quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+        let response = if self.signer.is_some() {
+            self.signed_request("GET", "/graphs", "", b"")
+                .ok()?
                 .call()
-                .map_err(Box::new)
-        })
-        .ok()?
-        .into_string()
-        .ok()?;
+                .ok()?
+        } else {
+            retry_read(|| {
+                quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .ok()?
+        };
+        let text = response.into_string().ok()?;
         let v: Json = serde_json::from_str(&text).ok()?;
         Some(
             v["graphs"]
@@ -1052,6 +1287,22 @@ impl RemoteBackend {
                 .collect(),
         )
     }
+}
+
+/// Preserve the bearer-only transport gate. A signed non-bearer request has
+/// exactly the exposure it had before the key-derived identity profile.
+fn require_token_transport(base: &str, has_bearer: bool, plain_http_ok: &[String]) -> Result<()> {
+    if has_bearer && !secure_enough(base) && !plain_http_allowed(base, plain_http_ok) {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            format!(
+                "refusing to send a bearer token to {base} over plain http; use https (or a \
+                 localhost server), or, if you trust the network path to it, add its host to \
+                 [quipu] allow_plain_http_hosts in ~/.config/seeds/config.toml"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The host of an `http://` URL, lowercased: `(host:port, host)`. `None` for
@@ -1209,6 +1460,94 @@ fn ask_answer(graph: &str, body: &str) -> Result<bool> {
         })
 }
 
+/// SPARQL JSON results decoded straight into rows, without building a
+/// `serde_json::Value` tree for every response (aegis-ek4.1: on the live board
+/// `sd list --all` spent most of its remaining client CPU allocating those
+/// trees). Strings are borrowed unless escaped.
+#[derive(serde::Deserialize)]
+struct TypedAnswer<'a> {
+    #[serde(borrow)]
+    results: TypedResults<'a>,
+    #[serde(default)]
+    truncated: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct TypedResults<'a> {
+    #[serde(borrow)]
+    bindings: Vec<BTreeMap<std::borrow::Cow<'a, str>, TypedTerm<'a>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct TypedTerm<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    value: std::borrow::Cow<'a, str>,
+    #[serde(default, borrow)]
+    datatype: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow, rename = "xml:lang")]
+    lang: Option<std::borrow::Cow<'a, str>>,
+}
+
+/// The rows and truncation flag of a SELECT answer, or `None` when it is not
+/// exactly the well-formed shape: the caller then decodes it the general way,
+/// so every answer means what it meant before this fast path existed.
+fn decode_select_typed(text: &str) -> Option<(Vec<BTreeMap<String, Obj>>, bool)> {
+    let answer: TypedAnswer<'_> = serde_json::from_str(text).ok()?;
+    let rows = answer
+        .results
+        .bindings
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .filter_map(|(k, t)| {
+                    let obj = match t.kind.as_ref() {
+                        "uri" => Obj::Iri(t.value.into_owned()),
+                        "literal" | "typed-literal" => Obj::literal(
+                            t.value.into_owned(),
+                            t.datatype.as_deref(),
+                            t.lang.as_deref(),
+                        ),
+                        _ => return None,
+                    };
+                    Some((k.into_owned(), obj))
+                })
+                .collect()
+        })
+        .collect();
+    Some((rows, answer.truncated.unwrap_or(false)))
+}
+
+/// The general SELECT decode: any JSON, with the original tolerance of odd
+/// rows and terms (skipped, not refused).
+fn decode_select_general(text: &str) -> Result<(Vec<BTreeMap<String, Obj>>, bool)> {
+    let v: Json = serde_json::from_str(text).map_err(|e| {
+        SdError::failed(format!(
+            "quipu /query returned something that is not JSON: {e}"
+        ))
+    })?;
+    let Some(rows) = v["results"]["bindings"].as_array() else {
+        return Err(SdError::failed(format!(
+            "quipu /query did not return SPARQL results JSON: {}",
+            text.chars().take(300).collect::<String>()
+        )));
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut m = BTreeMap::new();
+        if let Some(obj) = row.as_object() {
+            for (k, t) in obj {
+                if let Some(o) = term(t) {
+                    m.insert(k.clone(), o);
+                }
+            }
+        }
+        out.push(m);
+    }
+    Ok((out, v["truncated"].as_bool().unwrap_or(false)))
+}
+
 fn term(t: &Json) -> Option<Obj> {
     let value = t["value"].as_str()?.to_string();
     match t["type"].as_str()? {
@@ -1235,6 +1574,278 @@ fn sparql_obj(o: &Obj) -> String {
 }
 
 impl Backend for RemoteBackend {
+    fn message_send(
+        &mut self,
+        ctx: &Ctx,
+        window: &str,
+        message: &crate::message::Message,
+        source: &str,
+    ) -> Result<(bool, u64)> {
+        if !crate::message::is_window_of(&self.graph, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}; nothing was sent",
+                self.graph
+            )));
+        }
+        let problems = message.problems();
+        if !problems.is_empty() {
+            return Err(SdError::usage(format!(
+                "message not sent: {}",
+                problems.join("; ")
+            )));
+        }
+        // Register the window and its provenance side graph first: a WHERE
+        // only sees registered graphs, so the absence guard below would pass
+        // vacuously on an unregistered window.
+        let pg = provenance_graph(window);
+        let bg = crate::message::binding_graph(&self.graph);
+        let existing = self.graph_iris();
+        for g in [window.to_string(), pg.clone(), bg.clone()] {
+            if !existing.as_ref().is_some_and(|e| e.contains(&g)) {
+                self.post(
+                    "/graph/create",
+                    "application/json",
+                    &json!({ "graph": g }).to_string(),
+                    true,
+                )?;
+            }
+        }
+        let iri = crate::message::message_iri(&message.id);
+        let write_iri = format!(
+            "urn:seeds:write:{}",
+            &crate::pendant::sha256(
+                format!("{}\n{}\n{source}\n{iri}", ctx.now, ctx.actor).as_bytes()
+            )[7..31]
+        );
+        let triples = |subject: &str, facts: &[Fact]| -> String {
+            facts
+                .iter()
+                .map(|(p, o)| format!("<{subject}> <{p}> {} . ", sparql_obj(o)))
+                .collect()
+        };
+        let record: Vec<Fact> = vec![
+            (
+                crate::vocab::RDF_TYPE.into(),
+                Obj::Iri(crate::vocab::seeds("Write")),
+            ),
+            (crate::vocab::seeds("actor"), Obj::Str(ctx.actor.clone())),
+            (crate::vocab::seeds("source"), Obj::Str(source.to_string())),
+            (crate::vocab::seeds("at"), Obj::Str(ctx.now.clone())),
+            (crate::vocab::seeds("wrote"), Obj::Iri(iri.clone())),
+        ];
+        let update = format!(
+            "INSERT {{ GRAPH <{window}> {{ {} }} GRAPH <{pg}> {{ {} }} GRAPH <{bg}> {{ <{iri}> <{binding}> <{window}> }} }} WHERE {{ FILTER NOT EXISTS {{ GRAPH <{bg}> {{ <{iri}> <{binding}> ?original }} }} }}",
+            triples(&iri, &message.facts()),
+            triples(&write_iri, &record),
+            binding = crate::message::binding_predicate()
+        );
+        let form = format!(
+            "update={}&actor={}&source={}",
+            form_encode(&update),
+            form_encode(&ctx.actor),
+            form_encode(source)
+        );
+        if form.len() > self.max_write_bytes {
+            return Err(SdError::refused(format!(
+                "{}: this message is {} bytes and the limit is {} (SEEDS_MAX_WRITE_BYTES); nothing was sent",
+                crate::backend::TOO_LARGE,
+                form.len(),
+                self.max_write_bytes
+            )));
+        }
+        match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
+            Ok(body) => match update_report(&body) {
+                // asserted > 0 exactly when the absence guard matched.
+                Some((changed, tx)) => {
+                    match self.message_receipt(&message.id) {
+                        Ok(Some((_, original))) if original.same_delivery(message) => Ok((changed > 0, tx.unwrap_or(0))),
+                        Ok(Some(_)) => Err(SdError::conflict("delivery key is already bound to a different message")),
+                        other => Err(SdError::new(ErrorKind::Indeterminate, format!(
+                            "message update returned but original delivery binding is unverified ({other:?}); do not assume delivery"))),
+                    }
+                },
+                None => Err(SdError::new(
+                    ErrorKind::Indeterminate,
+                    format!(
+                        "the server took the message write but did not report what it committed; \
+                         check `sd msg show {}` before resending",
+                        message.id
+                    ),
+                )),
+            },
+            Err((false, e)) => Err(e),
+            Err((true, e)) => {
+                // The request may have landed: look before saying anything.
+                match self.message_receipt(&message.id) {
+                    Ok(Some((_, original))) if original.same_delivery(message) => {
+                        eprintln!(
+                            "sd: the server's response was lost ({}); a read-back shows the message landed",
+                            e.message
+                        );
+                        Ok((true, 0))
+                    }
+                    Ok(Some(_)) => Err(SdError::conflict("delivery key is already bound to a different message")),
+                    Ok(None) => Err(SdError::new(
+                        ErrorKind::Indeterminate,
+                        format!(
+                            "the message's outcome is UNKNOWN: the response was lost ({}) and a \
+                             read-back does not show {} yet. A resend with the same delivery key \
+                             is safe: it cannot write a second copy.",
+                            e.message, message.id
+                        ),
+                    )),
+                    Err(read) => Err(SdError::new(
+                        ErrorKind::Indeterminate,
+                        format!(
+                            "the message's outcome is UNKNOWN: the response was lost ({}) and the \
+                             read-back failed ({}). A resend with the same delivery key is safe.",
+                            e.message, read.message
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+
+    fn message_receipt(&self, id: &str) -> Result<Option<(String, crate::message::Message)>> {
+        let bg = crate::message::binding_graph(&self.graph);
+        let iri = crate::message::message_iri(id);
+        let (rows, truncated) = self.select_marked(
+            &format!(
+                "SELECT ?window WHERE {{ GRAPH <{bg}> {{ <{iri}> <{}> ?window }} }} LIMIT 2",
+                crate::message::binding_predicate()
+            ),
+            None,
+        )?;
+        if truncated || rows.len() > 1 {
+            return Err(SdError::failed("ambiguous or truncated message binding"));
+        }
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let window = match row.get("window") {
+            Some(Obj::Iri(w)) if crate::message::is_window_of(&self.graph, w) => w.clone(),
+            _ => return Err(SdError::failed("malformed message binding")),
+        };
+        let (rows, truncated) = self.select_marked(
+            &format!("SELECT ?p ?o WHERE {{ GRAPH <{window}> {{ <{iri}> ?p ?o }} }} LIMIT 1000"),
+            None,
+        )?;
+        if truncated || rows.len() >= 1000 {
+            return Err(SdError::failed("truncated bound message"));
+        }
+        let mut facts = Vec::new();
+        for row in rows {
+            match (row.get("p"), row.get("o")) {
+                (Some(Obj::Iri(p)), Some(o)) => facts.push((p.clone(), o.clone())),
+                _ => return Err(SdError::failed("malformed bound message row")),
+            }
+        }
+        let message = crate::message::Message::from_facts(&facts)
+            .filter(|m| m.id == id)
+            .ok_or_else(|| {
+                SdError::failed("message binding points at a missing or malformed message")
+            })?;
+        Ok(Some((window, message)))
+    }
+
+    fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {
+        if !crate::message::is_window_of(&self.graph, window) {
+            return Err(SdError::usage(format!(
+                "{window} is not a message window of {}",
+                self.graph
+            )));
+        }
+        let s = crate::vocab::SCHEMA;
+        let iri = crate::message::message_iri(id);
+        let (p, o) = crate::message::read_fact(&ctx.now);
+        let update = format!(
+            "INSERT {{ GRAPH <{window}> {{ <{iri}> <{p}> {} . }} }} WHERE {{ GRAPH <{window}> {{ <{iri}> a <{s}Message> FILTER NOT EXISTS {{ <{iri}> <{s}dateRead> ?r }} }} }}",
+            sparql_obj(&o)
+        );
+        let form = format!(
+            "update={}&actor={}&source={}",
+            form_encode(&update),
+            form_encode(&ctx.actor),
+            form_encode("sd msg read")
+        );
+        match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
+            Ok(body) => match update_report(&body) {
+                Some((changed, _)) => Ok(changed > 0),
+                None => Err(SdError::new(
+                    ErrorKind::Indeterminate,
+                    format!(
+                        "the server did not report the read mark of {id}; check `sd msg show {id}`"
+                    ),
+                )),
+            },
+            Err((false, e)) => Err(e),
+            // Marking read is idempotent (the guard keeps the first mark), so
+            // the caller may simply repeat it; say so instead of guessing.
+            Err((true, e)) => Err(SdError::new(
+                ErrorKind::Indeterminate,
+                format!(
+                    "the read mark of {id} is UNKNOWN ({}); repeating `sd msg read {id}` is safe",
+                    e.message
+                ),
+            )),
+        }
+    }
+
+    fn messages(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<Vec<crate::message::Message>> {
+        let s = crate::vocab::SCHEMA;
+        let mut out = Vec::new();
+        for window in windows {
+            if !crate::message::is_window_of(&self.graph, window) {
+                return Err(SdError::usage(format!(
+                    "{window} is not a message window of {}",
+                    self.graph
+                )));
+            }
+            let filter = recipient
+                .map(|r| format!(" ; <{s}recipient> <{}>", crate::vocab::principal_iri(r)))
+                .unwrap_or_default();
+            let q = format!(
+                "SELECT ?m ?p ?o WHERE {{ GRAPH <{window}> {{ ?m a <{s}Message>{filter} . ?m ?p ?o }} }}"
+            );
+            let (rows, truncated) = self.select_marked(&q, None)?;
+            if truncated {
+                return Err(SdError::failed(format!(
+                    "the server cut the message listing of {window} short; refusing a partial answer"
+                )));
+            }
+            let mut by: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
+            for row in rows {
+                let (Some(Obj::Iri(m)), Some(Obj::Iri(p)), Some(o)) =
+                    (row.get("m"), row.get("p"), row.get("o"))
+                else {
+                    return Err(SdError::failed(format!(
+                        "a malformed row in the message listing of {window}"
+                    )));
+                };
+                by.entry(m.clone())
+                    .or_default()
+                    .push((p.clone(), o.clone()));
+            }
+            for (m, facts) in by {
+                match crate::message::Message::from_facts(&facts) {
+                    Some(msg) => out.push(msg),
+                    None => {
+                        return Err(SdError::failed(format!(
+                            "{m} in {window} is malformed; refusing a partial listing"
+                        )))
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.sent_at, &a.id).cmp(&(&b.sent_at, &b.id)));
+        Ok(out)
+    }
+
     fn spec_change_ids(&self) -> Result<Vec<String>> {
         let branches: Vec<_> = [&self.graph, &vocab::ephemeral_graph(&self.graph)]
             .iter()
@@ -1336,26 +1947,26 @@ impl Backend for RemoteBackend {
         &self,
         req: &crate::engine::SearchReq,
     ) -> Result<Option<crate::engine::SearchPage>> {
-        if req.full {
+        {
             let needle = req.query.trim().to_lowercase();
             if needle.contains('\0') || needle.chars().count() < 3 {
                 return Err(SdError::refused(
-                    "remote full-field search requires at least three lowercase Unicode characters and no NUL; refusing an unindexed scan",
+                    "remote title+description/full search requires at least three lowercase Unicode characters and no NUL; refusing an unindexed scan",
                 ));
             }
         }
         // RemoteBackend is not Sync (it already has per-call Cell state).
         // Restore the scoped requirement on all returns and unwinding, so
-        // ordinary title searches and unrelated verbs retain their contract.
+        // unrelated verbs retain their contract. Both search scopes require the index.
         struct Restore<'a>(&'a std::cell::Cell<bool>, bool);
         impl Drop for Restore<'_> {
             fn drop(&mut self) {
                 self.0.set(self.1);
             }
         }
-        let previous = self.require_substring.replace(req.full);
+        let previous = self.require_substring.replace(true);
         let _restore = Restore(&self.require_substring, previous);
-        if req.full {
+        {
             let text = self.post("/query", "application/json", r#"{"query":"ASK {}"}"#, false)?;
             let answer: Json = serde_json::from_str(&text)
                 .map_err(|_| SdError::failed("invalid substring readiness response"))?;
@@ -1939,9 +2550,10 @@ impl Backend for RemoteBackend {
             )[7..31]
         );
         let mut prov = String::new();
-        for (iri, facts) in crate::backend::write_record(&write_iri, batch, ctx) {
+        let write_record = crate::backend::write_record(&write_iri, batch, ctx);
+        for (iri, facts) in &write_record {
             for (p, o) in facts {
-                prov.push_str(&format!("<{iri}> <{p}> {} . ", sparql_obj(&o)));
+                prov.push_str(&format!("<{iri}> <{p}> {} . ", sparql_obj(o)));
             }
         }
         update.push_str(&format!(
@@ -2004,6 +2616,14 @@ impl Backend for RemoteBackend {
             // project graph, decides landed vs lost (aegis-w3k75d.15).
             if let Some((changed, tx)) = update_report(body) {
                 if changed == 0 {
+                    // A byte-identical replay may legitimately be a no-op.
+                    // Matching comment fields alone cannot prove that: another
+                    // actor may have won the index with the same fields.
+                    if !batch.comments.is_empty()
+                        && self.unconfirmed(batch, &write_record)?.is_empty()
+                    {
+                        return Ok(tx.unwrap_or(0));
+                    }
                     return Err(SdError::conflict(self.lost_race(batch)));
                 }
                 return Ok(tx.unwrap_or(0));
@@ -2016,7 +2636,7 @@ impl Backend for RemoteBackend {
             // The request may have landed. Look before saying anything else,
             // and never invite a blind retry: a retried create mints a
             // second seed.
-            return match self.unconfirmed(batch) {
+            return match self.unconfirmed(batch, &write_record) {
                 Ok(missing) if missing.is_empty() => {
                     eprintln!(
                         "sd: the server's response was lost ({}); a read-back shows the write \
@@ -2050,7 +2670,7 @@ impl Backend for RemoteBackend {
             };
         }
 
-        let missing = self.unconfirmed(batch)?;
+        let missing = self.unconfirmed(batch, &write_record)?;
         if !missing.is_empty() {
             return Err(SdError::conflict(self.lost_race(batch)));
         }
@@ -2087,7 +2707,15 @@ impl RemoteBackend {
             }
             _ => Vec::new(),
         };
-        let ids: Vec<&str> = batch.seeds.iter().map(|w| w.seed.id.as_str()).collect();
+        let mut ids: Vec<String> = batch.seeds.iter().map(|w| w.seed.id.clone()).collect();
+        // A comment-only batch has no seeds: name the comments, or the refusal
+        // reads "for ;" and says nothing about what was lost (aegis-epi).
+        ids.extend(
+            batch
+                .comments
+                .iter()
+                .map(|c| format!("comment {} on {}", c.index, c.seed)),
+        );
         let detail = if holders.is_empty() {
             format!("for {}", ids.join(", "))
         } else {
@@ -2102,7 +2730,11 @@ impl RemoteBackend {
     /// What of `batch` the server does NOT show (empty when all of it landed).
     /// /update reports no affected count, so this read-back is the only proof
     /// that the precondition held.
-    fn unconfirmed(&self, batch: &WriteBatch) -> Result<Vec<String>> {
+    fn unconfirmed(
+        &self,
+        batch: &WriteBatch,
+        write_record: &[(String, Vec<Fact>)],
+    ) -> Result<Vec<String>> {
         let (f, e) = self.subjects_facts(&batch_subjects(batch))?;
         let after = Snapshot::from_graphs(&f, &e);
         let mut missing = Vec::new();
@@ -2121,6 +2753,27 @@ impl RemoteBackend {
                 missing.push(format!("{} comment {}", c.seed, c.index));
             }
         }
+        if !batch.comments.is_empty() {
+            // A lost reply must not turn a different actor's identical comment
+            // into success. The marker binds this batch's content, time and
+            // writer; its facts are declarations, not authentication evidence.
+            let subjects = write_record.iter().map(|(iri, _)| iri.clone()).collect();
+            let mut recorded = Facts::new();
+            self.read_all(
+                &provenance_graph(&self.graph),
+                &subjects,
+                None,
+                &mut recorded,
+            )?;
+            for (iri, expected) in write_record {
+                if !recorded
+                    .get(iri)
+                    .is_some_and(|facts| expected.iter().all(|fact| facts.contains(fact)))
+                {
+                    missing.push(format!("comment write marker {iri}"));
+                }
+            }
+        }
         Ok(missing)
     }
 }
@@ -2132,6 +2785,85 @@ mod scoped_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// quipu's 401 for a refused signed write, byte-for-byte as captured from a
+    /// real server on 2026-10-21 (aegis-m6o, the #687 incident).
+    const REFUSED_INVALID: &str = r#"{"credential_type":"attested_signature","error":"unauthorized: signed write refused (invalid)","expected_scope":"write","message":"declared identity differs from the authenticated session","provisioning":"Ask the identity introducer to register the client public key and bind its agent/session with allow_write; renew expired bindings. A rejected signature never falls back to bearer authentication.","reason":"attestation_refused","verdict":"invalid"}"#;
+
+    // aegis-ek4.1: the typed fast path yields exactly what the general decode
+    // yields, and declines (so the general decode runs) every odd shape.
+    #[test]
+    fn typed_select_decode_matches_the_general_decode() {
+        let same = [
+            r#"{"results":{"bindings":[]}}"#,
+            r#"{"results":{"bindings":[{"s":{"type":"uri","value":"urn:a"},"o":{"type":"literal","value":"x \"q\" \u00e9\n"}}]},"truncated":false}"#,
+            r#"{"results":{"bindings":[{"o":{"type":"literal","value":"hi","xml:lang":"en"},"n":{"type":"typed-literal","value":"7","datatype":"http://www.w3.org/2001/XMLSchema#integer"},"b":{"type":"bnode","value":"b0"}}]},"truncated":true}"#,
+            r#"{"head":{"vars":["s"]},"results":{"bindings":[{"s":{"type":"uri","value":"urn:a","extra":1}},{}]},"truncated":null,"count":2}"#,
+        ];
+        for text in same {
+            let typed = decode_select_typed(text).expect("well-formed answer decodes typed");
+            let general = decode_select_general(text).unwrap();
+            assert_eq!(typed, general, "{text}");
+        }
+        for odd in [
+            r#"{"results":{"bindings":[{"s":{"type":"uri","value":7}}]}}"#,
+            r#"{"results":{"bindings":[{"s":{"value":"urn:a"}}]}}"#,
+            r#"{"results":{"bindings":[["not","an","object"]]}}"#,
+            r#"{"results":{"bindings":[]},"truncated":"yes"}"#,
+            r#"{"results":{"bindings":[{"o":{"type":"literal","value":"x","datatype":5}}]}}"#,
+            r#"{"rows":[]}"#,
+        ] {
+            assert!(decode_select_typed(odd).is_none(), "{odd}");
+        }
+    }
+
+    #[test]
+    fn a_refused_signed_write_says_why() {
+        // aegis-wn3: only "(invalid)" was printed. The reason that named the
+        // #687 check was in the body and sd dropped it.
+        let e = status_error("/update", 401, REFUSED_INVALID);
+        assert_eq!(
+            e.message,
+            "quipu /update: signed write refused (invalid): declared identity differs from \
+             the authenticated session."
+        );
+    }
+
+    #[test]
+    fn the_server_reason_keeps_the_verdict_hint() {
+        let body = r#"{"reason":"attestation_refused","verdict":"unbound","message":"no binding"}"#;
+        let e = status_error("/update", 401, body);
+        assert!(e
+            .message
+            .starts_with("quipu /update: signed write refused (unbound): no binding."));
+        assert!(e.message.contains("quipu attest register"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_refusal_without_a_reason_reads_as_before() {
+        let body = r#"{"reason":"attestation_refused","verdict":"invalid"}"#;
+        assert_eq!(
+            status_error("/update", 401, body).message,
+            "quipu /update: signed write refused (invalid)."
+        );
+        let blank = r#"{"reason":"attestation_refused","verdict":"invalid","message":"  "}"#;
+        assert_eq!(
+            status_error("/update", 401, blank).message,
+            "quipu /update: signed write refused (invalid)."
+        );
+    }
+
+    #[test]
+    fn the_server_reason_is_one_bounded_line() {
+        let long = "x\ny\u{1b}[31m".to_string() + &"z".repeat(1000);
+        let body = serde_json::json!({
+            "reason": "attestation_refused", "verdict": "invalid", "message": long,
+        })
+        .to_string();
+        let m = status_error("/update", 401, &body).message;
+        assert!(!m.contains('\n') && !m.contains('\u{1b}'), "{m:?}");
+        assert!(m.chars().count() < 400, "{}", m.chars().count());
+    }
 
     fn preflight_fixture(a: bool, b: bool, c: bool) -> Json {
         let mut rows = vec![json!({"probe":{"type":"literal","value":"complete"}})];
@@ -2419,7 +3151,7 @@ mod tests {
     }
 
     // aegis-1jh5en: every request seeds sends to quipu (the health check,
-    // the graph listing, a signed-or-bearer POST and a bearer-only POST)
+    // the graph listing, a signed-or-bearer POST and a graph-create POST)
     // carries the client label and the appropriate read/write declarations.
     #[test]
     fn every_quipu_request_carries_the_provenance_headers() {
@@ -2439,7 +3171,7 @@ mod tests {
             )
             .unwrap();
         remote
-            .send_bearer("/graph/create", "application/json", "{}")
+            .post("/graph/create", "application/json", "{}", true)
             .unwrap();
 
         let expected = super::super::provenance::headers();
@@ -2490,7 +3222,7 @@ mod tests {
                     .map(|(_, v)| v.as_str())
                     .collect::<Vec<_>>()
             };
-            assert_eq!(get("X-Quipu-Client"), ["seeds"], "{line}");
+            assert_eq!(get("X-Quipu-Client"), ["seeds/show"], "{line}");
             for (name, value) in expected {
                 assert_eq!(get(name), [value.as_str()], "{line}: {name}");
             }
@@ -2531,6 +3263,10 @@ mod tests {
 
     #[test]
     fn a_token_is_never_sent_over_plain_http_to_another_host() {
+        // No network probe or host exception: signed-only traffic passes the
+        // same production gate, while a bearer (even beside a signer) refuses.
+        assert!(require_token_transport("http://server.example.org", false, &[]).is_ok());
+        assert!(require_token_transport("http://server.example.org", true, &[]).is_err());
         assert!(secure_enough("https://quipu.example.org"));
         assert!(secure_enough("http://localhost:8080"));
         assert!(secure_enough("http://127.0.0.1:9/x"));
@@ -2605,14 +3341,19 @@ mod tests {
 
     #[test]
     fn full_search_contract_refuses_missing_or_wrong_echo_and_restores_scope() {
-        for echo in [None, Some("wrong")] {
+        for (full, echo) in [
+            (false, None),
+            (false, Some("wrong")),
+            (true, None),
+            (true, Some("wrong")),
+        ] {
             let (base, seen) = recording_server_with_contract(echo);
             let backend =
                 RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
                     .unwrap();
             let req = crate::engine::SearchReq {
                 query: "needle".into(),
-                full: true,
+                full,
                 ..Default::default()
             };
             let error = backend.search_page(&req).unwrap_err();
@@ -2655,14 +3396,18 @@ mod tests {
 
     #[test]
     fn full_search_contract_refuses_unindexable_terms_before_any_query() {
-        for term in ["a", "ab", "  ab  ", "éé", "😃😃", "needle\0"] {
+        for (full, term) in [false, true].into_iter().flat_map(|full| {
+            ["a", "ab", "  ab  ", "éé", "😃😃", "needle\0"]
+                .into_iter()
+                .map(move |term| (full, term))
+        }) {
             let (base, seen) = recording_server_with_contract(Some("v6"));
             let backend =
                 RemoteBackend::connect(&base, "https://example.org/project", None, None, &[])
                     .unwrap();
             let req = crate::engine::SearchReq {
                 query: term.into(),
-                full: true,
+                full,
                 ..Default::default()
             };
             assert!(backend

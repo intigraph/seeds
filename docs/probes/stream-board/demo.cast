@@ -1,0 +1,5 @@
+{"version": 2, "width": 120, "height": 24, "title": "Synthetic shared-applier board: challenge, commit and disconnect"}
+[3.650975, "o", "heartbeat only: board admitted=false\r\n"]
+[3.652469, "o", "signed challenge: board title=\"before\", bound=Some(1)\r\n"]
+[3.680636, "o", "replicated commit: plate title=\"after\", assignee=Some(\"reader\")\r\n"]
+[3.681759, "o", "disconnect: board admitted=false\r\nSynthetic library demonstration complete; no live reader switched.\r\n"]

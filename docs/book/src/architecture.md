@@ -39,7 +39,7 @@
   camayoc stored query.
 - **A crew harness** can treat seeds as one more work-item tracker: the
   `--json` shapes are br's, so a tracker adapter written for br reads them.
-- **caboodle** and **desire-path** integration (install and verify; the `bd`
+- **tambo** and **desire-path** integration (install and verify; the `bd`
   redirect) are not built yet. See [What is built](status.md).
 
 ## Where writes go

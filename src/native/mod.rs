@@ -6,6 +6,7 @@
 //! [`cli::Cli`] into calls on [`crate::engine`] and prints the result.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
+mod actor_policy;
 mod agent_context;
 pub mod attest;
 pub mod cli;
@@ -13,9 +14,16 @@ mod command_context;
 pub mod config;
 pub mod credentials;
 mod cutover;
+pub mod prime;
 pub mod provenance;
+#[cfg(unix)]
+pub mod read_stream;
 pub mod remote;
+mod replica;
+mod show;
 pub mod store;
+pub mod stream_projection;
+pub mod transfer;
 
 use serde_json::Value as Json;
 
@@ -28,13 +36,14 @@ use crate::quipu_backend::QuipuBackend;
 use crate::sync;
 use cli::{
     BlockersCommand, Cli, Command, CommentsCommand, ConfigCommand, DepCommand, EpicCommand,
-    LabelCommand,
+    LabelCommand, MsgCommand,
 };
 use config::{Location, Resolved};
 use serde_json::json;
 
 /// What a run produced: the exit code and the two streams.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Outcome {
     /// Process exit code.
     pub code: i32,
@@ -72,6 +81,9 @@ pub fn run(cli: &Cli) -> Outcome {
         return error_outcome(false, &e, Vec::new());
     }
 
+    if let Command::Prime(a) = &cli.command {
+        return prime::run(cli, a);
+    }
     if let Command::MergeDriver(a) = &cli.command {
         // Needs no store and no configuration: git runs it mid-merge.
         return match merge_driver(a) {
@@ -157,6 +169,7 @@ pub fn run(cli: &Cli) -> Outcome {
             Command::Key { command } => key_outcome(cli.json, &inputs, &cfg, command),
             // Reads only the configuration: never creates a project id or a store.
             Command::Where => Ok(where_outcome(cli.json, &cfg)),
+            Command::Identity => identity_outcome(cli.json, &cfg),
             _ => run_with(cli, &cfg),
         });
     match result {
@@ -302,6 +315,7 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
     };
     vec![
         ("quipu.store", serde_json::json!(store)),
+        ("quipu.read_stream_config", path(&cfg.read_stream_config)),
         ("quipu.url", serde_json::json!(url)),
         (
             "quipu.location_source",
@@ -324,6 +338,10 @@ fn config_pairs(cfg: &Resolved) -> Vec<(&'static str, Json)> {
         (
             "quipu.allow_plain_http_hosts",
             serde_json::json!(cfg.allow_plain_http_hosts),
+        ),
+        (
+            "quipu.actor_principal_mode",
+            serde_json::json!(cfg.actor_principal_mode),
         ),
         ("project.prefix", serde_json::json!(cfg.prefix)),
         ("project.graph", serde_json::json!(cfg.graph)),
@@ -1015,7 +1033,7 @@ fn mapped_pointer(c: &Command) -> Option<String> {
         ),
         Command::Upgrade(_) => (
             "upgrade",
-            "sd is installed and upgraded by caboodle: caboodle update-release --tool seeds",
+            "sd is installed and upgraded by tambo: tambo update-release --tool seeds",
         ),
         Command::Gate(_) => ("gate", "workflow gates are shuttle's"),
         Command::Scheduler(_) => ("scheduler", "ranking ready work for a swarm is shuttle's"),
@@ -1178,6 +1196,7 @@ fn actor(cli: &Cli) -> String {
 /// - **sync** (`[sync] remote`): a local store (with or without a pendant)
 ///   that `sd sync` merges with a remote.
 pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
+    transfer::validate_selection(&cli.command)?;
     // Admit before opening the backend: even connection/provenance reads
     // must stay behind the host budget. Keep the guard through the command.
     let _search_admission = match &cli.command {
@@ -1185,6 +1204,14 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         Command::Info(args) if args.exact_comments => Some(store::lock_search(true)?),
         _ => None,
     };
+    if (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
+        && cli.command.writes()
+        && (cfg.signing.is_none() || !matches!(cfg.location, Location::Url(_)))
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
     let ctx = Ctx {
         now: now(),
         actor: actor(cli),
@@ -1199,6 +1226,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
     // The graph: configured, or derived from the project id, which is created
     // on first write or first use of a server (never by a plain local read).
     let create = match &cfg.location {
+        Location::Store(_) if transfer::selected(&cli.command) && !cli.command.writes() => false,
         Location::Url(_) => true,
         Location::Store(_) => {
             cli.command.writes()
@@ -1231,6 +1259,22 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
         graph: Some(graph),
         ..cfg.clone()
     };
+    #[cfg(unix)]
+    if let Command::ReadStream { config, check } = &cli.command {
+        return read_stream::run(cfg, config, *check);
+    }
+    #[cfg(unix)]
+    if matches!(cli.command, Command::ReadStreamQuery) {
+        if cli.at.is_some() {
+            return Err(SdError::refused(
+                "push projection queries cannot override their local cut",
+            ));
+        }
+        let path = cfg.read_stream_config.as_ref().ok_or_else(|| {
+            SdError::refused("push read UNKNOWN: user read_stream_config required")
+        })?;
+        return read_stream::read(cli, cfg, &ctx, path);
+    }
     if let Command::Cutover(a) = &cli.command {
         return cutover::run(cli, cfg, &ctx, a);
     }
@@ -1448,9 +1492,9 @@ fn default_session() -> Result<String> {
 }
 
 /// The signing identity for writes to `url`, under the same trust gate as the
-/// token: a signed write names nothing about the server it was meant for, so a
-/// server a cloned project chose could relay it to yours within the clock
-/// window. Sign only for servers you would send your token to.
+/// token. A write-v2 signature names the receiving store, but the store id is
+/// whatever that server's `/stats` reports, and the legacy v1 names none: sign
+/// only for servers you would send your token to.
 fn signer(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<attest::Signer>> {
     let Some(s) = &cfg.signing else {
         return Ok(None);
@@ -1462,7 +1506,8 @@ fn signer(cfg: &Resolved, url: &str, from_project: bool) -> Result<Option<attest
         );
         return Ok(None);
     }
-    attest::Signer::load(&s.key_file, &s.session, &s.introducer).map(Some)
+    attest::Signer::load(&s.key_file, &s.session, &s.introducer)
+        .map(|signer| Some(signer.with_audience(s.audience.clone())))
 }
 
 fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
@@ -1478,6 +1523,52 @@ fn with_notes(mut o: Outcome, notes: Vec<String>) -> Outcome {
     o
 }
 
+#[cfg(test)]
+mod key_actor_tests {
+    use super::*;
+    #[test]
+    fn actor_is_selected_by_verified_key_not_user_or_environment_claim() {
+        let check = |claim| {
+            actor_policy::select(
+                config::ActorPrincipalMode::Enforce,
+                claim,
+                "synthetic-owner",
+                "comment",
+                "2026-01-01T00:00:00Z",
+            )
+        };
+        assert!(check(None).is_ok());
+        assert!(check(Some("synthetic-owner")).is_ok());
+        assert!(check(Some("synthetic-other")).is_err());
+        assert!(check(Some("")).is_err());
+    }
+}
+
+fn identity_outcome(json: bool, cfg: &Resolved) -> Result<Outcome> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::refused(
+            "authenticated identity requires a configured Quipu server",
+        ));
+    };
+    let remote = remote::RemoteBackend::connect_with_ca(
+        url,
+        cfg.graph(),
+        None,
+        signer(cfg, url, cfg.location_from_project)?,
+        &cfg.allow_plain_http_hosts,
+        cfg.ca_file.as_deref(),
+        cfg.ca_sha256.as_deref(),
+    )?;
+    let result = remote.authenticated_identity().map(|value| {
+        let text = value["principal"].as_str().unwrap_or_default().to_owned();
+        ok(json, value, text, vec![])
+    });
+    match remote.replica() {
+        Some(r) => with_replica(json, result, r),
+        None => result,
+    }
+}
+
 fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome> {
     // pendant_of currently assembles an unpinned snapshot in a local scratch
     // store. Do not silently turn a historical export into a current one.
@@ -1487,31 +1578,137 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
             "remote pendant export does not support --at; no historical source receipt is available",
         ));
     }
-    let mut remote = remote::RemoteBackend::connect(
+    #[cfg(unix)]
+    if cli.at.is_none() && read_stream::eligible(&cli.command) {
+        if let Some(path) = &cfg.read_stream_config {
+            return read_stream::read(cli, cfg, ctx, path);
+        }
+    }
+    #[cfg(not(unix))]
+    if cli.at.is_none()
+        && cfg.read_stream_config.is_some()
+        && matches!(
+            cli.command,
+            Command::List(_) | Command::Ready(_) | Command::Blocked(_) | Command::Show(_)
+        )
+    {
+        return Err(SdError::refused(
+            "push read IPC unsupported on this platform; no polling fallback",
+        ));
+    }
+    let effective_signer = signer(cfg, url, cfg.location_from_project)?;
+    if cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce)
+        && effective_signer.is_none()
+    {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
+    let mut remote = remote::RemoteBackend::connect_with_ca(
         url,
         cfg.graph(),
         token(cfg, url, cfg.location_from_project)?,
-        signer(cfg, url, cfg.location_from_project)?,
+        effective_signer,
         &cfg.allow_plain_http_hosts,
+        cfg.ca_file.as_deref(),
+        cfg.ca_sha256.as_deref(),
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    // Every outcome after the connect, an identity or vocabulary refusal
+    // included, says when the server is a read replica.
+    let replica = remote.replica().cloned();
+    let result = run_connected(cli, cfg, ctx, &mut remote);
+    match replica {
+        Some(r) => with_replica(cli.json, result, &r),
+        None => result,
+    }
+}
+
+/// [`run_remote`] once connected: the identity, the vocabulary check and the
+/// verb.
+fn run_connected(
+    cli: &Cli,
+    cfg: &Resolved,
+    ctx: &Ctx,
+    remote: &mut remote::RemoteBackend,
+) -> Result<Outcome> {
+    let authenticated_ctx;
+    let ctx = if cfg.signing.is_some()
+        && cli.command.writes()
+        && (cfg.require_identity || cfg.actor_principal_mode != config::ActorPrincipalMode::Off)
+    {
+        let identity = remote.authenticated_identity()?;
+        let principal = identity["principal"].as_str().expect("identity validated");
+        // Strict authentication is independent of attribution. Off preserves
+        // the original actor and emits no observation after validating identity.
+        let actor = if cfg.actor_principal_mode == config::ActorPrincipalMode::Off {
+            ctx.actor.clone()
+        } else {
+            actor_policy::select(
+                cfg.actor_principal_mode,
+                cli.actor.as_deref(),
+                principal,
+                cli.command.name(),
+                &ctx.now,
+            )?
+        };
+        authenticated_ctx = Ctx {
+            now: ctx.now.clone(),
+            actor,
+            prefix: ctx.prefix.clone(),
+            claims: ctx.claims.clone(),
+        };
+        &authenticated_ctx
+    } else {
+        ctx
+    };
     if matches!(&cli.command, Command::Export(_) | Command::Import(_)) {
-        refuse_old_vocabulary(&ledger_label(cfg), &remote)?;
+        refuse_old_vocabulary(&ledger_label(cfg), remote)?;
+    }
+    if transfer::selected(&cli.command) {
+        return transfer::run(cli, cfg, ctx, remote);
     }
     match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;
-            let p = pendant_of(&remote)?;
+            let p = pendant_of(remote)?;
             let changed = store::write_pendant_dir(&dir, &p)?;
             remote_export_outcome(cli.json, &dir, &p, changed, cfg.graph())
         }
-        Command::Import(a) => import_into(cli, ctx, &mut remote, a),
+        Command::Import(a) => import_into(cli, ctx, remote, a),
         Command::Sync(_) => Err(SdError::usage(
             "sd sync runs from a local store ([quipu] store) to a [sync] remote; this \
              configuration's primary store is already the remote",
         )),
-        _ => dispatch(cli, cfg, ctx, &mut remote),
+        _ => dispatch(cli, cfg, ctx, remote),
+    }
+}
+
+/// Say that the answer came from a read replica, and how stale it is: on
+/// stderr, so stdout and its `--json` shape are unchanged. Text mode gets one
+/// `sd:` line; `--json` gets one JSON object line, `{"replica": {...}}`. A
+/// failure (a refused write included) carries the notice in its message.
+fn with_replica(json: bool, result: Result<Outcome>, r: &replica::Staleness) -> Result<Outcome> {
+    match result {
+        Ok(mut o) => {
+            let line = if json {
+                r.to_json().to_string()
+            } else {
+                format!("sd: {}", r.notice())
+            };
+            o.stderr = if o.stderr.is_empty() {
+                line
+            } else {
+                format!("{line}\n{}", o.stderr)
+            };
+            Ok(o)
+        }
+        Err(mut e) => {
+            e.message = format!("{} ({})", e.message, r.notice());
+            Err(e)
+        }
     }
 }
 
@@ -1621,7 +1818,11 @@ fn export_outcome(
 }
 
 fn import_into(cli: &Cli, ctx: &Ctx, b: &mut dyn Backend, a: &cli::ImportArgs) -> Result<Outcome> {
-    let dir = std::path::Path::new(&a.dir);
+    let dir = std::path::Path::new(
+        a.dir
+            .as_deref()
+            .ok_or_else(|| SdError::usage("pendant directory required"))?,
+    );
     let p = store::read_pendant_dir(dir)?.ok_or_else(|| {
         SdError::new(
             ErrorKind::NotFound,
@@ -1683,6 +1884,37 @@ fn report_text(verb: &str, r: &sync::Report) -> String {
 }
 
 fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Result<Outcome> {
+    if transfer::selected(&cli.command) {
+        if cli.command.writes() {
+            let mut h = store::open_for_write(path, cfg.graph())?;
+            refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
+            let notes = if let Some(dir) = &cfg.pendant {
+                store::hydrate(&mut h.backend, path, dir, ctx)?
+            } else {
+                Vec::new()
+            };
+            let outcome = with_notes(transfer::run(cli, cfg, ctx, &mut h.backend)?, notes);
+            if let Some(dir) = &cfg.pendant {
+                store::export_to_pendant(&h.backend, path, dir)?;
+            }
+            return Ok(outcome);
+        }
+        let mut backend = match store::open_for_read(path, cfg.graph())? {
+            Some(backend) => backend,
+            None if cfg.pendant.is_some() => QuipuBackend::in_memory(cfg.graph())?,
+            None => {
+                return Err(SdError::new(
+                    ErrorKind::NotFound,
+                    "transfer requires an existing ledger",
+                ))
+            }
+        };
+        refuse_old_vocabulary(&ledger_label(cfg), &backend)?;
+        if let Some(dir) = &cfg.pendant {
+            backend = store::preview_hydrated(&backend, path, dir, ctx, cfg.graph())?;
+        }
+        return transfer::run(cli, cfg, ctx, &mut backend);
+    }
     match &cli.command {
         Command::Export(a) => {
             let dir = export_dir(a.to.as_deref(), cfg)?;
@@ -1760,22 +1992,34 @@ fn run_sync(
                 "sd sync needs a remote: set [sync] remote, SEEDS_SYNC_REMOTE, or --remote",
             )
         })?;
+    let from_project = a.remote.is_none() && cfg.sync_remote_from_project;
+    let mut remote = remote::RemoteBackend::connect_with_ca(
+        &url,
+        cfg.graph(),
+        token(cfg, &url, from_project)?,
+        signer(cfg, &url, from_project)?,
+        &cfg.allow_plain_http_hosts,
+        cfg.ca_file.as_deref(),
+        cfg.ca_sha256.as_deref(),
+    )?
+    .with_max_write_bytes(cfg.max_write_bytes)
+    .with_max_write_clauses(cfg.max_write_clauses);
+    // A sync writes to its remote, which a read replica refuses: say so before
+    // the local store is opened or hydrated, so nothing local changes either.
+    if let Some(r) = remote.replica() {
+        return Err(SdError::refused(format!(
+            "the sync remote {url} is a Quipu read replica; nothing was read or written ({})",
+            r.notice()
+        )));
+    }
+    // Only now touch the local store: the replica refusal above opened,
+    // hydrated and wrote nothing.
     let mut h = store::open_for_write(path, cfg.graph())?;
     refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
     let mut notes = Vec::new();
     if let Some(dir) = &cfg.pendant {
         notes.extend(store::hydrate(&mut h.backend, path, dir, ctx)?);
     }
-    let from_project = a.remote.is_none() && cfg.sync_remote_from_project;
-    let mut remote = remote::RemoteBackend::connect(
-        &url,
-        cfg.graph(),
-        token(cfg, &url, from_project)?,
-        signer(cfg, &url, from_project)?,
-        &cfg.allow_plain_http_hosts,
-    )?
-    .with_max_write_bytes(cfg.max_write_bytes)
-    .with_max_write_clauses(cfg.max_write_clauses);
     refuse_old_vocabulary(
         &format!("the quipu server {url} (graph {})", cfg.graph()),
         &remote,
@@ -2316,6 +2560,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         return Err(SdError::usage("this spec command reads current delivery state; use show --at for historical item facts"));
     }
     match &cli.command {
+        #[cfg(unix)]
+        Command::ReadStream { .. } | Command::ReadStreamQuery => Err(SdError::refused("read-stream is not a board operation")),
         Command::Rescope { id, spec_file, quote, requester, summary, urgent, dry_run } => {
             use std::io::Read;
             let file = std::fs::File::open(spec_file).map_err(|e| SdError::usage(format!("cannot read spec file: {e}")))?;
@@ -2495,19 +2741,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             Ok(ok(json, value, seed.id.clone(), vec![]))
         }
         Command::Show(a) => {
-            let views = engine::show(b, &a.ids, at)?;
-            let mut text = views
-                .iter()
-                .map(output::view_text)
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            let mut value = output::show_json(&views);
-            for (view, row) in views.iter().zip(value.as_array_mut().into_iter().flatten()) {
-                let external = crate::blockers::display(b, &view.seed, at);
-                if crate::blockers::has_metadata(&view.seed) { text.push_str(&format!("\nexternal blockers: {external}")); }
-                row["external_blockers"] = external;
-            }
-            Ok(ok(json, value, text, vec![]))
+            show::run(a, b, at, json)
         }
         Command::List(a) => {
             let req = engine::ListReq {
@@ -2535,6 +2769,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 reverse: a.reverse,
                 deferred: a.deferred,
                 defer_until_present: a.defer_until_present,
+                // Only the JSON envelope prints dependent counts.
+                skip_dependent_counts: !json,
             };
             let p = engine::list(b, &req, at)?;
             let mut warnings = vec![];
@@ -3366,7 +3602,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         },
         Command::Info(a) => info_outcome(json, cfg, b, a.schema, a.exact_comments),
         Command::Doctor(a) => doctor(json, cfg, b, a),
-        Command::Cutover(_)
+        Command::Prime(_)
+        | Command::Cutover(_)
         | Command::Export(_)
         | Command::Import(_)
         | Command::Sync(_)
@@ -3374,6 +3611,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         | Command::Version(_)
         | Command::Completions(_)
         | Command::Init(_)
+        | Command::Identity
         | Command::Where
         | Command::Schema { .. }
         | Command::Capabilities { .. }
@@ -3388,6 +3626,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             "export, import, sync, merge-driver, completions, init, version, where and the mapped verbs are handled before dispatch",
         )),
         Command::Label { command } => label(json, at, ctx, b, command),
+        Command::Msg { command } => msg(json, ctx, b, command),
         Command::Comments { command } => match command {
             CommentsCommand::Add {
                 id,
@@ -3974,6 +4213,7 @@ mod selected_credential_tests {
             key_file: "unread-signing-key".into(),
             session: "fixture".into(),
             introducer: "fixture".into(),
+            audience: attest::Audience::Store { pin: None },
         });
         assert!(token(&cfg, "https://example.org", false)
             .unwrap_err()
@@ -4005,5 +4245,188 @@ mod selected_credential_tests {
             .unwrap_err()
             .to_string()
             .contains("selected credential unavailable"));
+    }
+}
+
+/// `sd msg ...`: crew mail in per-week window graphs.
+fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Result<Outcome> {
+    use crate::message::{message_id, recent_windows, window_graph, Message};
+    let graph = b
+        .project_graph()
+        .ok_or_else(|| SdError::usage("sd msg needs a project graph (a quipu store or server)"))?
+        .to_string();
+    let windows = |weeks: u32| {
+        recent_windows(&graph, &ctx.now, weeks).ok_or_else(|| {
+            SdError::failed(format!("the clock {:?} is not a valid instant", ctx.now))
+        })
+    };
+    let view = |m: &Message| {
+        serde_json::json!({
+            "id": m.id, "to": m.recipient, "from": m.sender, "sent_at": m.sent_at,
+            "kind": m.kind, "key": m.delivery_key, "about": m.about, "text": m.text,
+            "read_at": m.read_at,
+        })
+    };
+    match command {
+        MsgCommand::Send {
+            to,
+            from,
+            kind,
+            key,
+            about,
+            text,
+            message,
+            file,
+        } => {
+            let given = [!text.is_empty(), file.is_some(), message.is_some()]
+                .iter()
+                .filter(|x| **x)
+                .count();
+            if given != 1 {
+                return Err(SdError::usage(
+                    "give the message text exactly one way: positional, --message or --file",
+                ));
+            }
+            let body = match (file, message) {
+                (Some(f), _) => read_text(f)?,
+                (None, Some(m)) => m.clone(),
+                (None, None) => text.join(" "),
+            };
+            let sent_at =
+                crate::model::canonical_time(&ctx.now, false).unwrap_or_else(|| ctx.now.clone());
+            let m = Message {
+                id: message_id(key.as_deref(), to, &sent_at, &body),
+                recipient: to.clone(),
+                sender: Some(from.clone().unwrap_or_else(|| ctx.actor.clone())),
+                sent_at: sent_at.clone(),
+                text: body,
+                kind: kind.clone(),
+                delivery_key: key.clone(),
+                about: about.clone(),
+                read_at: None,
+            };
+            let window = window_graph(&graph, &sent_at).ok_or_else(|| {
+                SdError::failed(format!("the clock {sent_at:?} is not a valid instant"))
+            })?;
+            let (written, tx) = b.message_send(ctx, &window, &m, "sd msg send")?;
+            // The key may already belong to a prior week. Never print the retry's
+            // proposed recipient/time/window as though those were the receipt.
+            let (window, m) = b.message_receipt(&m.id)?.ok_or_else(|| {
+                SdError::new(crate::error::ErrorKind::Indeterminate,
+                    "message write returned without a readable delivery binding; do not assume delivery")
+            })?;
+            let text = format!(
+                "{} {} to {} in {}{}",
+                if written { "sent" } else { "already sent" },
+                m.id,
+                m.recipient,
+                window,
+                tx_note(tx)
+            );
+            let mut v = view(&m);
+            v["window"] = serde_json::json!(window);
+            v["written"] = serde_json::json!(written);
+            Ok(ok(json, output::with_tx(v, Some(tx)), text, vec![]))
+        }
+        MsgCommand::List { to, unread, weeks } => {
+            let mut ms = b.messages(&windows(*weeks)?, to.as_deref())?;
+            if *unread {
+                ms.retain(|m| m.read_at.is_none());
+            }
+            let text = if ms.is_empty() {
+                "no messages".to_string()
+            } else {
+                ms.iter()
+                    .map(|m| {
+                        format!(
+                            "{} {} -> {} [{}] {}",
+                            m.id,
+                            m.sender.as_deref().unwrap_or("?"),
+                            m.recipient,
+                            m.sent_at,
+                            crate::message::label_preview(&m.text)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok(ok(
+                json,
+                serde_json::json!(ms.iter().map(view).collect::<Vec<_>>()),
+                text,
+                vec![],
+            ))
+        }
+        MsgCommand::Count { to, unread, weeks } => {
+            let n = b
+                .messages(&windows(*weeks)?, to.as_deref())?
+                .iter()
+                .filter(|m| !*unread || m.read_at.is_none())
+                .count();
+            Ok(ok(
+                json,
+                serde_json::json!({ "count": n }),
+                n.to_string(),
+                vec![],
+            ))
+        }
+        MsgCommand::Read { ids, weeks } => {
+            // Find each message's window from a bounded listing, then mark it.
+            let mut found = Vec::new();
+            for w in windows(*weeks)? {
+                for m in b.messages(std::slice::from_ref(&w), None)? {
+                    if ids.contains(&m.id) {
+                        found.push((w.clone(), m));
+                    }
+                }
+            }
+            let missing: Vec<&String> = ids
+                .iter()
+                .filter(|i| !found.iter().any(|(_, m)| &m.id == *i))
+                .collect();
+            if !missing.is_empty() {
+                return Err(SdError::new(
+                    crate::error::ErrorKind::NotFound,
+                    format!(
+                        "no message {} in the last {weeks} week(s); nothing was marked",
+                        missing
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+            let mut out = Vec::new();
+            for (w, m) in &found {
+                let marked = b.message_mark_read(ctx, w, &m.id)?;
+                out.push(serde_json::json!({ "id": m.id, "marked": marked }));
+            }
+            let text = format!("marked {} read", out.len());
+            Ok(ok(json, serde_json::json!(out), text, vec![]))
+        }
+        MsgCommand::Show { id, weeks } => {
+            let ms = b.messages(&windows(*weeks)?, None)?;
+            match ms.iter().find(|m| &m.id == id) {
+                Some(m) => Ok(ok(
+                    json,
+                    view(m),
+                    format!(
+                        "{} from {} to {} at {} ({})\n{}",
+                        m.id,
+                        m.sender.as_deref().unwrap_or("?"),
+                        m.recipient,
+                        m.sent_at,
+                        m.kind,
+                        m.text
+                    ),
+                    vec![],
+                )),
+                None => Err(SdError::new(
+                    crate::error::ErrorKind::NotFound,
+                    format!("no message {id} in the last {weeks} week(s)"),
+                )),
+            }
+        }
     }
 }

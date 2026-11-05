@@ -1,0 +1,16 @@
+Script started on 2026-10-29 19:35:22-04:00 [COMMAND="sh docs/demos/push-read/run.sh" <not executed on terminal>]
+Isolated SDK producer/applier + private IPC, same CLI read before/after push.
+
+running 1 test
+sd --json list: .issues[0].title => "before"
+sd: push read source tx 2, local tx 1, freshness bound <= 1 ms
+sd --json list: .issues[0].title => "after push"
+sd: push read source tx 4, local tx 2, freshness bound <= 1 ms
+disconnected consumer => push read UNKNOWN: local transport or pinned input unavailable; no primary polling fallback
+observed primary HTTP connections: 0 (local fixture, not deployed traffic)
+test native::read_stream::tests::demo_cli_push_projection_without_primary_queries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 168 filtered out; finished in 0.11s
+
+
+Script done on 2026-10-29 19:35:22-04:00 [COMMAND_EXIT_CODE="0"]

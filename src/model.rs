@@ -609,6 +609,8 @@ impl Seed {
         [
             vocab::seeds("beadsJson"),
             vocab::seeds("dependencyOrigin"),
+            vocab::seeds("deferredAt"),
+            vocab::seeds("deferredBy"),
             crate::blockers::ledger_predicate(),
             crate::blockers::edge_predicate(),
         ]
@@ -1157,6 +1159,23 @@ impl Snapshot {
     }
 
     /// The seeds that declare any dependency on `id`, as (dependent id, type).
+    /// How many dependency edges point at each id: for every id, exactly
+    /// `self.dependents(id).len()`, computed in one pass over the snapshot.
+    ///
+    /// Calling `dependents` once per listed seed scans every seed each time,
+    /// which made `sd list --all` quadratic in the board size: on the live
+    /// board it spent ~249s of CPU here after its reads had finished
+    /// (aegis-ek4.1).
+    pub fn dependent_counts(&self) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        for s in self.seeds.values() {
+            for (target, _) in s.dependencies() {
+                *counts.entry(target).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
     pub fn dependents(&self, id: &str) -> Vec<(String, &'static str)> {
         let mut out = Vec::new();
         for s in self.seeds.values() {
@@ -1210,6 +1229,39 @@ mod tests {
     }
 
     use super::*;
+
+    // aegis-ek4.1: the one-pass counts must equal dependents(id).len() for
+    // every id: each dependency type, a seed pointing at one target through
+    // two types (two edges), a self-reference, and a target absent from the
+    // snapshot.
+    #[test]
+    fn dependent_counts_equal_per_id_dependents() {
+        let seed = |id: &str| Seed {
+            id: id.into(),
+            ..Seed::default()
+        };
+        let mut snap = Snapshot::default();
+        let mut a = seed("a");
+        a.blocked_on = ["t".to_string(), "missing".to_string()].into();
+        a.related = ["t".to_string()].into();
+        let mut b = seed("b");
+        b.parent = Some("t".into());
+        b.discovered_from = ["a".to_string(), "b".to_string()].into();
+        let mut c = seed("c");
+        c.related = ["a".to_string()].into();
+        for s in [a, b, c, seed("t")] {
+            snap.seeds.insert(s.id.clone(), s);
+        }
+        let counts = snap.dependent_counts();
+        for id in ["a", "b", "c", "t", "missing", "nobody"] {
+            assert_eq!(
+                counts.get(id).copied().unwrap_or(0),
+                snap.dependents(id).len(),
+                "{id}"
+            );
+        }
+        assert_eq!(counts["t"], 3, "two edges from a, one from b");
+    }
 
     fn sample() -> Seed {
         Seed {

@@ -21,6 +21,7 @@ Accepted on every verb.
 
 | verb | flags (a br-compatible subset) |
 |---|---|
+| [`prime`](agent-primer.md) | `--static`, `--brief`, `--section <prefix>`; shared stack JSON |
 | [`create [TITLE]`](verbs/create.md) | `--title`, `-t/--type`, `-p/--priority`, `-d/--description`, `--description-file`, `-a/--assignee`, `-l/--labels`, `--parent`, `--deps`, `--dry-run`, `--silent` |
 | [`show <ID>...`](verbs/show.md) | |
 | [`list`](verbs/list.md) | `-s/--status`, `-t/--type`, `--assignee`, `--unassigned`, `-l/--label`, `-p/--priority`, `-a/--all`, `--limit` (default 50, 0 = all), `--sort` |
@@ -64,6 +65,27 @@ In `--json` mode an error prints `{"error": {"code": "<NAME>", "message":
 `CONFLICT`, `REFUSED`, `CONFIG`, `UNREACHABLE`, `INDETERMINATE`, `NOT_BUILT` or `ELSEWHERE`. The message
 always goes to stderr as well.
 
+### Reading from a Quipu read replica
+
+A Quipu read replica (`server.replica`, kept current by `quipu follow`)
+serves reads while the primary is away and refuses writes. Each response
+states how stale it is in `X-Quipu-Replica-*` headers. When the server sd
+connects to sends them, sd says so on stderr, and stdout is unchanged:
+
+- text mode prints one line, for example `sd: read from a Quipu read replica;
+  writes are refused. Source tx 6 (committed 2026-10-25T09:48:39Z), confirmed
+  current 21 s ago, lag unknown tx.`
+- `--json` prints one JSON object line: `{"replica": {"writes": "refused",
+  "source_tx": 6, "source_time": "...", "confirmed_age_s": 21, "lag_tx":
+  null}}`. A value the replica does not know is `null`, never 0.
+- a failure, such as a refused write or an identity refusal, carries the same
+  notice in its message. `sd sync` refuses a replica as its remote before
+  reading or writing anything.
+
+The values are the replica's own claims at connect time. A replica that
+cannot reach its primary reports its lag as unknown, and its confirmed age
+keeps growing.
+
 ### Remote request task attribution
 
 Every remote request retains `X-Quipu-Client: seeds`. Set `QUIPU_TASK`
@@ -97,3 +119,24 @@ Owner-filtered readiness discovers only explicitly open candidates before
 checking dependencies. Closed ownership history does not create readiness
 requests. Deferred inclusion still uses its separate existing read, and all
 remaining filters and claim checks retain their existing semantics.
+
+### Current state and comment history
+
+`sd show ID` displays the description and notes as current state, followed by
+five recent comments. JSON retains the complete comment history by default,
+including every existing seed, dependency and comment field. Each show row adds
+`comments_total` and `comments_folded`. Only an explicit `--comments-limit N`
+bounds JSON; a nonzero folded count means that array is incomplete.
+
+Use `sd show ID --comments-limit N` for a different bound (zero hides all), or
+`sd show ID --all-comments` for the complete history. `sd comments list ID`
+remains complete. These read options also respect `--at`; they change no stored
+comment, author, index or timestamp. Existing machine consumers of default
+`show --json` continue to receive complete history.
+
+After more than twenty comments, consolidate the current scope with
+`sd rescope ID --spec-file current.md --quote 'original request' --summary 'current scope'`.
+Rescope supersedes the current description atomically and retains its governed
+specification event; it does not delete comments. Do not append prior versions
+of the specification into the new description. Keep current state concise and
+use history for the evidence behind it.

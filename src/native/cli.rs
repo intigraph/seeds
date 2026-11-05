@@ -79,6 +79,22 @@ pub struct Cli {
 /// The verbs.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Serve an operator-admitted push-fed read view on a private local socket
+    #[cfg(unix)]
+    ReadStream {
+        #[arg(long)]
+        config: std::path::PathBuf,
+        /// Validate the pinned input packet without network or socket activity
+        #[arg(long)]
+        check: bool,
+    },
+    /// Execute a bounded SELECT/ASK from JSON stdin on the admitted push projection
+    #[cfg(unix)]
+    ReadStreamQuery,
+    /// Agent primer plus a bounded read-only board summary
+    Prime(super::prime::PrimeArgs),
+    /// Resolve the actor from an enrolled key and the server protected registry.
+    Identity,
     /// Create a seed
     #[command(
         before_help = "Common: sd create 'Title' -a OWNER -l LABEL --parent EPIC --deps BLOCKER\nBulk: sd create -f tasks.md (one transaction; Parent/Dependencies may use @1, @2, ...)\nUse --parent for epic children; --deps means this item waits for the named blocker."
@@ -156,7 +172,7 @@ pub enum Command {
     Q(QArgs),
     /// Saved queries live in quipu (stored queries), not in sd
     Query(MappedArgs),
-    /// sd is installed and upgraded by caboodle
+    /// sd is installed and upgraded by tambo
     Upgrade(MappedArgs),
     /// Workflow gates live in shuttle
     Gate(MappedArgs),
@@ -222,6 +238,11 @@ pub enum Command {
     Comments {
         #[command(subcommand)]
         command: CommentsCommand,
+    },
+    /// Crew mail in per-week message graphs, outside the board
+    Msg {
+        #[command(subcommand)]
+        command: MsgCommand,
     },
     /// Manage labels
     Label {
@@ -427,16 +448,24 @@ pub struct CutoverArgs {
 /// `sd export`.
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// Directory to write (default: the configured [pendant] dir)
-    #[arg(long, value_name = "DIR")]
+    /// Pendant directory (default: configured dir), or github for GitHub Issues.
+    #[arg(long, value_name = "DESTINATION")]
     pub to: Option<String>,
+    #[command(flatten)]
+    pub transfer: super::transfer::Args,
 }
 
 /// `sd import`.
 #[derive(Debug, Args)]
 pub struct ImportArgs {
     /// The pendant directory to read
-    pub dir: String,
+    #[arg(required_unless_present = "from")]
+    pub dir: Option<String>,
+    /// External task manager (pendant import is unchanged when omitted).
+    #[arg(long, value_parser = ["github"])]
+    pub from: Option<String>,
+    #[command(flatten)]
+    pub transfer: super::transfer::Args,
     /// Where the two disagree, take this side: pendant or store
     #[arg(long, value_parser = ["pendant", "store"])]
     pub prefer: Option<String>,
@@ -586,15 +615,26 @@ pub struct CreateArgs {
 }
 
 /// `sd show`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShowArgs {
     /// Seed id(s)
     #[arg(required = true)]
     pub ids: Vec<String>,
+    /// Recent comments to display (text defaults to 5; JSON defaults to all).
+    /// An explicit zero hides all comments, including in JSON.
+    #[arg(long, conflicts_with = "all_comments")]
+    #[serde(default)]
+    pub comments_limit: Option<usize>,
+    /// Display the complete comment history instead of folding older entries.
+    #[arg(long)]
+    #[serde(default)]
+    pub all_comments: bool,
 }
 
 /// `sd list`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListArgs {
     /// Only this status (includes closed when you ask for closed)
     #[arg(short, long)]
@@ -678,7 +718,7 @@ pub struct ListArgs {
 pub struct SearchArgs {
     /// Text to find (case-insensitive)
     pub query: String,
-    /// Search ids, descriptions and comments too (single-flight admin read)
+    /// Search ids and comments too (single-flight admin read)
     #[arg(long)]
     pub full: bool,
     /// Only this status (includes closed when you ask for closed)
@@ -756,7 +796,8 @@ pub struct SearchArgs {
 }
 
 /// `sd ready`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadyArgs {
     /// Cut the list at N. Without it, ready is NOT truncated; with it, a
     /// truncated list says so on stderr.
@@ -798,7 +839,8 @@ pub struct ReadyArgs {
 }
 
 /// `sd blocked`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlockedArgs {
     /// Page size (default 50; 0 = all). The output says when it was cut short.
     #[arg(long)]
@@ -1309,6 +1351,78 @@ pub enum CommentsCommand {
     },
 }
 
+/// `sd msg ...`: messages are not seeds; they never appear on the board.
+#[derive(Debug, Subcommand)]
+pub enum MsgCommand {
+    /// Send one message into the window of its send time
+    Send {
+        /// Recipient
+        #[arg(long)]
+        to: String,
+        /// Sender (default: the actor)
+        #[arg(long)]
+        from: Option<String>,
+        /// note or alert
+        #[arg(long, default_value = "note")]
+        kind: String,
+        /// Idempotence key: a resend with the same key names the same message
+        #[arg(long)]
+        key: Option<String>,
+        /// A seed this message refers to (repeatable)
+        #[arg(long)]
+        about: Vec<String>,
+        /// Message text (joined with spaces)
+        text: Vec<String>,
+        /// Message text (flag form)
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Read the text from a file
+        #[arg(short, long)]
+        file: Option<String>,
+    },
+    /// List messages, oldest first
+    List {
+        /// Only messages to this recipient
+        #[arg(long)]
+        to: Option<String>,
+        /// Only messages not yet marked read
+        #[arg(long)]
+        unread: bool,
+        /// How many ISO weeks back, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Count messages
+    Count {
+        /// Only messages to this recipient
+        #[arg(long)]
+        to: Option<String>,
+        /// Only messages not yet marked read
+        #[arg(long)]
+        unread: bool,
+        /// How many ISO weeks back, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Mark messages read (the first mark is kept; nothing is deleted)
+    Read {
+        /// Message ids (msg-...)
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// How many ISO weeks back to look, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+    /// Show one message by id
+    Show {
+        /// The message id (msg-...)
+        id: String,
+        /// How many ISO weeks back to look, including this one
+        #[arg(long, default_value_t = 2)]
+        weeks: u32,
+    },
+}
+
 /// `sd label ...`. Same shapes as br: `label add <id...> <label>` or
 /// `label add <id...> -l <label>`.
 #[derive(Debug, Subcommand)]
@@ -1386,6 +1500,8 @@ impl Command {
     /// Whether the verb writes (and so takes the store's write lock).
     pub fn writes(&self) -> bool {
         match self {
+            #[cfg(unix)]
+            Command::ReadStream { .. } | Command::ReadStreamQuery => false,
             Command::Cutover(a) => !a.dry_run && matches!(a.operation.as_str(), "import" | "sync"),
             Command::Q(_) => true,
             Command::DueBackfill { apply_plan, .. } => apply_plan.is_some(),
@@ -1409,12 +1525,17 @@ impl Command {
                 matches!(command, EpicCommand::CloseEligible { dry_run: false, .. })
             }
             Command::Comments { command } => matches!(command, CommentsCommand::Add { .. }),
+            Command::Msg { command } => {
+                matches!(command, MsgCommand::Send { .. } | MsgCommand::Read { .. })
+            }
             Command::Label { command } => matches!(
                 command,
                 LabelCommand::Add { .. }
                     | LabelCommand::Remove { .. }
                     | LabelCommand::Rename { .. }
             ),
+            Command::Export(a) if super::transfer::is_target(a.to.as_deref()) => a.transfer.execute,
+            Command::Import(a) if a.from.is_some() => a.transfer.execute,
             Command::Import(_) | Command::Sync(_) | Command::MergeDriver(_) | Command::Init(_) => {
                 true
             }
@@ -1424,9 +1545,11 @@ impl Command {
             | Command::SpecQueryDefinition
             | Command::SpecReceipt { .. }
             | Command::SpecState { .. } => false,
-            Command::Export(_)
+            Command::Prime(_)
+            | Command::Export(_)
             | Command::Completions(_)
             | Command::Version(_)
+            | Command::Identity
             | Command::Where
             | Command::Doctor(_)
             | Command::Key { .. }
@@ -1458,6 +1581,11 @@ impl Command {
     /// The verb as a user typed it.
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(unix)]
+            Command::ReadStream { .. } => "read-stream",
+            #[cfg(unix)]
+            Command::ReadStreamQuery => "read-stream-query",
+            Command::Prime(_) => "prime",
             Command::Cutover(_) => "cutover",
             Command::Create(_) => "create",
             Command::Rescope { .. } => "rescope",
@@ -1515,6 +1643,13 @@ impl Command {
                 CommentsCommand::Add { .. } => "comments add",
                 CommentsCommand::List { .. } => "comments list",
             },
+            Command::Msg { command } => match command {
+                MsgCommand::Send { .. } => "msg send",
+                MsgCommand::List { .. } => "msg list",
+                MsgCommand::Count { .. } => "msg count",
+                MsgCommand::Show { .. } => "msg show",
+                MsgCommand::Read { .. } => "msg read",
+            },
             Command::Label { command } => match command {
                 LabelCommand::Add { .. } => "label add",
                 LabelCommand::Remove { .. } => "label remove",
@@ -1524,6 +1659,7 @@ impl Command {
             },
             Command::Completions(_) => "completions",
             Command::Version(_) => "version",
+            Command::Identity => "identity",
             Command::Where => "where",
             Command::Info(_) => "info",
             Command::Doctor(_) => "doctor",

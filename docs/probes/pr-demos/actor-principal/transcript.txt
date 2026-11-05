@@ -1,0 +1,24 @@
+Script started on 2026-10-24 08:48:37-04:00 [COMMAND="python3 reproduce.py .candidate-sd" <not executed on terminal>]
+Target: isolated HTTP protocol fixture, one synthetic host key
+Candidate SHA256: d516378a79352816b02d32cba96ced88b1a0e203b8348d12aab81a7833a42e2d
+Control is candidate enforce mode, NOT an execution of the old binary.
+
+$ sd --actor worker-a create 'Synthetic actor probe'  # enforce
+sd: --actor/SEEDS_ACTOR differs from the authenticated principal
+exit: 5
+
+$ sd --actor worker-a create 'Synthetic actor probe'  # default observe
+created ○ sd-9ym [P2] [task] Synthetic actor probe (tx 1)
+sd: actor/principal mismatch (observe): actor="worker-a" principal="host-principal" verb="create" at="2026-10-24T12:48:39Z" mismatches_total=1
+exit: 0
+
+$ sd --actor worker-b create 'Synthetic actor probe'  # default observe
+created ○ sd-dfm [P2] [task] Synthetic actor probe (tx 2)
+sd: actor/principal mismatch (observe): actor="worker-b" principal="host-principal" verb="create" at="2026-10-24T12:48:41Z" mismatches_total=2
+exit: 0
+
+Actual observation file: {"mismatches_total": 2, "events": [{"actor": "worker-a", "principal": "host-principal", "verb": "create", "at": "2026-10-24T12:48:39Z"}, {"actor": "worker-b", "principal": "host-principal", "verb": "create", "at": "2026-10-24T12:48:41Z"}]}
+Actors received by the HTTP fixture: ["worker-a", "worker-b"]
+Fixture does not validate server-side cryptography or prove deployment.
+
+Script done on 2026-10-24 08:48:46-04:00 [COMMAND_EXIT_CODE="0"]

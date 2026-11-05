@@ -1,0 +1,8 @@
+{
+  "src/message.rs": "9cf29a0ead9ceebeb1ff5e70970ec1168d936461d2c26ad56a01ce23c637b8b8",
+  "src/backend.rs": "78e2b888e328c746facd2ab0abfa9ae983d7d9842bf8fec9349c40d0368e03f1",
+  "src/quipu_backend.rs": "dee8a4971568dadeaaf5276db294e167728e38ddb217d820ec5ae52ee67b245f",
+  "src/native/remote.rs": "ceb542411a49fc3acf22fef56d66c392c0f3a5a2db9fc5ed1dc1cdb8a5ba0d38",
+  "src/native/mod.rs": "8cd01caabe144f0af4bce4893c7ca3081422741621e205bacf669f0468353776",
+  "examples/message_retry.rs": "bc10ffdd9096397667f0215fea4f9411748b71db476ef5c07c040a7af6abcd8a"
+}

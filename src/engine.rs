@@ -182,6 +182,10 @@ fn new_seed(
         seed.status = "deferred".into();
         seed.defer_until = Some(parse_until(d, &ctx.now)?);
     }
+    ensure_ask_visible(&seed)?;
+    if seed.status == "deferred" {
+        stamp_deferral(&mut seed, ctx)?;
+    }
     Ok(seed)
 }
 
@@ -941,6 +945,12 @@ pub struct ListReq {
     pub deferred: bool,
     /// Require a defer-until field, without interpreting its timestamp.
     pub defer_until_present: bool,
+    /// The caller will not show dependent counts (text and CSV output only
+    /// `list --json` prints them), so a backend may leave
+    /// [`Page::dependent_counts`] empty instead of reading them. On the live
+    /// board those reads were ~12s of `sd list --all --format csv`
+    /// (aegis-ek4.1). Default: counts are read.
+    pub skip_dependent_counts: bool,
 }
 
 /// A page of seeds and whether it was cut short.
@@ -1075,9 +1085,10 @@ fn page_at_counted(
         seeds.truncate(limit);
     }
     let dependent_counts = if counts {
+        let all = snap.dependent_counts();
         seeds
             .iter()
-            .map(|s| (s.id.clone(), snap.dependents(&s.id).len()))
+            .map(|s| (s.id.clone(), all.get(&s.id).copied().unwrap_or(0)))
             .collect()
     } else {
         BTreeMap::new()
@@ -1097,7 +1108,7 @@ fn page_at_counted(
 pub struct SearchReq {
     /// Text to find (case-insensitive substring).
     pub query: String,
-    /// Include ids, descriptions and comments. The default searches titles.
+    /// Include ids and comments. The default searches titles and descriptions.
     pub full: bool,
     /// Filters.
     pub filter: Filter,
@@ -1143,10 +1154,8 @@ pub fn search(b: &dyn Backend, req: &SearchReq, at: Option<u64>) -> Result<Searc
     let hit = |s: &Seed| {
         let has = |t: &str| t.to_lowercase().contains(&query);
         has(&s.title)
-            || (req.full
-                && (has(&s.id)
-                    || s.description.as_deref().is_some_and(has)
-                    || snap.comments_on(&s.id).iter().any(|c| has(&c.text))))
+            || s.description.as_deref().is_some_and(has)
+            || (req.full && (has(&s.id) || snap.comments_on(&s.id).iter().any(|c| has(&c.text))))
     };
     let show_closed = req.all || f.status.is_some();
     let (mut seeds, mut hidden_closed) = (Vec::new(), 0);
@@ -2467,13 +2476,27 @@ pub fn update(
             "a move needs exactly one item and cannot change priority or claim",
         ));
     }
-    let mut snap = if req.parent.is_some() {
-        b.snapshot(None)?
-    } else if req.claim {
+    let mut snap = if req.claim {
         blocking_snapshot(b, ids, false)?
     } else {
         b.snapshot_items(ids)?
     };
+    if let Some(parent) = req
+        .parent
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        // Reparenting needs the proposed ancestors, not the whole board.
+        // Keep claim's blocking context too, and refuse mixed observations.
+        let ancestors = parent_snapshot(b, &[parent.to_string()])?;
+        if ancestors.tx != snap.tx {
+            return Err(SdError::conflict(
+                "parent context changed while reading; nothing was written",
+            ));
+        }
+        merge_snapshots(&mut snap, ancestors);
+    }
     let move_rank = if let Some(anchor) = moving {
         let target = snap.get(&ids[0])?;
         if anchor == &target.id {
@@ -2698,6 +2721,20 @@ pub fn update(
         {
             clear_deferral(&mut s);
         }
+        let requesting_deferral = status.as_deref() == Some("deferred")
+            || req.defer.as_deref().is_some_and(|d| !d.trim().is_empty());
+        if requesting_deferral {
+            refuse_ask_deferral(before)?;
+        }
+        // Historical hidden ASK items remain alarm findings. Unrelated notes
+        // must still be editable; refuse a new deferral or newly introduced
+        // hidden ASK classification, rather than migrating old state here.
+        if !is_ask(before) || (before.status != "deferred" && before.defer_until.is_none()) {
+            ensure_ask_visible(&s)?;
+        }
+        if requesting_deferral {
+            stamp_deferral(&mut s, ctx)?;
+        }
         if s == *before {
             continue;
         }
@@ -2790,6 +2827,9 @@ pub fn label_change(
             status,
         });
         if changed {
+            if !is_ask(before) {
+                ensure_ask_visible(&s)?;
+            }
             s.updated_at = ctx.now.clone();
             s.revision = before.revision + 1;
             writes.push(SeedWrite {
@@ -2820,6 +2860,9 @@ pub fn label_rename(b: &mut dyn Backend, ctx: &Ctx, old: &str, new: &str) -> Res
         let mut s = before.clone();
         s.labels.remove(&old);
         s.labels.insert(new.clone());
+        if !is_ask(before) {
+            ensure_ask_visible(&s)?;
+        }
         s.updated_at = ctx.now.clone();
         s.revision = before.revision + 1;
         ids.push(s.id.clone());
@@ -2894,13 +2937,72 @@ pub type Transitions = (Vec<Transition>, Vec<Skipped>, u64);
 
 /// Apply one transition to every named seed in one transaction. `skip` says
 /// why a seed is left alone; `apply` changes the rest. Unknown ids write nothing.
+const ASK_LABELS: [&str; 5] = [
+    "needs-stiwi",
+    "blocked:human",
+    "desk",
+    "decision-needed",
+    "decision-stiwi",
+];
+const ASK_DEFER_REFUSAL: &str = "Stiwi bsf8: ASK-class items must stay visible and cannot be deferred; use Brief's Later choice, recorded by Stiwi, not by an agent";
+
+fn is_ask(seed: &Seed) -> bool {
+    seed.title.starts_with("ASK Stiwi")
+        || ASK_LABELS.iter().any(|label| seed.labels.contains(*label))
+}
+
+fn refuse_ask_deferral(seed: &Seed) -> Result<()> {
+    if is_ask(seed) {
+        return Err(SdError::refused(format!(
+            "{}: {ASK_DEFER_REFUSAL}",
+            seed.id
+        )));
+    }
+    Ok(())
+}
+
+// Stamp only explicit deferral writes. Reads, unrelated updates, undefer and
+// historical records retain their existing facts; no migration or backfill.
+fn stamp_deferral(seed: &mut Seed, ctx: &Ctx) -> Result<()> {
+    let at = model::canonical_time(&ctx.now, false)
+        .ok_or_else(|| SdError::usage("deferral requires a valid dateTime context"))?;
+    if ctx.actor.trim().is_empty() {
+        return Err(SdError::usage(
+            "deferral requires a non-empty actor context",
+        ));
+    }
+    let at_predicate = vocab::seeds("deferredAt");
+    let by_predicate = vocab::seeds("deferredBy");
+    seed.extra
+        .retain(|(p, _)| p != &at_predicate && p != &by_predicate);
+    seed.extra.insert((
+        at_predicate,
+        model::Obj::Typed {
+            lexical: at,
+            datatype: vocab::XSD_DATE_TIME.into(),
+        },
+    ));
+    seed.extra.insert((
+        by_predicate,
+        model::Obj::Iri(vocab::principal_iri(&ctx.actor)),
+    ));
+    Ok(())
+}
+
+fn ensure_ask_visible(seed: &Seed) -> Result<()> {
+    if seed.status == "deferred" || seed.defer_until.is_some() {
+        refuse_ask_deferral(seed)?;
+    }
+    Ok(())
+}
+
 fn transition(
     b: &mut dyn Backend,
     ctx: &Ctx,
     ids: &[String],
     source: &str,
-    skip: impl Fn(&Seed) -> Option<String>,
-    apply: impl Fn(&mut Seed),
+    skip: impl Fn(&Seed) -> Result<Option<String>>,
+    apply: impl Fn(&mut Seed) -> Result<()>,
     comment: Option<&str>,
 ) -> Result<Transitions> {
     let ids = unique(ids);
@@ -2915,7 +3017,9 @@ fn transition(
     let (mut writes, mut done, mut skipped, mut comments) = (vec![], vec![], vec![], vec![]);
     for id in &ids {
         let before = snap.get(id)?;
-        if let Some(reason) = skip(before) {
+        // Validate every member before the batch commit: an ASK must refuse
+        // the command, not become an exit-zero skip beside partial writes.
+        if let Some(reason) = skip(before)? {
             skipped.push(Skipped {
                 id: id.clone(),
                 reason,
@@ -2923,7 +3027,7 @@ fn transition(
             continue;
         }
         let mut s = before.clone();
-        apply(&mut s);
+        apply(&mut s)?;
         s.updated_at = ctx.now.clone();
         s.revision = before.revision + 1;
         if let Some(text) = comment {
@@ -2985,13 +3089,18 @@ pub fn reopen(
         ctx,
         ids,
         "seeds:reopen",
-        |s| match s.status.as_str() {
-            "closed" => None,
-            model::TOMBSTONE => Some("deleted (not reopenable)".into()),
-            "open" => Some("already open".into()),
-            other => Some(format!("not closed (status: {other})")),
+        |s| {
+            Ok(match s.status.as_str() {
+                "closed" => None,
+                model::TOMBSTONE => Some("deleted (not reopenable)".into()),
+                "open" => Some("already open".into()),
+                other => Some(format!("not closed (status: {other})")),
+            })
         },
-        |s| set_status(s, "open", &ctx.now, None),
+        |s| {
+            set_status(s, "open", &ctx.now, None);
+            Ok(())
+        },
         comment.as_deref(),
     )
 }
@@ -3022,14 +3131,18 @@ pub fn defer_with(
         ctx,
         ids,
         "seeds:defer",
-        |s| match s.status.as_str() {
-            "closed" => Some("cannot defer closed issue".to_string()),
-            model::TOMBSTONE => Some("cannot defer a deleted seed".to_string()),
-            _ => None,
+        |s| {
+            refuse_ask_deferral(s)?;
+            Ok(match s.status.as_str() {
+                "closed" => Some("cannot defer closed issue".to_string()),
+                model::TOMBSTONE => Some("cannot defer a deleted seed".to_string()),
+                _ => None,
+            })
         },
         |s| {
             s.status = "deferred".into();
             s.defer_until = until.clone();
+            stamp_deferral(s, ctx)
         },
         comment,
     )
@@ -3052,10 +3165,11 @@ pub fn undefer_with(
         ctx,
         ids,
         "seeds:undefer",
-        |s| (s.status != "deferred").then(|| format!("not deferred (status: {})", s.status)),
+        |s| Ok((s.status != "deferred").then(|| format!("not deferred (status: {})", s.status))),
         |s| {
             s.status = "open".into();
             clear_deferral(s);
+            Ok(())
         },
         comment,
     )
@@ -4094,7 +4208,22 @@ pub fn dep_list(b: &dyn Backend, id: &str, up: bool, at: Option<u64>) -> Result<
 
 // ---------------------------------------------------------------- comments
 
+/// How many times `sd comments add` numbers its comment before giving up.
+///
+/// A comment's index is the next one free when it was READ, and its write is
+/// guarded on that index still being free. Two writers that read the same
+/// count collide on it, and the loser's write commits nothing (aegis-epi:
+/// quipu answers 200 with nothing asserted, which sd reports as a conflict).
+/// A lost round means another comment LANDED, so every round makes progress
+/// and N concurrent writers need at most N attempts.
+const COMMENT_INDEX_ATTEMPTS: usize = 16;
+
 /// `sd comments add`.
+///
+/// Comments are append-only, so losing the index to a concurrent comment is
+/// not a conflict with this one: it re-reads and takes the next free index.
+/// That is safe because a lost guard wrote nothing. Any other failure, and a
+/// race still lost after [`COMMENT_INDEX_ATTEMPTS`], is returned as it is.
 pub fn comment_add(
     b: &mut dyn Backend,
     ctx: &Ctx,
@@ -4105,36 +4234,52 @@ pub fn comment_add(
     if text.trim().is_empty() {
         return Err(SdError::usage("a comment needs non-empty text"));
     }
-    let snap = b.snapshot_items(&[id.to_string()])?;
-    snap.get(id)?;
-    let index = snap
-        .comments_on(id)
-        .iter()
-        .map(|c| c.index)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let comment = Comment {
-        seed: id.into(),
-        index,
-        author: author
-            .map(str::to_string)
-            .filter(|a| !a.trim().is_empty())
-            .unwrap_or_else(|| ctx.actor.clone()),
-        text: text.to_string(),
-        created_at: ctx.now.clone(),
-        extra: Default::default(),
-    };
-    let tx = b.commit(
-        &WriteBatch {
-            seeds: vec![],
-            comments: vec![comment.clone()],
-            source: "seeds:comment".into(),
-            ..WriteBatch::default()
-        },
-        ctx,
-    )?;
-    Ok((comment, tx))
+    let mut attempt = 1;
+    loop {
+        let snap = b.snapshot_items(&[id.to_string()])?;
+        snap.get(id)?;
+        let index = snap
+            .comments_on(id)
+            .iter()
+            .map(|c| c.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let comment = Comment {
+            seed: id.into(),
+            index,
+            author: author
+                .map(str::to_string)
+                .filter(|a| !a.trim().is_empty())
+                .unwrap_or_else(|| ctx.actor.clone()),
+            text: text.to_string(),
+            created_at: ctx.now.clone(),
+            extra: Default::default(),
+        };
+        let written = b.commit(
+            &WriteBatch {
+                seeds: vec![],
+                comments: vec![comment.clone()],
+                source: "seeds:comment".into(),
+                ..WriteBatch::default()
+            },
+            ctx,
+        );
+        match written {
+            Ok(tx) => return Ok((comment, tx)),
+            Err(e) if e.kind == ErrorKind::Conflict && attempt < COMMENT_INDEX_ATTEMPTS => {
+                attempt += 1;
+            }
+            Err(e) if e.kind == ErrorKind::Conflict => {
+                return Err(SdError::conflict(format!(
+                    "comment {index} on {id} was taken by a concurrent comment {attempt} times \
+                     running; nothing was written ({}). Re-read before retrying.",
+                    e.message
+                )));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// `sd comments list <id>`, as of `at`.

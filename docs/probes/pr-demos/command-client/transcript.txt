@@ -1,0 +1,15 @@
+Script started on 2026-10-24 10:34:43-04:00 [COMMAND="python3 reproduce.py "$BEFORE_SD" "$AFTER_SD"" <not executed on terminal>]
+before binary SHA256=d516378a79352816b02d32cba96ced88b1a0e203b8348d12aab81a7833a42e2d
+after binary SHA256=4f7d5de23e74a6cc0e3b673c2f9bee4030298dfe7a156ef3cc751ac8c838376a
+before: sd --quipu http://127.0.0.1:35531 --graph https://example.test/project/demo show sample-1 --json
+  exit=3 (synthetic subject deliberately absent)
+  actual requests=5; X-Quipu-Client=['seeds']
+after: sd --quipu http://127.0.0.1:35531 --graph https://example.test/project/demo show sample-1 --json
+  exit=3 (synthetic subject deliberately absent)
+  actual requests=5; X-Quipu-Client=['seeds/show']
+argument-control: sd --quipu http://127.0.0.1:35531 --graph https://example.test/project/demo show different-2 --json
+  exit=3 (synthetic subject deliberately absent)
+  actual requests=5; X-Quipu-Client=['seeds/show']
+PASS: command label changes; different arguments do not change it.
+
+Script done on 2026-10-24 10:34:44-04:00 [COMMAND_EXIT_CODE="0"]

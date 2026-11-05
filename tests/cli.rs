@@ -1014,7 +1014,7 @@ fn q_captures_status_aliases_stats_and_mapped_verbs_point_elsewhere() {
     // and touches nothing.
     for (verb, needle) in [
         ("query", "quipu"),
-        ("upgrade", "caboodle"),
+        ("upgrade", "tambo"),
         ("gate", "shuttle"),
     ] {
         let o = sb.run(&[verb, "anything", "--flag"]);
@@ -2632,21 +2632,18 @@ fn search_scope_is_explicit_for_hits_zeros_json_and_csv() {
         "body-only-needle",
     ]);
     let id = seed["id"].as_str().unwrap();
-    let scope = "searched: titles only";
+    let scope = "searched: title+description";
     for query in ["visible-title", "body-only-needle", "absent-needle"] {
         let text = sb.ok(&["search", query]);
         assert!(text.contains(scope), "scope footer missing: {text}");
-        assert!(
-            text.contains("descriptions/comments NOT searched"),
-            "{text}"
-        );
-        if query != "visible-title" {
-            assert!(text.contains("0 title matches"), "{text}");
+        assert!(text.contains("IDs/comments NOT searched"), "{text}");
+        if query == "absent-needle" {
+            assert!(text.contains("0 title+description matches"), "{text}");
             assert!(!text.contains("No issues found"), "{text}");
         }
         let json = sb.json(&["search", query]);
         assert!(json["search_scope"].as_str().unwrap().contains(scope));
-        assert_eq!(json["total"], if query == "visible-title" { 1 } else { 0 });
+        assert_eq!(json["total"], if query == "absent-needle" { 0 } else { 1 });
         assert_eq!(json["counts"], "not_computed");
         for row in json["issues"].as_array().unwrap() {
             assert!(row.get("dependency_count").is_some_and(Value::is_null));
@@ -3304,4 +3301,172 @@ fn decimal_rank_cli_roundtrip_and_single_item_move() {
         Some(4)
     );
     assert_eq!(s.json(&["show", moved_id])[0]["rank"], "-1");
+}
+
+#[test]
+fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
+    let s = Sandbox::new("ask-no-defer");
+    for label in [
+        "needs-stiwi",
+        "blocked:human",
+        "desk",
+        "decision-needed",
+        "decision-stiwi",
+        "title",
+    ] {
+        let mut args = vec![
+            "create",
+            if label == "title" {
+                "ASK Stiwi: choose"
+            } else {
+                "Technical control"
+            },
+        ];
+        if label != "title" {
+            args.extend(["--labels", label]);
+        }
+        let item = s.json(&args);
+        let id = item["id"].as_str().unwrap();
+        let before = s.json(&["show", id]);
+        for args in [
+            vec!["defer", id, "--until", "2027-01-01"],
+            vec!["update", id, "--status", "deferred"],
+            vec!["update", id, "--defer", "2027-01-01"],
+        ] {
+            let result = s.run(&args);
+            assert_eq!(code(&result), 5);
+            assert!(String::from_utf8_lossy(&result.stderr).contains("Brief's Later"));
+            assert_eq!(s.json(&["show", id]), before);
+        }
+    }
+    let normal = s.json(&["create", "Technical control", "--labels", "security"]);
+    let id = normal["id"].as_str().unwrap();
+    s.ok(&["defer", id, "--until", "2027-01-01"]);
+    assert_eq!(s.json(&["show", id])[0]["status"], "deferred");
+}
+
+#[test]
+fn strict_identity_refuses_unkeyed_local_write_before_opening_a_store() {
+    for (name, setting) in [
+        ("strict-key-identity", "require_identity = true"),
+        ("enforce-key-identity", "actor_principal_mode = \"enforce\""),
+    ] {
+        let s = Sandbox::new(name);
+        std::fs::create_dir_all(s.root.join("home/.config/seeds")).unwrap();
+        std::fs::write(
+            s.root.join("home/.config/seeds/config.toml"),
+            format!("[quipu]\n{setting}\n"),
+        )
+        .unwrap();
+        let output = s.run(&["create", "Synthetic unsigned write"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("enrolled remote session key"));
+        assert!(!s.work().join(".seeds/seeds.db").exists());
+    }
+}
+
+#[test]
+fn concurrent_keyed_message_sends_have_one_original_receipt() {
+    let sb = Sandbox::new("message-keyed-race");
+    sb.ok(&["create", "warm store", "--silent"]);
+    let children: Vec<_> = (0..4)
+        .map(|_| {
+            sb.cmd(
+                &sb.work(),
+                &[
+                    "msg",
+                    "send",
+                    "--to",
+                    "reader",
+                    "--key",
+                    "one-native-message",
+                    "-m",
+                    "same message",
+                    "--json",
+                ],
+            )
+            .spawn()
+            .unwrap()
+        })
+        .collect();
+    let mut wrote = 0;
+    let mut receipts = std::collections::BTreeSet::new();
+    for c in children {
+        let out = c.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        wrote += usize::from(v["written"] == true);
+        receipts.insert((
+            v["id"].to_string(),
+            v["sent_at"].to_string(),
+            v["window"].to_string(),
+        ));
+    }
+    assert_eq!(wrote, 1);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(
+        sb.json(&["msg", "list", "--to", "reader"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn show_folds_old_comments_but_explicit_history_and_snapshot_remain_complete() {
+    let s = Sandbox::new("comment-fold");
+    s.ok(&["init"]);
+    let created = s.json(&["create", "Current task", "--description", "Current scope"]);
+    let id = created["id"].as_str().unwrap();
+    let mut fifth_tx = 0;
+    for n in 1..=7 {
+        let written = s.json(&["comments", "add", id, &format!("evidence-{n}")]);
+        if n == 5 {
+            fifth_tx = written["tx"].as_u64().unwrap();
+        }
+    }
+    let recent = s.json(&["show", id]);
+    assert_eq!(recent[0]["comments_total"], 7);
+    assert_eq!(recent[0]["comments_folded"], 0);
+    assert_eq!(recent[0]["comments"].as_array().unwrap().len(), 7);
+    assert_eq!(recent[0]["comments"][0]["id"], 1);
+    assert_eq!(recent[0]["comments"][6]["text"], "evidence-7");
+    // Existing dedup/disposition readers must still see the oldest evidence.
+    assert_eq!(recent[0]["comments"], s.json(&["comments", "list", id]));
+    let text = s.ok(&["show", id]);
+    assert!(text.contains("CURRENT STATE:"));
+    assert!(!text.contains("evidence-1"));
+    assert!(text.contains("2 older comments folded"));
+    let all = s.json(&["show", id, "--all-comments"]);
+    assert_eq!(all[0]["comments_folded"], 0);
+    assert_eq!(all[0]["comments"].as_array().unwrap().len(), 7);
+    assert_eq!(s.json(&["comments", "list", id]), all[0]["comments"]);
+    let two = s.json(&["show", id, "--comments-limit", "2"]);
+    assert_eq!(two[0]["comments_folded"], 5);
+    assert_eq!(two[0]["comments"][0]["id"], 6);
+    let none = s.json(&["show", id, "--comments-limit", "0"]);
+    assert_eq!(none[0]["comments_folded"], 7);
+    assert!(none[0]["comments"].as_array().unwrap().is_empty());
+    let pinned = s.json(&["show", id, "--at", &fifth_tx.to_string()]);
+    assert_eq!(pinned[0]["comments_total"], 5);
+    assert_eq!(pinned[0]["comments"][4]["text"], "evidence-5");
+    assert_eq!(
+        s.run(&["show", id, "--all-comments", "--comments-limit", "2"])
+            .status
+            .code(),
+        Some(2)
+    );
+    let empty_id = s.json(&["create", "Empty"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let both = s.json(&["show", id, &empty_id]);
+    assert_eq!(both[1]["comments_total"], 0);
+    assert_eq!(both[1]["comments_folded"], 0);
+    assert!(both[1]["comments"].as_array().unwrap().is_empty());
 }

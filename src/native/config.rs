@@ -40,7 +40,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorKind, Result, SdError};
 use crate::vocab;
@@ -113,6 +113,12 @@ pub struct SyncSection {
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QuipuSection {
+    /// User-level PEM trust roots for HTTPS; replaces built-in roots.
+    pub ca_file: Option<String>,
+    /// Optional lowercase SHA-256 of the exact PEM file bytes.
+    pub ca_sha256: Option<String>,
+    /// Operator-owned push read packet; USER config only, never a project redirect.
+    pub read_stream_config: Option<String>,
     /// A local store file. Relative paths resolve against the directory that
     /// holds `.seeds/` (project file) or the user config directory (user file).
     pub store: Option<String>,
@@ -139,6 +145,26 @@ pub struct QuipuSection {
     pub signing_session: Option<String>,
     /// The introducer that registered it (`quipu attest register --introducer`).
     pub signing_introducer: Option<String>,
+    /// `"v2"` (the default) signs `quipu-write-v2`, bound to the receiving
+    /// store's id; `"v1-legacy"` signs the audience-free v1 (aegis-2idcev).
+    pub signing_version: Option<String>,
+    /// The store id writes must be signed for. When set, sd refuses to sign
+    /// for a server whose `/stats` reports any other id.
+    pub signing_store_id: Option<String>,
+    /// User-level strict policy: refuse writes without a verified remote key identity.
+    pub require_identity: Option<bool>,
+    /// User/host policy for a declared actor differing from the verified key principal.
+    pub actor_principal_mode: Option<ActorPrincipalMode>,
+}
+
+/// Claimed actors are attribution; the authenticated principal remains the key identity.
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ActorPrincipalMode {
+    Off,
+    #[default]
+    Observe,
+    Enforce,
 }
 
 /// `[project]`.
@@ -163,6 +189,9 @@ pub enum Location {
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
+    pub ca_file: Option<PathBuf>,
+    pub ca_sha256: Option<String>,
+    pub read_stream_config: Option<PathBuf>,
     pub spec_byte_cap: usize,
     pub due_priority_days: Option<[u32; 5]>,
     /// Where the graph lives.
@@ -196,6 +225,8 @@ pub struct Resolved {
     pub selected_credential: Option<super::credentials::Selected>,
     /// The signing key file, session and introducer, if configured.
     pub signing: Option<Signing>,
+    pub require_identity: bool,
+    pub actor_principal_mode: ActorPrincipalMode,
     /// The largest write request to send a quipu server, in bytes
     /// (`SEEDS_MAX_WRITE_BYTES`, default [`DEFAULT_MAX_WRITE_BYTES`]). A larger
     /// sync is pushed in batches; a larger single write is refused unsent.
@@ -219,6 +250,33 @@ pub struct Signing {
     pub key_file: PathBuf,
     pub session: String,
     pub introducer: String,
+    pub audience: super::attest::Audience,
+}
+
+/// The signing format from `signing_version` and `signing_store_id`. A pin
+/// with v1 is refused: v1 names no store, so the pin could never be checked.
+fn signing_audience(q: &QuipuSection) -> Result<super::attest::Audience> {
+    use super::attest::{audience_ok, Audience};
+    let pin = q.signing_store_id.clone();
+    if pin.as_deref().is_some_and(|p| !audience_ok(p)) {
+        return Err(config_error(
+            "[quipu] signing_store_id must be a non-empty store id (GET /stats store_id) of \
+             at most 256 bytes with no control characters"
+                .into(),
+        ));
+    }
+    match q.signing_version.as_deref() {
+        None | Some("v2") => Ok(Audience::Store { pin }),
+        Some("v1-legacy") if pin.is_some() => Err(config_error(
+            "[quipu] signing_store_id needs signing_version = \"v2\": a v1 signature names no \
+             store, so the pin could never be checked"
+                .into(),
+        )),
+        Some("v1-legacy") => Ok(Audience::LegacyV1),
+        Some(other) => Err(config_error(format!(
+            "[quipu] signing_version {other:?} is not \"v2\" or \"v1-legacy\""
+        ))),
+    }
 }
 
 /// Everything resolution reads, passed in so tests control all of it.
@@ -410,6 +468,14 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     if inputs.flag_store.is_some() && inputs.flag_url.is_some() {
         return Err(config_error("pass --store or --quipu, not both".into()));
     }
+    if project
+        .as_ref()
+        .is_some_and(|p| p.quipu.read_stream_config.is_some())
+    {
+        return Err(config_error(
+            "[quipu] read_stream_config is user-level only".into(),
+        ));
+    }
     let home = inputs.home.as_deref();
     let root = project_root.clone().unwrap_or_else(|| inputs.cwd.clone());
 
@@ -477,15 +543,21 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         )));
     }
     if let Some(p) = &project {
-        if p.quipu.token_file.is_some()
+        if p.quipu.ca_file.is_some()
+            || p.quipu.ca_sha256.is_some()
+            || p.quipu.token_file.is_some()
             || p.quipu.trusted_hosts.is_some()
             || p.quipu.allow_plain_http_hosts.is_some()
             || p.quipu.signing_key_file.is_some()
             || p.quipu.signing_session.is_some()
             || p.quipu.signing_introducer.is_some()
+            || p.quipu.signing_version.is_some()
+            || p.quipu.signing_store_id.is_some()
+            || p.quipu.require_identity.is_some()
+            || p.quipu.actor_principal_mode.is_some()
         {
             return Err(config_error(format!(
-                "{} sets [quipu] token_file, trusted_hosts, allow_plain_http_hosts or signing_*; only your \
+                "{} sets [quipu] ca_file, ca_sha256, token_file, trusted_hosts, allow_plain_http_hosts, signing_* or identity policy; only your \
                  user config \
 (~/.config/seeds/config.toml) or SEEDS_QUIPU_TOKEN_FILE may, because a \
                  cloned repository could otherwise send your token to a server it chose",
@@ -560,6 +632,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
                 key_file: expand(f, &user_base, home),
                 session: s.clone(),
                 introducer: i.clone(),
+                audience: signing_audience(q)?,
             }),
             _ => {
                 return Err(config_error(
@@ -609,7 +682,29 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     if !(1..=65536).contains(&spec_byte_cap) {
         return Err(config_error("[specs] byte_cap must be 1..65536".into()));
     }
+    let ca_file = user.as_ref().and_then(|u| u.quipu.ca_file.as_ref());
+    let ca_sha256 = user.as_ref().and_then(|u| u.quipu.ca_sha256.clone());
+    if ca_file.is_some_and(|p| p.trim().is_empty())
+        || ca_sha256.as_ref().is_some_and(|pin| {
+            ca_file.is_none()
+                || pin.len() != 64
+                || !pin
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    {
+        return Err(config_error(
+            "[quipu] ca_file must be nonempty; ca_sha256 needs ca_file and 64 lowercase hex digits"
+                .into(),
+        ));
+    }
     Ok(Resolved {
+        ca_file: ca_file.map(|p| expand(p, &user_base, home)),
+        ca_sha256,
+        read_stream_config: user
+            .as_ref()
+            .and_then(|u| u.quipu.read_stream_config.as_ref())
+            .map(|p| expand(p, &user_base, home)),
         spec_byte_cap,
         due_priority_days,
         location,
@@ -632,6 +727,14 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         token: inputs.env_token.clone(),
         token_file,
         signing,
+        require_identity: user
+            .as_ref()
+            .and_then(|u| u.quipu.require_identity)
+            .unwrap_or(false),
+        actor_principal_mode: user
+            .as_ref()
+            .and_then(|u| u.quipu.actor_principal_mode)
+            .unwrap_or_default(),
         max_write_bytes,
         max_write_clauses,
     })
@@ -918,6 +1021,82 @@ mod tests {
     }
 
     #[test]
+    fn custom_ca_is_user_config_only_and_relative_to_that_file() {
+        let s = Sandbox::new("custom-ca");
+        let pin = "a".repeat(64);
+        s.user_toml(&format!(
+            "[quipu]\nca_file = 'roots.pem'\nca_sha256 = '{pin}'\n"
+        ));
+        let resolved = resolve(&s.inputs()).unwrap();
+        assert_eq!(
+            resolved.ca_file,
+            Some(s.root.join("home/.config/seeds/roots.pem"))
+        );
+        assert_eq!(resolved.ca_sha256.as_deref(), Some(pin.as_str()));
+        s.project_toml("[quipu]\nca_file = 'untrusted.pem'\n");
+        assert!(resolve(&s.inputs()).is_err());
+    }
+
+    #[test]
+    fn custom_ca_rejects_empty_paths_and_invalid_or_orphan_pins() {
+        let s = Sandbox::new("invalid-ca");
+        for text in [
+            "ca_file = ''",
+            "ca_sha256 = 'abcd'",
+            "ca_file = 'roots.pem'\nca_sha256 = 'BAD'",
+        ] {
+            s.user_toml(&format!("[quipu]\n{text}\n"));
+            assert!(resolve(&s.inputs()).is_err());
+        }
+    }
+
+    /// aegis-2idcev: signing is write-v2 unless the user explicitly chooses the
+    /// legacy v1; a pin needs v2; bad values and a project file are refused.
+    #[test]
+    fn the_signing_version_defaults_to_v2_and_v1_needs_the_explicit_legacy_word() {
+        use crate::native::attest::Audience;
+        let sb = Sandbox::new("signing-version");
+        let identity =
+            "[quipu]\nsigning_key_file=\"k\"\nsigning_session=\"s\"\nsigning_introducer=\"i\"\n";
+        let audience = |extra: &str| {
+            sb.user_toml(&format!("{identity}{extra}"));
+            resolve(&sb.inputs()).map(|r| r.signing.unwrap().audience)
+        };
+        assert_eq!(audience("").unwrap(), Audience::Store { pin: None });
+        assert_eq!(
+            audience("signing_version=\"v2\"\n").unwrap(),
+            Audience::Store { pin: None }
+        );
+        assert_eq!(
+            audience("signing_store_id=\"urn:uuid:pinned\"\n").unwrap(),
+            Audience::Store {
+                pin: Some("urn:uuid:pinned".into())
+            }
+        );
+        assert_eq!(
+            audience("signing_version=\"v1-legacy\"\n").unwrap(),
+            Audience::LegacyV1
+        );
+        for bad in [
+            "signing_version=\"v1\"\n",
+            "signing_version=\"V2\"\n",
+            "signing_version=\"v1-legacy\"\nsigning_store_id=\"urn:uuid:p\"\n",
+            "signing_store_id=\"\"\n",
+        ] {
+            assert!(audience(bad).is_err(), "{bad:?} accepted");
+        }
+        // A cloned project must not choose how (or for whom) your key signs.
+        sb.user_toml(identity);
+        for key in [
+            "signing_version=\"v1-legacy\"",
+            "signing_store_id=\"urn:uuid:x\"",
+        ] {
+            sb.project_toml(&format!("[quipu]\n{key}\n"));
+            assert!(resolve(&sb.inputs()).is_err(), "project {key} accepted");
+        }
+    }
+
+    #[test]
     fn with_no_config_at_all_the_default_is_a_local_store_in_cwd() {
         let sb = Sandbox::new("default");
         let r = resolve(&sb.inputs()).unwrap();
@@ -1096,6 +1275,34 @@ mod tests {
             "{}",
             e.message
         );
+    }
+
+    #[test]
+    fn actor_principal_policy_defaults_to_observe_and_is_host_only() {
+        let sb = Sandbox::new("actor-policy-default");
+        assert_eq!(
+            resolve(&sb.inputs()).unwrap().actor_principal_mode,
+            ActorPrincipalMode::Observe
+        );
+        for (mode, expected) in [
+            ("off", ActorPrincipalMode::Off),
+            ("observe", ActorPrincipalMode::Observe),
+            ("enforce", ActorPrincipalMode::Enforce),
+        ] {
+            sb.user_toml(&format!("[quipu]\nactor_principal_mode={mode:?}\n"));
+            assert_eq!(
+                resolve(&sb.inputs()).unwrap().actor_principal_mode,
+                expected
+            );
+        }
+        sb.user_toml("[quipu]\nactor_principal_mode=\"enfroce\"\n");
+        assert!(
+            resolve(&sb.inputs()).is_err(),
+            "misspelling must not silently disable a policy"
+        );
+        let sb = Sandbox::new("actor-policy-project");
+        sb.project_toml("[quipu]\nactor_principal_mode=\"off\"\n");
+        assert_eq!(resolve(&sb.inputs()).unwrap_err().kind, ErrorKind::Config);
     }
 
     #[test]

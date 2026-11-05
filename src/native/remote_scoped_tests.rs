@@ -404,9 +404,9 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
             (true, false, 0, false, "priority"),
             (true, true, 3, true, "title"),
         ] {
-            if full && !indexed {
+            if !indexed {
                 continue;
-            } // old-server refusal is tested separately
+            } // Both scopes require the index; actual refusal is asserted below.
             let req = engine::SearchReq {
                 query: term.into(),
                 full,
@@ -477,6 +477,28 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
             f.labels = vec!["{ ?s".into(), "?s".into()];
         }),
         f(&|f: &mut Filter| f.unassigned = true),
+        // Driven cohorts (aegis-efa): an explicit assignee and a single
+        // non-default priority become required leading triples, so every
+        // combination must still match the engine, including the default
+        // priority, an assignee with no seeds and the contradictory pairs.
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.priority = Some("1".into());
+        }),
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.priority = Some("2".into());
+        }),
+        f(&|f: &mut Filter| f.priority = Some("0".into())),
+        f(&|f: &mut Filter| f.assignee = Some("nobody".into())),
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.unassigned = true;
+        }),
+        f(&|f: &mut Filter| {
+            f.assignee = Some("ian".into());
+            f.priority_min = Some("1".into());
+        }),
         f(&|f: &mut Filter| f.labels = vec!["infra".into()]),
         f(&|f: &mut Filter| f.labels = vec!["infra".into(), "cutover".into()]),
         f(&|f: &mut Filter| f.labels_any = vec!["cutover".into()]),
@@ -514,6 +536,7 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
                 reverse,
                 deferred,
                 defer_until_present,
+                skip_dependent_counts: false,
             };
             out.push(match engine::list(b, &req, None) {
                 Ok(p) => format!(
@@ -522,6 +545,19 @@ fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bo
                     output::page_text(&p, "matching")
                 ),
                 Err(e) => format!("list {req:?} {}", err(&e)),
+            });
+            // Text and CSV callers skip the counts; the listed seeds must not change.
+            let uncounted = ListReq {
+                skip_dependent_counts: true,
+                ..req.clone()
+            };
+            out.push(match engine::list(b, &uncounted, None) {
+                Ok(p) => format!(
+                    "list without counts {req:?}\n{}\n{}",
+                    output::seeds_json(&p.issues),
+                    output::page_text(&p, "matching")
+                ),
+                Err(e) => format!("list without counts {req:?} {}", err(&e)),
             });
         }
         for (include_closed, by) in [
@@ -691,11 +727,26 @@ fn scoped_reads_print_exactly_what_a_whole_snapshot_prints() {
     };
     let indexed = std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_some();
     if !indexed {
-        eprintln!("Full-field positive parity requires SEEDS_TEST_QUIPU_INDEX_PREPARER; legacy missing-echo refusal has separate controls");
+        eprintln!("Default/full search positive parity requires SEEDS_TEST_QUIPU_INDEX_PREPARER; both unprepared-server refusals are asserted below");
     }
     let (snap, n) = corpus();
     let mut a = load(&server.base, "https://seeds.local/project/scoped-a", &snap);
     let mut b = load(&server.base, "https://seeds.local/project/scoped-b", &snap);
+    if !indexed {
+        for full in [false, true] {
+            let req = engine::SearchReq {
+                query: "seed".into(),
+                full,
+                ..Default::default()
+            };
+            let error = a.search_page(&req).unwrap_err();
+            assert!(
+                error.message.contains("substring index")
+                    || error.message.contains("substring reads require"),
+                "unprepared server must refuse indexed search, full={full}: {error}"
+            );
+        }
+    }
     let c = ctx();
     let mut all_ids: Vec<String> = a.snapshot(None).unwrap().seeds.keys().cloned().collect();
     all_ids.push("nope".into());
@@ -883,7 +934,7 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
             limit: Some(0),
             ..Default::default()
         };
-        if full && std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_none() {
+        if std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_none() {
             let error = engine::search(r, &req, None).unwrap_err();
             assert!(
                 error.message.contains("acknowledge readiness")
@@ -899,8 +950,10 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
         assert_eq!(actual.hidden_closed, hidden);
     };
     compare(&mut remote, "needle", false, true, 2, 0);
+    compare(&mut remote, "old needle description", false, true, 1, 0);
     update(&remote, format!("INSERT DATA {{ GRAPH <{eph}> {{ <{}> a <{a}> ; <{id}> \"shadow\" ; <{name}> \"replacement unrelated\" ; <{desc}> \"replacement unrelated\" ; <{status}> \"open\" . }} }}",item("shadow")));
     compare(&mut remote, "needle", false, true, 1, 0);
+    compare(&mut remote, "old needle description", false, true, 0, 0);
     compare(&mut remote, "needle", true, true, 1, 0);
     update(
         &remote,

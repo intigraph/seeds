@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/scbrown/seeds/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"/></a>
   <a href="https://github.com/scbrown/seeds/actions/workflows/ci.yml"><img src="https://github.com/scbrown/seeds/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="https://github.com/scbrown/caboodle"><img src="https://img.shields.io/badge/stack-quipu-8B5E3C.svg" alt="Part of the caboodle stack"/></a>
+  <a href="https://github.com/intigraph/tambo"><img src="https://img.shields.io/badge/stack-quipu-8B5E3C.svg" alt="Part of the caboodle stack"/></a>
 </p>
 
 **seeds is an issue tracker for AI coding agents that stores each work item as
@@ -171,7 +171,7 @@ rewrites that to seeds before the tool call runs:
 dp alias --cmd bd --replace sd
 ```
 
-[caboodle](https://github.com/scbrown/caboodle) sets this alias for you when a
+[caboodle](https://github.com/intigraph/tambo) sets this alias for you when a
 plan installs both seeds and desire-path. If the host already has a `bd` alias
 that points somewhere else, caboodle leaves it alone and reports it, because
 `dp alias` would otherwise replace it silently. Run the command above by hand

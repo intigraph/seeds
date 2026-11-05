@@ -3432,10 +3432,12 @@ fn show_folds_old_comments_but_explicit_history_and_snapshot_remain_complete() {
     }
     let recent = s.json(&["show", id]);
     assert_eq!(recent[0]["comments_total"], 7);
-    assert_eq!(recent[0]["comments_folded"], 2);
-    assert_eq!(recent[0]["comments"].as_array().unwrap().len(), 5);
-    assert_eq!(recent[0]["comments"][0]["id"], 3);
-    assert_eq!(recent[0]["comments"][4]["text"], "evidence-7");
+    assert_eq!(recent[0]["comments_folded"], 0);
+    assert_eq!(recent[0]["comments"].as_array().unwrap().len(), 7);
+    assert_eq!(recent[0]["comments"][0]["id"], 1);
+    assert_eq!(recent[0]["comments"][6]["text"], "evidence-7");
+    // Existing dedup/disposition readers must still see the oldest evidence.
+    assert_eq!(recent[0]["comments"], s.json(&["comments", "list", id]));
     let text = s.ok(&["show", id]);
     assert!(text.contains("CURRENT STATE:"));
     assert!(!text.contains("evidence-1"));
@@ -3450,7 +3452,7 @@ fn show_folds_old_comments_but_explicit_history_and_snapshot_remain_complete() {
     let none = s.json(&["show", id, "--comments-limit", "0"]);
     assert_eq!(none[0]["comments_folded"], 7);
     assert!(none[0]["comments"].as_array().unwrap().is_empty());
-    let pinned = s.json(&["show", id, "--at", &fifth_tx.to_string(), "--all-comments"]);
+    let pinned = s.json(&["show", id, "--at", &fifth_tx.to_string()]);
     assert_eq!(pinned[0]["comments_total"], 5);
     assert_eq!(pinned[0]["comments"][4]["text"], "evidence-5");
     assert_eq!(

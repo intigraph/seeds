@@ -1,5 +1,5 @@
-Script started on 2026-11-04 07:06:23-05:00 [COMMAND="python3 docs/demos/comment-fold/run.py" <not executed on terminal>]
-BEFORE {"binary_version": "sd 0.11.1 (seeds)", "binary_sha256": "0126a41576bc880f6cf3fb34e85396821648ba3da9ae9ce3fba8364dcfe075c2", "displayed": 7, "displayed_positions": [1, 2, 3, 4, 5, 6, 7], "total": null, "folded": null, "stored_history": 7}
-AFTER {"binary_version": "sd 0.12.0 (seeds)", "binary_sha256": "409d33c50bb35374e968c0f5a0d355785306f473e13858c38c8fa09e073018e8", "displayed": 5, "displayed_positions": [3, 4, 5, 6, 7], "total": 7, "folded": 2, "stored_history": 7, "explicit_full_history": 7}
+Script started on 2026-11-04 20:31:04-05:00 [COMMAND="python3 docs/demos/comment-fold/run.py" <not executed on terminal>]
+BEFORE {"binary_version": "sd 0.12.0 (seeds)", "binary_sha256": "ed8c8009061c84fd1c9828c5a6e008205a094a6816c84c100891d4e8f9840dcf", "json_comments": 5, "oldest_evidence_visible": false, "displayed_positions": [3, 4, 5, 6, 7], "total": 7, "folded": 2, "stored_history": 7, "text_folded": 2}
+AFTER {"binary_version": "sd 0.12.0 (seeds)", "binary_sha256": "cdf8e5d94bc91f7e2d94e0c225376a656367fee85d57cc9d16a6c2c8b75ccbd9", "json_comments": 7, "oldest_evidence_visible": true, "displayed_positions": [1, 2, 3, 4, 5, 6, 7], "total": 7, "folded": 0, "stored_history": 7, "explicit_bound": 2, "explicit_folded": 5, "explicit_full_history": 7, "text_folded": 2}
 
-Script done on 2026-11-04 07:06:27-05:00 [COMMAND_EXIT_CODE="0"]
+Script done on 2026-11-04 20:31:08-05:00 [COMMAND_EXIT_CODE="0"]

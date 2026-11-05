@@ -11,9 +11,16 @@ pub(super) fn run(
 ) -> Result<Outcome> {
     let mut views = engine::show(b, &a.ids, at)?;
     let totals: Vec<_> = views.iter().map(|v| v.comments.len()).collect();
-    if !a.all_comments {
+    // Preserve complete JSON for existing machine consumers unless the caller
+    // explicitly requests a bound. Text alone has a five-comment default.
+    let limit = if a.all_comments {
+        None
+    } else {
+        a.comments_limit.or(if as_json { None } else { Some(5) })
+    };
+    if let Some(limit) = limit {
         for view in &mut views {
-            let hidden = view.comments.len().saturating_sub(a.comments_limit);
+            let hidden = view.comments.len().saturating_sub(limit);
             view.comments.drain(..hidden);
         }
     }

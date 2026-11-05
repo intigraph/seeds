@@ -123,15 +123,16 @@ remaining filters and claim checks retain their existing semantics.
 ### Current state and comment history
 
 `sd show ID` displays the description and notes as current state, followed by
-five recent comments. JSON keeps every existing seed, dependency and comment
-field, with `comments_total` and `comments_folded` on each show row. A nonzero
-folded count means the displayed comment array is incomplete.
+five recent comments. JSON retains the complete comment history by default,
+including every existing seed, dependency and comment field. Each show row adds
+`comments_total` and `comments_folded`. Only an explicit `--comments-limit N`
+bounds JSON; a nonzero folded count means that array is incomplete.
 
 Use `sd show ID --comments-limit N` for a different bound (zero hides all), or
 `sd show ID --all-comments` for the complete history. `sd comments list ID`
 remains complete. These read options also respect `--at`; they change no stored
-comment, author, index or timestamp. Code that needs full comment history must
-use one of the explicit complete-history commands.
+comment, author, index or timestamp. Existing machine consumers of default
+`show --json` continue to receive complete history.
 
 After more than twenty comments, consolidate the current scope with
 `sd rescope ID --spec-file current.md --quote 'original request' --summary 'current scope'`.

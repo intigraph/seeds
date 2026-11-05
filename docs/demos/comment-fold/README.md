@@ -1,9 +1,11 @@
 # Bounded comment display
 
-A disposable local task gets seven numbered comments. The before binary shows
-all seven by default. The candidate shows positions 3–7, with total 7 and folded
-2. Its explicit full-history view and `comments list` both still return all
-seven. Nothing is deleted or rewritten.
+A disposable local task gets seven numbered comments. The pre-review candidate
+f6d8b76f incorrectly exposes only five in default JSON, hiding the oldest evidence.
+The repair retains all seven in default JSON, including the oldest evidence used
+by receipt-dedup readers. Text remains bounded to positions 3–7 in both versions.
+Explicit JSON `--comments-limit 2` still reports total 7 and folded 5. Full-history
+controls return all seven. Nothing is deleted or rewritten.
 
 [Terminal output / readable transcript](output.log) and [timing](timing.log)
 are a util-linux recording, retained here as small sanitized Git artifacts.
@@ -22,9 +24,7 @@ COMMENT_FOLD_BEFORE=/path/to/base/sd COMMENT_FOLD_AFTER=/path/to/candidate/sd \
 ```
 
 Target: synthetic local stores and private fixture homes; no service, network,
-installation or production credentials. The recording pins both executable
-SHA256 values and versions. Before is the installed 0.11.1 artifact; its exact
-source revision was not exposed by `--version`, so no source-SHA claim is made.
-After is the 0.12.0 candidate built from the source retained beside this demo;
-[source digests](source-sha256.json) bind those files. The PR identifies its
-exact head. This proves CLI behavior, not installed fleet acceptance.
+installation or production credentials. The recording pins executable SHA256
+values and versions. Before is the f6d8b76f pre-review candidate; after is built
+from the repair files bound by [source digests](source-sha256.json). The PR names
+the exact repaired head. This proves candidate CLI behavior, not fleet acceptance.

@@ -1934,7 +1934,9 @@ fn comments_past_the_clause_limit_cross_in_batches_with_their_parent_from_the_re
     ];
     let work = env.dir("work");
     let texts = |seed: &str, cwd: &Path, e: &[(&str, &str)]| -> Vec<String> {
-        let v: Value = serde_json::from_str(&env.ok(cwd, &["show", seed, "--json"], e)).unwrap();
+        let v: Value =
+            serde_json::from_str(&env.ok(cwd, &["show", seed, "--all-comments", "--json"], e))
+                .unwrap();
         v[0]["comments"]
             .as_array()
             .unwrap()

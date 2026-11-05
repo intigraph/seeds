@@ -15,7 +15,7 @@ seeds tracks its own backlog in seeds: the ledger is the committed pendant in
 and commit the pendant changes with the work that closes them.
 
 Sibling repos: scbrown/quipu (governed store), scbrown/camayoc (shapes and
-stored queries), scbrown/caboodle (installer and verify),
+stored queries), intigraph/tambo (installer and verify),
 scbrown/desire-path (the `bd` -> `sd` redirect), scbrown/yupana (code
 structure), scbrown/bobbin (retrieval).
 

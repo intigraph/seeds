@@ -1,0 +1,38 @@
+Script started on 2026-11-04 17:27:53-05:00 [COMMAND="python3 tests/task_transfer.py" <not executed on terminal>]
+$ sd export --to github --ids sd-n8r,sd-429
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": true, "operations": [{"action": "create", "conflict": false}, {"action": "create", "conflict": false}]}
+$ sd export --to github --ids sd-n8r,sd-429 --execute
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "create", "conflict": false}, {"action": "create", "conflict": false}]}
+$ sd export --to github --ids sd-n8r,sd-429 --execute
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}, {"action": "unchanged", "conflict": false}]}
+$ sd import --from github --ids 1,2
+{"schema": "seeds.transfer/1", "direction": "import", "dry_run": true, "operations": [{"action": "unchanged", "conflict": false}, {"action": "unchanged", "conflict": false}]}
+$ sd import --from github --ids 1,2 --execute
+{"schema": "seeds.transfer/1", "direction": "import", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}, {"action": "unchanged", "conflict": false}]}
+$ sd import --from github --ids 1,2 --execute
+{"schema": "seeds.transfer/1", "direction": "import", "dry_run": false, "operations": [{"action": "create", "conflict": false}, {"action": "create", "conflict": false}]}
+$ sd import --from github --ids 1,2 --execute
+{"schema": "seeds.transfer/1", "direction": "import", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}, {"action": "unchanged", "conflict": false}]}
+$ sd export --to github --ids sd-n8r,sd-429 --execute
+{"error": {"code": "CONFLICT", "message": "linked external fields differ; preview and explicitly choose --overwrite or reconcile"}}
+$ sd export --to github --ids sd-n8r,sd-429 --execute --overwrite
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}, {"action": "update", "conflict": false}]}
+$ sd export --to github --ids sd-n8r,sd-429 --execute --overwrite
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}, {"action": "update", "conflict": false}]}
+$ sd export --to github --ids sd-n8r,sd-429 --execute --overwrite
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}, {"action": "update", "conflict": false}]}
+$ sd export --to github --ids sd-ayb --execute
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "create", "conflict": false}]}
+$ sd export --to github --ids sd-n8r,sd-429
+{"error": {"code": "REFUSED", "message": "task-manager HTTP 403; no fallback or automatic retry"}}
+$ sd export --to github --ids sd-n8r,sd-429
+{"error": {"code": "REFUSED", "message": "GitHub issue number missing"}}
+$ sd import --from github --ids 1
+{"error": {"code": "REFUSED", "message": "pull requests are not issue transfer targets"}}
+$ sd export --to github --ids sd-c0y --execute
+{"error": {"code": "REFUSED", "message": "GitHub did not preserve required mapping labels"}}
+$ sd export --to github --ids sd-c0y --execute
+{"schema": "seeds.transfer/1", "direction": "export", "dry_run": false, "operations": [{"action": "unchanged", "conflict": false}]}
+GitHub transfer fixtures: preview, native mappings/relations/comments, replay, updates, fallback, refusals, redirect, partial-create recovery PASS
+
+Script done on 2026-11-04 17:27:57-05:00 [COMMAND_EXIT_CODE="0"]

@@ -487,3 +487,38 @@ pub fn hydrate(b: &mut QuipuBackend, store: &Path, dir: &Path, ctx: &Ctx) -> Res
         dir.display()
     )))
 }
+
+/// Reconcile mode-1 data in memory for external transfer previews. No marker,
+/// pendant or working-store write is allowed on this path.
+pub fn preview_hydrated(
+    b: &QuipuBackend,
+    store: &Path,
+    dir: &Path,
+    ctx: &Ctx,
+    graph: &str,
+) -> Result<QuipuBackend> {
+    use crate::backend::Backend;
+    let mine = pendant::export(b)?;
+    let mine_hash = mine.export_hash().unwrap_or_default();
+    let mut chosen = mine;
+    if let Some(disk) = read_pendant_dir(dir)? {
+        let disk_hash = disk.export_hash().unwrap_or_default();
+        if mine_hash != disk_hash {
+            let marker = read_marker(store);
+            let snap = b.snapshot(None)?.shared();
+            let store_clean = (snap.seeds.is_empty() && snap.comments.is_empty())
+                || marker.as_deref() == Some(mine_hash.as_str());
+            if store_clean {
+                chosen = disk;
+            } else if marker.as_deref() != Some(disk_hash.as_str()) {
+                return Err(SdError::conflict(
+                    "working store and pendant both changed; reconcile before transfer",
+                ));
+            }
+        }
+    }
+    let ledger = pendant::read(&chosen)?;
+    let mut preview = QuipuBackend::in_memory(graph)?;
+    sync::import(&mut preview, ctx, &ledger.snapshot, None, true)?;
+    Ok(preview)
+}

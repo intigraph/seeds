@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "scope": "Exact retained former product-name occurrences in tracked HEAD source. Current diagnostics and installation references use the current names.",
+  "entries": [
+    {
+      "path": ".seeds/pendant/export.nt",
+      "line": 21,
+      "line_sha256": "22ed52d9c308110c9e0546076c865e92225588f6a0544c571440738b1c99c101",
+      "reason": "Sealed historical work-item title; preserve ledger and manifest bytes. Owner approved retaining this data/history."
+    },
+    {
+      "path": ".seeds/pendant/export.nt",
+      "line": 31,
+      "line_sha256": "89eccccdf2f980bbe85cd67356dd4337cb53e31880c442173171483a85870104",
+      "reason": "Sealed historical work-item title; preserve ledger and manifest bytes. Owner approved retaining this data/history."
+    },
+    {
+      "path": ".seeds/pendant/export.nt",
+      "line": 33,
+      "line_sha256": "26c56655cdcb66d2af6e85ecd37d16e13fb33a79beb824b8b21738756ccc87f6",
+      "reason": "Sealed historical work-item title; preserve ledger and manifest bytes. Owner approved retaining this data/history."
+    },
+    {
+      "path": ".seeds/pendant/export.nt",
+      "line": 38,
+      "line_sha256": "2b7e6ceaa131898b5fee8e175a9df750a38be23a2e57ac045fc5d3a09beea48e",
+      "reason": "Sealed historical work-item title; preserve ledger and manifest bytes. Owner approved retaining this data/history."
+    },
+    {
+      "path": ".seeds/pendant/export.nt",
+      "line": 48,
+      "line_sha256": "9e7c964d58bb96ab214ffaa10109b4c67bdbf1a375c57fbed4c412519989c4c3",
+      "reason": "Sealed historical work-item title; preserve ledger and manifest bytes. Owner approved retaining this data/history."
+    },
+    {
+      "path": ".seeds/pendant/export.nt",
+      "line": 50,
+      "line_sha256": "ea26abb6edbab457d8b8b813f003c5e5ca77c1cafd685cc30692f4665d5d1816",
+      "reason": "Sealed historical work-item title; preserve ledger and manifest bytes. Owner approved retaining this data/history."
+    },
+    {
+      "path": "CHANGELOG.md",
+      "line": 380,
+      "line_sha256": "538049a4bba650522d4a1853b7c510c8712ff440f966e3e6d7147510d757359d",
+      "reason": "Published release history; retain the name recorded at that time."
+    }
+  ]
+}

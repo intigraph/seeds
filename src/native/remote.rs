@@ -52,6 +52,7 @@ mod gateway_tests;
 mod message_tests;
 mod owner_query;
 mod summary;
+mod tls;
 
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
 /// dozen facts, so a chunk stays well under quipu's 10,000-row result cap (a
@@ -377,11 +378,26 @@ impl RemoteBackend {
         signer: Option<super::attest::Signer>,
         plain_http_ok: &[String],
     ) -> Result<Self> {
+        Self::connect_with_ca(base, graph, token, signer, plain_http_ok, None, None)
+    }
+
+    /// All requests, including identity and signed writes, share these roots.
+    pub fn connect_with_ca(
+        base: &str,
+        graph: &str,
+        token: Option<String>,
+        signer: Option<super::attest::Signer>,
+        plain_http_ok: &[String],
+        ca_file: Option<&std::path::Path>,
+        ca_sha256: Option<&str>,
+    ) -> Result<Self> {
         require_token_transport(base, token.is_some(), plain_http_ok)?;
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(5))
-            .timeout(Duration::from_secs(120))
-            .build();
+        if ca_file.is_some() && !base.starts_with("https://") {
+            return Err(SdError::refused(
+                "a configured CA requires an HTTPS Quipu endpoint",
+            ));
+        }
+        let agent = tls::agent(ca_file, ca_sha256)?;
         let mut b = Self {
             base: base.trim_end_matches('/').to_string(),
             graph: graph.to_string(),
@@ -3833,12 +3849,14 @@ mod tests {
         let (without, _) = cost(&bare);
         // One combined read before the write, on every server. A server older
         // than quipu#411 answers /update with no report, so seeds reads the
-        // seed back to decide landed or lost (two more reads): never more.
+        // seed back to decide landed or lost (two more reads), then reads
+        // this operation's provenance marker (one). That marker prevents a
+        // foreign writer's identical post-state from confirming our write.
         assert_eq!(
             with_comments, without,
             "comments cost reads: {with_comments} with 12, {without} with none"
         );
-        assert!(with_comments <= 3, "{with_comments} reads for one update");
+        assert!(with_comments <= 4, "{with_comments} reads for one update");
         assert_eq!(listed, 0, "no registry listing for an existing seed");
         let mut fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
         let after = fresh.snapshot_items(std::slice::from_ref(&id)).unwrap();

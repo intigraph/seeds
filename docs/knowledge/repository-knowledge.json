@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "1c981c3ce240d3428f560fd336a440fccd9b9a4ac20d06c2cf7cea4d11d20c4c",
+      "source_sha256": "3b1b384ba36881c4b5fbe863bfd9347ff139d71ca585463c6b2fa6647df35f89",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "3d065358bfba9923d090c3ee5954da9d269732a023515d950aa6cba12d5f81a4",
+      "source_sha256": "7079a3d6ff71cf905bc0d348c19a04e8f133614b63ee30832b29cc25f885817c",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"
@@ -71,7 +71,7 @@
       "source": "docs/book/src/storage.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage.md",
       "summary": "One project is one named graph. A work item is a schema.org Action; public vocabulary and Quechua governance terms are preferred over tracker-specific terms.",
-      "source_sha256": "fc071688e924eeeadcf80801b1753752384e6f4f9307620229233ec6c66dad1e",
+      "source_sha256": "1aca11dbb9ea21294b4b7377d51ea0371a1c0d6adc423acfb043d6f95096665e",
       "type": "DecisionRecord",
       "properties": {
         "status": "active",
@@ -101,7 +101,7 @@
       "source": "docs/book/src/reference.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Freference.md",
       "summary": "Read the sd global options, verbs, JSON and exit-code contracts before changing a caller-facing behavior.",
-      "source_sha256": "26dba2856d9c95ec4c7c5d27ca6526398340cc37920004ee13e35dacc046d789",
+      "source_sha256": "3eef279b3907d8873706f4d9ccd9ba04d365743b391387d9f3be718d3b77d7cb",
       "properties": {
         "startHereOrder": 2
       }
@@ -111,7 +111,7 @@
       "source": "AGENTS.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/AGENTS.md",
       "summary": "Contributions preserve the wasm-clean core, documented storage semantics, public-safe source and full just check quality gate.",
-      "source_sha256": "6d8e86de0683b473b0988f370d5bc3c0e2ef1dda3e9a55df2b2dda0c809250f2",
+      "source_sha256": "cacff5ce9cc4fccf922a57ee2bf652a4db15cb1cd14dcca849eeb807760d9a4e",
       "properties": {
         "startHereOrder": 3
       }

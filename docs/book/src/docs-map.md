@@ -6,11 +6,13 @@ Every document in this repository, and where it lives.
 |---|---|
 | `README.md` | the front page: what seeds is, and a first run |
 | `AGENTS.md`, `CLAUDE.md` | instructions for coding agents working in this repo |
+| `docs/book/src/task-managers.md` | one-shot GitHub Issues mappings, identity, conflict and credential contract |
 | `docs/book/` | this book; every page is listed in the sidebar |
 | `shapes/seeds.shapes.ttl` | the SHACL shapes every write is validated against ([The storage model](storage.md)) |
 | `clippy.toml` | the rule that keeps the core wasm-clean ([WebAssembly](wasm.md)) |
 | `docs/book/src/push-reads.md` | operator-pinned push consumer and private local reads |
 | Release comparison adapter and API controls | [Reproducible release API comparison](semver-baseline.md) |
+| `docs/demos/task-transfer/` | loopback GitHub transfer recording, before transcript and replay caption |
 | `docs/demos/push-read/` | isolated push/IPC CLI replay and caption |
 | `docs/demos/locked-semver/` | recorded source-fixture API comparisons and replay caption |
 

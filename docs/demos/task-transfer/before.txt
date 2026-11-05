@@ -1,0 +1,10 @@
+$ sd --version
+sd 0.11.1 (seeds)
+$ sd export --to github --ids fixture --dry-run
+error: unexpected argument '--ids' found
+
+Usage: sd export --to <DIR>
+
+For more information, try '--help'.
+
+exit: 2

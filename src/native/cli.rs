@@ -172,7 +172,7 @@ pub enum Command {
     Q(QArgs),
     /// Saved queries live in quipu (stored queries), not in sd
     Query(MappedArgs),
-    /// sd is installed and upgraded by caboodle
+    /// sd is installed and upgraded by tambo
     Upgrade(MappedArgs),
     /// Workflow gates live in shuttle
     Gate(MappedArgs),
@@ -621,6 +621,15 @@ pub struct ShowArgs {
     /// Seed id(s)
     #[arg(required = true)]
     pub ids: Vec<String>,
+    /// Recent comments to display (text defaults to 5; JSON defaults to all).
+    /// An explicit zero hides all comments, including in JSON.
+    #[arg(long, conflicts_with = "all_comments")]
+    #[serde(default)]
+    pub comments_limit: Option<usize>,
+    /// Display the complete comment history instead of folding older entries.
+    #[arg(long)]
+    #[serde(default)]
+    pub all_comments: bool,
 }
 
 /// `sd list`.

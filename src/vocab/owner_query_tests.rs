@@ -123,4 +123,21 @@ fn indexed_owner_discovery_keeps_board_ids_and_default_open_semantics() {
             .unwrap();
     }
     assert_eq!(ids(&store, true).len(), 53);
+    // An indexed owner/status match is not enough: membership still requires
+    // the Action class, including the missing-status/default-open branch.
+    for (name, value) in [
+        ("plain-non-action", Some(Value::Str("open".into()))),
+        ("default-non-action", None),
+    ] {
+        let entity = store.intern(&format!("urn:{name}")).unwrap();
+        let mut facts = vec![datum(entity, owner, Value::Str("reader".into()))];
+        if let Some(value) = value {
+            facts.push(datum(entity, status, value));
+        }
+        store
+            .transact_to_graph(&facts, "2026-01-01T00:00:02Z", None, None, graph)
+            .unwrap();
+    }
+    assert_eq!(ids(&store, false).len(), 50);
+    assert_eq!(ids(&store, true).len(), 53);
 }

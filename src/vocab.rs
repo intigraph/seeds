@@ -356,7 +356,7 @@ pub(crate) fn seed_query_pattern_var_with_status_defaults(
             // Duplicating it in two UNION arms repeats the type/status join.
             let owner_var = format!("{subject}_owner");
             let scope = format!(
-                "{subject} <{}> {owner_var} ; a <{}> . FILTER(sameTerm({owner_var}, <{}>) || sameTerm({owner_var}, \"{}\")) ",
+                "{subject} <{}> {owner_var} . FILTER EXISTS {{ {subject} a <{}> }} FILTER(sameTerm({owner_var}, <{}>) || sameTerm({owner_var}, \"{}\")) ",
                 term::assigned_to(), term::work_item(), principal_iri(owner), escape_literal(owner),
             );
             return seed_query_pattern_scoped(&rest, &scope, subject, false);
@@ -369,7 +369,7 @@ pub(crate) fn seed_query_pattern_var_with_status_defaults(
             .into_iter()
             .map(|value| {
                 let scope = format!(
-                    "{subject} <{}> {value} ; a <{}> . ",
+                    "{subject} <{}> {value} . FILTER EXISTS {{ {subject} a <{}> }} ",
                     term::assigned_to(),
                     term::work_item()
                 );
@@ -413,7 +413,11 @@ fn seed_query_pattern_scoped(
     // independently, still scanning other owners' statuses. Build variables
     // and literals separately so labels such as "{ ?s" are never rewritten.
     let missing = |p: &str, v: String, regular: String| {
-        format!("{{ {scope}{subject} a <{}> FILTER NOT EXISTS {{ {subject} <{p}> {v} FILTER({regular}) }} }}",term::work_item())
+        if scope.is_empty() {
+            format!("{{ {subject} a <{}> FILTER NOT EXISTS {{ {subject} <{p}> {v} FILTER({regular}) }} }}", term::work_item())
+        } else {
+            format!("{{ {scope}FILTER NOT EXISTS {{ {subject} <{p}> {v} FILTER({regular}) }} }}")
+        }
     };
     let plain = |v: &str| format!("isLiteral({v}) && sameTerm({v}, STR({v}))");
     let mut groups: Vec<String> = Vec::new();

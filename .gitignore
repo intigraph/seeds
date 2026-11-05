@@ -8,6 +8,11 @@ __pycache__/
 # Deliberate, checked-in acquisition API demo recordings.
 !/docs/demos/acquisition-api/output.log
 !/docs/demos/acquisition-api/timing.log
+!/docs/demos/comment-fold/output.log
+!/docs/demos/comment-fold/timing.log
+
+# Legacy local tracker state is never published.
+.beads/
 
 # Deliberate, checked-in GitHub transfer demo recordings.
 !/docs/demos/task-transfer/output.log

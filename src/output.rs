@@ -39,6 +39,8 @@ fn view_json(v: &SeedView) -> Json {
         .map(|(id, ty, s)| edge(id, ty, s))
         .collect();
     o["comments"] = v.comments.iter().map(Comment::to_json).collect();
+    o["comments_total"] = json!(v.comments.len());
+    o["comments_folded"] = json!(0);
     // The native adapter replaces this with a live observation.
     o["external_blockers"] = json!({"status":"not_observed","blockers":[]});
     o
@@ -515,6 +517,7 @@ pub fn view_text(v: &SeedView) -> String {
     }
     if let Some(d) = &s.description {
         out.push(String::new());
+        out.push("  CURRENT STATE:".into());
         out.extend(d.lines().map(|l| format!("  {l}")));
     }
     for (label, text) in [

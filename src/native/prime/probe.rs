@@ -67,12 +67,14 @@ fn read(cli: &Cli, scope: &mut Value) -> Result<()> {
     };
     match &cfg.location {
         config::Location::Url(url) => {
-            let remote = super::super::remote::RemoteBackend::connect(
+            let remote = super::super::remote::RemoteBackend::connect_with_ca(
                 url,
                 &graph,
                 super::super::token(&cfg, url, cfg.location_from_project)?,
                 super::super::signer(&cfg, url, cfg.location_from_project)?,
                 &cfg.allow_plain_http_hosts,
+                cfg.ca_file.as_deref(),
+                cfg.ca_sha256.as_deref(),
             )?;
             scope["reachable"] = json!(true);
             scope["replica"] = remote.replica().map_or(Value::Null, |r| r.to_json());

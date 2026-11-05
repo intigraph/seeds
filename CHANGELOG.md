@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-11-05
+
+### Fixed
+
+- Require pinned embedding providers in repository shares (#235) ([33b6eca](https://github.com/scbrown/seeds/commit/33b6eca8755ccb3a63edaa72cc9793534a6c77f7))
+- *(show)* Bound human comment display while preserving complete default JSON (#229) ([71300ad](https://github.com/scbrown/seeds/commit/71300ad4b44343ddc179f31eb11e958a647f979c))
+- *(demos)* Track the comment-fold demo recordings (#236) ([ca1735f](https://github.com/scbrown/seeds/commit/ca1735f022a5dae66eaac6bcaeb1c8f8442d5d66))
+
+### Perf
+
+- *(list)* Correlate owner type checks after indexed selection (#232) ([9c43c74](https://github.com/scbrown/seeds/commit/9c43c748c04f415c53b0688b279b4f9d5514ff66))
+
 ## [0.12.0] - 2026-11-04
 
 ### Added

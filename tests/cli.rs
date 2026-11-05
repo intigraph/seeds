@@ -1014,7 +1014,7 @@ fn q_captures_status_aliases_stats_and_mapped_verbs_point_elsewhere() {
     // and touches nothing.
     for (verb, needle) in [
         ("query", "quipu"),
-        ("upgrade", "caboodle"),
+        ("upgrade", "tambo"),
         ("gate", "shuttle"),
     ] {
         let o = sb.run(&[verb, "anything", "--flag"]);
@@ -3415,4 +3415,58 @@ fn concurrent_keyed_message_sends_have_one_original_receipt() {
             .len(),
         1
     );
+}
+
+#[test]
+fn show_folds_old_comments_but_explicit_history_and_snapshot_remain_complete() {
+    let s = Sandbox::new("comment-fold");
+    s.ok(&["init"]);
+    let created = s.json(&["create", "Current task", "--description", "Current scope"]);
+    let id = created["id"].as_str().unwrap();
+    let mut fifth_tx = 0;
+    for n in 1..=7 {
+        let written = s.json(&["comments", "add", id, &format!("evidence-{n}")]);
+        if n == 5 {
+            fifth_tx = written["tx"].as_u64().unwrap();
+        }
+    }
+    let recent = s.json(&["show", id]);
+    assert_eq!(recent[0]["comments_total"], 7);
+    assert_eq!(recent[0]["comments_folded"], 0);
+    assert_eq!(recent[0]["comments"].as_array().unwrap().len(), 7);
+    assert_eq!(recent[0]["comments"][0]["id"], 1);
+    assert_eq!(recent[0]["comments"][6]["text"], "evidence-7");
+    // Existing dedup/disposition readers must still see the oldest evidence.
+    assert_eq!(recent[0]["comments"], s.json(&["comments", "list", id]));
+    let text = s.ok(&["show", id]);
+    assert!(text.contains("CURRENT STATE:"));
+    assert!(!text.contains("evidence-1"));
+    assert!(text.contains("2 older comments folded"));
+    let all = s.json(&["show", id, "--all-comments"]);
+    assert_eq!(all[0]["comments_folded"], 0);
+    assert_eq!(all[0]["comments"].as_array().unwrap().len(), 7);
+    assert_eq!(s.json(&["comments", "list", id]), all[0]["comments"]);
+    let two = s.json(&["show", id, "--comments-limit", "2"]);
+    assert_eq!(two[0]["comments_folded"], 5);
+    assert_eq!(two[0]["comments"][0]["id"], 6);
+    let none = s.json(&["show", id, "--comments-limit", "0"]);
+    assert_eq!(none[0]["comments_folded"], 7);
+    assert!(none[0]["comments"].as_array().unwrap().is_empty());
+    let pinned = s.json(&["show", id, "--at", &fifth_tx.to_string()]);
+    assert_eq!(pinned[0]["comments_total"], 5);
+    assert_eq!(pinned[0]["comments"][4]["text"], "evidence-5");
+    assert_eq!(
+        s.run(&["show", id, "--all-comments", "--comments-limit", "2"])
+            .status
+            .code(),
+        Some(2)
+    );
+    let empty_id = s.json(&["create", "Empty"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let both = s.json(&["show", id, &empty_id]);
+    assert_eq!(both[1]["comments_total"], 0);
+    assert_eq!(both[1]["comments_folded"], 0);
+    assert!(both[1]["comments"].as_array().unwrap().is_empty());
 }

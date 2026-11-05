@@ -48,6 +48,7 @@ pub mod acquisition;
 mod comment_tests;
 #[cfg(test)]
 mod gateway_tests;
+pub mod history;
 #[cfg(test)]
 mod message_tests;
 mod owner_query;

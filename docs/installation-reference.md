@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/scbrown/seeds/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"/></a>
   <a href="https://github.com/scbrown/seeds/actions/workflows/ci.yml"><img src="https://github.com/scbrown/seeds/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="https://github.com/scbrown/caboodle"><img src="https://img.shields.io/badge/stack-quipu-8B5E3C.svg" alt="Part of the caboodle stack"/></a>
+  <a href="https://github.com/intigraph/tambo"><img src="https://img.shields.io/badge/stack-quipu-8B5E3C.svg" alt="Part of the tambo stack"/></a>
 </p>
 
 **seeds is an issue tracker for AI coding agents that stores each work item as
@@ -171,11 +171,11 @@ rewrites that to seeds before the tool call runs:
 dp alias --cmd bd --replace sd
 ```
 
-[caboodle](https://github.com/scbrown/caboodle) sets this alias for you when a
+[tambo](https://github.com/intigraph/tambo) sets this alias for you when a
 plan installs both seeds and desire-path. If the host already has a `bd` alias
-that points somewhere else, caboodle leaves it alone and reports it, because
+that points somewhere else, tambo leaves it alone and reports it, because
 `dp alias` would otherwise replace it silently. Run the command above by hand
-only if you install seeds without caboodle.
+only if you install seeds without tambo.
 
 A `bd` verb seeds rejects is recorded, so `dp paths` becomes the seeds backlog.
 seeds embeds
@@ -206,10 +206,10 @@ local file by default. A shared quipu server over HTTP is also supported
 
 ## 🧺 The stack
 
-Caboodle installs these together and proves each one works; every tool also stands alone.
+Tambo installs these together and proves each one works; every tool also stands alone.
 
 seeds is the stack's work tracker, built on the others: quipu stores it,
-camayoc supplies its governance terms and constraints, caboodle installs and
+camayoc supplies its governance terms and constraints, tambo installs and
 verifies it, and desire-path redirects `bd` to it.
 [How seeds fits the stack](https://github.com/scbrown/seeds/blob/main/docs/book/src/stack.md).
 

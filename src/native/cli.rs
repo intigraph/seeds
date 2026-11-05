@@ -172,7 +172,7 @@ pub enum Command {
     Q(QArgs),
     /// Saved queries live in quipu (stored queries), not in sd
     Query(MappedArgs),
-    /// sd is installed and upgraded by caboodle
+    /// sd is installed and upgraded by tambo
     Upgrade(MappedArgs),
     /// Workflow gates live in shuttle
     Gate(MappedArgs),

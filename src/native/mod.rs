@@ -1032,7 +1032,7 @@ fn mapped_pointer(c: &Command) -> Option<String> {
         ),
         Command::Upgrade(_) => (
             "upgrade",
-            "sd is installed and upgraded by caboodle: caboodle update-release --tool seeds",
+            "sd is installed and upgraded by tambo: tambo update-release --tool seeds",
         ),
         Command::Gate(_) => ("gate", "workflow gates are shuttle's"),
         Command::Scheduler(_) => ("scheduler", "ranking ready work for a swarm is shuttle's"),

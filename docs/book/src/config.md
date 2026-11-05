@@ -166,8 +166,8 @@ signing_introducer = "<lead>"
   without write), `revoked`/`expired`, `replay`, `badsig`.
 
 See [sd key](verbs/key.md). To set up an agent end to end (its own user, its key,
-enrollment on the Quipu host, verification and revocation), follow CABOODLE's
-[agent identity and write access](https://scbrown.github.io/caboodle/agents.html#agent-identity-and-write-access)
+enrollment on the Quipu host, verification and revocation), follow TAMBO's
+[agent identity and write access](https://intigraph.github.io/tambo/agents.html#agent-identity-and-write-access)
 guide.
 
 ## The project id

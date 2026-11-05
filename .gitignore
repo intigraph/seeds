@@ -17,3 +17,5 @@ __pycache__/
 # Deliberate, checked-in GitHub transfer demo recordings.
 !/docs/demos/task-transfer/output.log
 !/docs/demos/task-transfer/timing.log
+!/docs/design/assets/targeted-unlock/output.log
+!/docs/design/assets/targeted-unlock/timing.log

@@ -1547,12 +1547,14 @@ fn identity_outcome(json: bool, cfg: &Resolved) -> Result<Outcome> {
             "authenticated identity requires a configured Quipu server",
         ));
     };
-    let remote = remote::RemoteBackend::connect(
+    let remote = remote::RemoteBackend::connect_with_ca(
         url,
         cfg.graph(),
         None,
         signer(cfg, url, cfg.location_from_project)?,
         &cfg.allow_plain_http_hosts,
+        cfg.ca_file.as_deref(),
+        cfg.ca_sha256.as_deref(),
     )?;
     let result = remote.authenticated_identity().map(|value| {
         let text = value["principal"].as_str().unwrap_or_default().to_owned();
@@ -1600,12 +1602,14 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
             "identity-required writes need an enrolled remote session key",
         ));
     }
-    let mut remote = remote::RemoteBackend::connect(
+    let mut remote = remote::RemoteBackend::connect_with_ca(
         url,
         cfg.graph(),
         token(cfg, url, cfg.location_from_project)?,
         effective_signer,
         &cfg.allow_plain_http_hosts,
+        cfg.ca_file.as_deref(),
+        cfg.ca_sha256.as_deref(),
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
@@ -1948,12 +1952,14 @@ fn run_sync(
             )
         })?;
     let from_project = a.remote.is_none() && cfg.sync_remote_from_project;
-    let mut remote = remote::RemoteBackend::connect(
+    let mut remote = remote::RemoteBackend::connect_with_ca(
         &url,
         cfg.graph(),
         token(cfg, &url, from_project)?,
         signer(cfg, &url, from_project)?,
         &cfg.allow_plain_http_hosts,
+        cfg.ca_file.as_deref(),
+        cfg.ca_sha256.as_deref(),
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);

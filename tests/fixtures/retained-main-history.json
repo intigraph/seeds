@@ -1,0 +1,76 @@
+{
+  "count": 2,
+  "graph": "https://example.org/project/board",
+  "history": [
+    {
+      "authenticated": null,
+      "declared": {
+        "agent": "declared-actor",
+        "harness": "service",
+        "host": "unit-host"
+      },
+      "op": "assert",
+      "predicate": "https://example.org/value",
+      "qualified_tx": {
+        "generation": "sha256:d81d348e221de20fbd3a65b5151bd4f123478449b814f8deadf9c9bd4264e189",
+        "local_tx": 1,
+        "provider": "main",
+        "source_store_id": "urn:uuid:e13a398a-54d1-454d-82ec-a7fa7cb14ef8"
+      },
+      "transaction": {
+        "actor": "actor",
+        "source": "fixture",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "valid_from": "2026-01-01T00:00:00Z",
+      "valid_to": "2026-01-01T00:00:00Z",
+      "value": {
+        "type": "string",
+        "value": "retained"
+      }
+    },
+    {
+      "authenticated": null,
+      "declared": null,
+      "op": "retract",
+      "predicate": "https://example.org/value",
+      "qualified_tx": {
+        "generation": "sha256:d81d348e221de20fbd3a65b5151bd4f123478449b814f8deadf9c9bd4264e189",
+        "local_tx": 2,
+        "provider": "main",
+        "source_store_id": "urn:uuid:e13a398a-54d1-454d-82ec-a7fa7cb14ef8"
+      },
+      "transaction": {
+        "actor": "actor",
+        "source": "fixture",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "valid_from": "2026-01-01T00:00:00Z",
+      "valid_to": null,
+      "value": {
+        "type": "string",
+        "value": "retained"
+      }
+    }
+  ],
+  "iri": "https://example.org/item/one",
+  "schema": "quipu-entity-history/main-v1",
+  "source_receipt": {
+    "complete": true,
+    "continuous_history": false,
+    "coverage": "retained-main-physical-facts",
+    "excluded_attachment_aliases": [],
+    "generation": "sha256:d81d348e221de20fbd3a65b5151bd4f123478449b814f8deadf9c9bd4264e189",
+    "historical_policy_proof": false,
+    "incarnation": "sha256:b5463bc568b2f4a6b3b1178e8aaddd199e3a5b28c81f6fecdb8f49ae43782bbc",
+    "observed_head_tx": 2,
+    "producer_git_dirty": true,
+    "producer_git_sha": "aa3fcea404ef1b9cf614394e2657d19fa75a9e86",
+    "producer_version": "0.16.6",
+    "provider": "main",
+    "retained_log_min_tx": 1,
+    "since_tx_exclusive": 0,
+    "source_store_id": "urn:uuid:e13a398a-54d1-454d-82ec-a7fa7cb14ef8",
+    "until_tx_inclusive": 2
+  }
+}

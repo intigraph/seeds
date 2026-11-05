@@ -44,6 +44,7 @@ use crate::validate::{self, escape_literal};
 use crate::vocab::{self, term};
 
 pub mod acquisition;
+pub mod history;
 #[cfg(test)]
 mod comment_tests;
 #[cfg(test)]

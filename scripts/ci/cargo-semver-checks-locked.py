@@ -18,6 +18,7 @@ import tomllib
 
 FLAGS = "-Z unstable-options --document-private-items --document-hidden-items --output-format=json --cap-lints=allow"
 FEATURES = {"default", "native", "shacl"}
+PROJECTION_CONTRACT_FEATURE = "projection-contract-tests"
 
 
 def manifest(path):
@@ -29,8 +30,16 @@ def checked_source(path):
     data = tomllib.loads(path.read_text())
     if data["package"]["name"] != "seeds-ai":
         raise ValueError("expected seeds-ai")
-    if set(data.get("features", {})) != FEATURES:
+    features = data.get("features", {})
+    if set(features) not in (FEATURES, FEATURES | {PROJECTION_CONTRACT_FEATURE}):
         raise ValueError("feature set changed: explicitly review rustdoc feature coverage")
+    # This reviewed feature adds only cfg(test) projection-contract controls.
+    # Its sole dependency is native, already covered by --all-features rustdoc
+    # on both the released baseline and current source. Do not admit arbitrary
+    # feature additions or silently accept a changed coverage mapping.
+    if (PROJECTION_CONTRACT_FEATURE in features
+            and features[PROJECTION_CONTRACT_FEATURE] != ["native"]):
+        raise ValueError("projection contract feature changed: review rustdoc coverage")
     if not path.with_name("Cargo.lock").is_file():
         raise ValueError("source has no release lockfile")
     return data

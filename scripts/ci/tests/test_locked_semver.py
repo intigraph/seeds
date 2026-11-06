@@ -69,6 +69,26 @@ class BaselineIdentity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "feature set"):
             self.verify()
 
+    def test_projection_contract_feature_has_native_rustdoc_coverage(self):
+        p = self.repo / "Cargo.toml"
+        p.write_text(p.read_text() + 'projection-contract-tests=["native"]\n')
+        ADAPTER.checked_source(p)
+
+    def test_projection_contract_feature_cannot_change_coverage(self):
+        p = self.repo / "Cargo.toml"
+        for edges in ('[]', '["shacl"]', '["native", "shacl"]'):
+            with self.subTest(edges=edges):
+                original = self.git("show", "HEAD:Cargo.toml").decode()
+                p.write_text(original + f'projection-contract-tests={edges}\n')
+                with self.assertRaisesRegex(ValueError, "projection contract"):
+                    ADAPTER.checked_source(p)
+
+    def test_reviewed_feature_does_not_allow_an_unknown_feature(self):
+        p = self.repo / "Cargo.toml"
+        p.write_text(p.read_text() + 'projection-contract-tests=["native"]\nnew_feature=[]\n')
+        with self.assertRaisesRegex(ValueError, "feature set"):
+            ADAPTER.checked_source(p)
+
     def test_missing_lock_refused(self):
         (self.repo / "Cargo.lock").unlink()
         with self.assertRaisesRegex(ValueError, "lockfile"):

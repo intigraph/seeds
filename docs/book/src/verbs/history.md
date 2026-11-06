@@ -45,3 +45,28 @@ caller declarations. Its completeness covers only retained physical MAIN facts
 in that subject/graph/range. It does not prove continuous seed versions, include
 comment children automatically, authenticate a physical host, or make a local
 transaction ID a cross-store pin. This API does not change the CLI behavior above.
+
+
+## Explicit retained-facts CLI mode
+
+For a qualified retained-fact receipt rather than a version list:
+
+```bash
+sd history sd-a3f --retained-facts --source-store-id <trusted-store-id> --json
+sd history sd-a3f --retained-facts --source-store-id <trusted-store-id> --comment 1 --json
+```
+
+Obtain the source ID from trusted operator configuration. This mode never enrolls
+an ID from the response or an unpinned connection audience. It requires a remote
+backend, an explicitly configured named graph and JSON output, refuses `--at`, and caps the SDK acquisition at 10,000
+facts, 4 MiB and 30 seconds after connection setup. An unsupported source contract
+or failed receipt refuses with no alternate history path. An empty exact-subject
+receipt also refuses: it does not establish that the item exists or has a readable history.
+
+The output names `mode: retained-main-facts`, includes the validated
+`source_response`, and preserves its exact UTF-8 bytes in `source_response_utf8`.
+Keep the source's `continuous_history` and `historical_policy_proof` values:
+a complete retained range does not establish every seed version. `--comment N`
+selects one known comment subject; it does not discover all children or prove
+historical comment-family closure. Authenticated identity and caller declarations
+remain separate source fields; neither is relabelled as authenticated physical host.

@@ -3533,3 +3533,221 @@ fn show_folds_old_comments_but_explicit_history_and_snapshot_remain_complete() {
     assert_eq!(both[1]["comments_folded"], 0);
     assert!(both[1]["comments"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn retained_history_invalid_selection_refuses_before_http_or_store_creation() {
+    let s = Sandbox::new("retained-history-refusal");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    for extra in [
+        vec!["history", "one", "--retained-facts", "--json"],
+        vec![
+            "history",
+            "one",
+            "--retained-facts",
+            "--source-store-id",
+            "trusted",
+        ],
+        vec![
+            "--at",
+            "1",
+            "history",
+            "one",
+            "--retained-facts",
+            "--source-store-id",
+            "trusted",
+            "--json",
+        ],
+        vec!["history", "one", "--comment", "1", "--json"],
+        vec![
+            "history",
+            "one",
+            "--retained-facts",
+            "--comment",
+            "0",
+            "--source-store-id",
+            "trusted",
+            "--json",
+        ],
+    ] {
+        let mut args = vec![
+            "--quipu",
+            &url,
+            "--graph",
+            "https://example.org/project/board",
+        ];
+        args.extend(extra);
+        assert!(
+            !s.run(&args).status.success(),
+            "invalid selection accepted: {args:?}"
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+    assert!(!s
+        .run(&[
+            "history",
+            "one",
+            "--retained-facts",
+            "--source-store-id",
+            "trusted",
+            "--json"
+        ])
+        .status
+        .success());
+    for graph in [None, Some("urn:quipu:graph:root")] {
+        let mut args = vec![
+            "--quipu",
+            &url,
+            "history",
+            "one",
+            "--retained-facts",
+            "--source-store-id",
+            "trusted",
+            "--json",
+        ];
+        if let Some(graph) = graph {
+            args.extend(["--graph", graph]);
+        }
+        assert!(!s.run(&args).status.success());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+    assert!(!s.work().join(".seeds").exists());
+}
+
+#[test]
+fn retained_history_cli_preserves_wire_and_known_comment_selection() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::time::{Duration, Instant};
+    for (comment, empty) in [(false, false), (true, false), (false, true)] {
+        let s = Sandbox::new(if comment {
+            "retained-comment"
+        } else {
+            "retained-parent"
+        });
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let subject = if comment {
+            "https://seeds.local/item/one/comment/1"
+        } else {
+            "https://seeds.local/item/one"
+        };
+        let mut fixture: Value =
+            serde_json::from_str(include_str!("fixtures/retained-main-history.json")).unwrap();
+        fixture["iri"] = subject.into();
+        if empty {
+            fixture["count"] = 0.into();
+            fixture["history"] = serde_json::json!([]);
+        }
+        let wire = serde_json::to_string_pretty(&fixture).unwrap();
+        let expected_wire = wire.clone();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut paths = Vec::new();
+            while paths.len() < 3 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(value) => value,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing CLI request");
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("listener: {e}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let path = line.split_whitespace().nth(1).unwrap().to_owned();
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        if key.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let reply = match path.as_str() {
+                    "/health" => r#"{"status":"ok"}"#.to_owned(),
+                    "/version" => {
+                        r#"{"read_contracts":["quipu-entity-history/main-v1"]}"#.to_owned()
+                    }
+                    "/entity_history" => {
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(request["iri"], subject);
+                        assert_eq!(request["graph"], "https://example.org/project/board");
+                        assert_eq!(
+                            request["source_store_id"],
+                            "urn:uuid:e13a398a-54d1-454d-82ec-a7fa7cb14ef8"
+                        );
+                        assert_eq!(request["max_entries"], 10_000);
+                        wire.clone()
+                    }
+                    _ => panic!("unexpected endpoint or fallback: {path}"),
+                };
+                paths.push(path);
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.len(), reply).unwrap();
+            }
+            paths
+        });
+        let mut args = vec![
+            "--quipu",
+            &url,
+            "--graph",
+            "https://example.org/project/board",
+            "history",
+            "one",
+            "--retained-facts",
+            "--source-store-id",
+            "urn:uuid:e13a398a-54d1-454d-82ec-a7fa7cb14ef8",
+            "--json",
+        ];
+        if comment {
+            args.extend(["--comment", "1"]);
+        }
+        let output = s.run(&args);
+        if empty {
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("no retained facts"));
+            assert_eq!(
+                server.join().unwrap(),
+                ["/health", "/version", "/entity_history"]
+            );
+            continue;
+        }
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["mode"], "retained-main-facts");
+        assert_eq!(value["source_response_utf8"], expected_wire);
+        assert_eq!(
+            value["source_response"]["source_receipt"]["continuous_history"],
+            false
+        );
+        assert!(value.get("versions").is_none());
+        assert_eq!(
+            server.join().unwrap(),
+            ["/health", "/version", "/entity_history"]
+        );
+        assert!(!s.work().join(".seeds").exists());
+    }
+}

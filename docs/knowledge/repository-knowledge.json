@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "3b1b384ba36881c4b5fbe863bfd9347ff139d71ca585463c6b2fa6647df35f89",
+      "source_sha256": "508b37e00ab7b7da2df60516195f0e7ed0af84965385f79fab76d6516d05b535",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -71,7 +71,7 @@
       "source": "docs/book/src/storage.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage.md",
       "summary": "One project is one named graph. A work item is a schema.org Action; public vocabulary and Quechua governance terms are preferred over tracker-specific terms.",
-      "source_sha256": "fc071688e924eeeadcf80801b1753752384e6f4f9307620229233ec6c66dad1e",
+      "source_sha256": "1aca11dbb9ea21294b4b7377d51ea0371a1c0d6adc423acfb043d6f95096665e",
       "type": "DecisionRecord",
       "properties": {
         "status": "active",
@@ -101,7 +101,7 @@
       "source": "docs/book/src/reference.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Freference.md",
       "summary": "Read the sd global options, verbs, JSON and exit-code contracts before changing a caller-facing behavior.",
-      "source_sha256": "cb04e51af583595f1f592ec3661a5df5edcce4dc4e98c2d98a1bd66cd333619e",
+      "source_sha256": "3eef279b3907d8873706f4d9ccd9ba04d365743b391387d9f3be718d3b77d7cb",
       "properties": {
         "startHereOrder": 2
       }

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] - 2026-11-06
+
+### Fixed
+
+- *(update)* Expose revision conflicts and verify uncertain operation identity (#230) ([2b9a2ef](https://github.com/scbrown/seeds/commit/2b9a2ef2a6c14430c65d2322a86510f10c9ecb77))
+
+## [0.16.0] - 2026-11-05
+
+### Added
+
+- *(blockers)* Target reconciliation and pending events to one seed (#231) ([90ebfa1](https://github.com/scbrown/seeds/commit/90ebfa122684504642fbe6c22755692d65392f30))
+- *(sdk)* Consume qualified retained MAIN fact history (#244) ([5225e10](https://github.com/scbrown/seeds/commit/5225e108bd6d30132d0f2367b1bd2647eda099f4))
+
+### Fixed
+
+- *(release)* Keep targeted-unlock demo logs tracked past .gitignore (#242) ([7f98be4](https://github.com/scbrown/seeds/commit/7f98be434ba383ba67cc35b0c8f131934e1f22cd))
+
 ## [0.15.0] - 2026-11-05
 
 ### Added

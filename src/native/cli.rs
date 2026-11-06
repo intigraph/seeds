@@ -189,6 +189,15 @@ pub enum Command {
     History {
         /// The seed
         id: String,
+        /// Read bounded retained MAIN facts, not a continuous version-history proof
+        #[arg(long)]
+        retained_facts: bool,
+        /// Operator-supplied trusted source lineage; never learned from this response
+        #[arg(long, requires = "retained_facts")]
+        source_store_id: Option<String>,
+        /// Select one known comment subject; does not prove comment-family closure
+        #[arg(long, requires = "retained_facts", value_parser = clap::value_parser!(u64).range(1..))]
+        comment: Option<u64>,
     },
     /// Closed seeds since a date, tag or commit, grouped by type
     Changelog(ChangelogArgs),
@@ -1310,9 +1319,15 @@ pub enum BlockersCommand {
         execute: bool,
     },
     /// Observe conditions once; unchanged observations make no write
-    Reconcile {},
+    Reconcile {
+        /// Reconcile only this seed (for a targeted reaction); omit for all seeds
+        issue: Option<String>,
+    },
     /// Persistent pending events for the shared notifier
-    Events {},
+    Events {
+        /// Read only this seed's pending events; omit for all seeds
+        issue: Option<String>,
+    },
     /// Acknowledge an event using its retained delivery receipt
     Ack {
         /// Seed owning the event

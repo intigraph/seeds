@@ -13,6 +13,7 @@ sd update sd-a3f --defer 2026-10-15      # hide from ready until then
 | flag | meaning |
 |---|---|
 | `--title`, `-d, --description`, `--notes`, `--design`, `--acceptance-criteria` (alias `--acceptance`) | set the text (see below for replacing existing text) |
+| `--if-revision N` | require this exact item revision (one target); exit 4 with bounded conflict diagnostics on mismatch, even for independent fields; see [caller revision guards](../storage.md#caller-revision-guards) |
 | `--force` | allow replacing a non-empty description, notes, design, acceptance criteria or agent context with different content |
 | `-s, --status` | `open`, `in_progress`, `blocked`, `deferred`, `closed` |
 | `-p, --priority` | `0`-`4` or `P0`-`P4` |

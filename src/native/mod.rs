@@ -20,6 +20,7 @@ pub mod provenance;
 pub mod read_stream;
 pub mod remote;
 mod replica;
+mod retained_history_cli;
 mod show;
 pub mod store;
 pub mod stream_projection;
@@ -1130,7 +1131,13 @@ fn error_outcome(json: bool, e: &SdError, warnings: Vec<String>) -> Outcome {
     Outcome {
         code: e.exit_code(),
         stdout: if json {
-            output::error_json(e.kind.name(), &e.message).to_string()
+            {
+                let mut value = output::error_json(e.kind.name(), &e.message);
+                if let Some(details) = &e.details {
+                    value["error"]["details"] = details.clone();
+                }
+                value.to_string()
+            }
         } else {
             String::new()
         },
@@ -1197,6 +1204,7 @@ fn actor(cli: &Cli) -> String {
 ///   that `sd sync` merges with a remote.
 pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
     transfer::validate_selection(&cli.command)?;
+    retained_history_cli::validate(cli, cfg)?;
     // Admit before opening the backend: even connection/provenance reads
     // must stay behind the host budget. Keep the guard through the command.
     let _search_admission = match &cli.command {
@@ -1634,6 +1642,9 @@ fn run_connected(
     ctx: &Ctx,
     remote: &mut remote::RemoteBackend,
 ) -> Result<Outcome> {
+    if retained_history_cli::selected(cli) {
+        return retained_history_cli::run(cli, cfg, remote);
+    }
     let authenticated_ctx;
     let ctx = if cfg.signing.is_some()
         && cli.command.writes()
@@ -2962,7 +2973,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             }
             Ok(ok(json, value, lines.join("\n").trim_end().to_string(), vec![]))
         }
-        Command::History { id } => {
+        Command::History { id, .. } => {
             if at.is_some() {
                 return Err(SdError::usage("history lists every version; it takes no --at"));
             }
@@ -3496,17 +3507,20 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let value = match command {
                 BlockersCommand::Receipt { issue, event_id } => json!({"event":crate::blockers::engine::receipt(b, issue, event_id)?}),
                 BlockersCommand::Migrate { execute, .. } => crate::blockers::migration::migrate(b, ctx, *execute)?,
-                BlockersCommand::Events {} => {
-                    let events = crate::blockers::engine::events(b)?;
+                BlockersCommand::Events { issue } => {
+                    let events = crate::blockers::engine::events_for(b, issue.as_deref())?;
                     json!({"events": events})
                 }
                 BlockersCommand::Ack { issue, event_id, receipt } => {
                     json!({"tx": crate::blockers::engine::ack(b, ctx, issue, event_id, receipt)?})
                 }
-                BlockersCommand::Reconcile {} => {
-                    let snap = b.blocker_snapshot(None)?;
+                BlockersCommand::Reconcile { issue } => {
                     let mut changed = Vec::new();
-                    for id in snap.seeds.keys() {
+                    let ids = match issue {
+                        Some(id) => vec![id.clone()],
+                        None => b.blocker_snapshot(None)?.seeds.into_keys().collect(),
+                    };
+                    for id in &ids {
                         if let Some(tx) = crate::blockers::engine::reconcile(b, ctx, id)? {
                             changed.push(json!({"issue_id": id, "tx": tx}));
                         }

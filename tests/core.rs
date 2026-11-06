@@ -5482,3 +5482,140 @@ fn default_search_covers_description_but_not_comments_or_notes() {
     .unwrap();
     assert_eq!(all.page.total, 1);
 }
+
+// aegis-2mqg: a large comment history is not a field-update preimage.
+struct UpdateHistoryReads {
+    inner: QuipuBackend,
+    allow_history: bool,
+    fail_seeds: bool,
+    history_reads: std::cell::Cell<usize>,
+    seed_reads: std::cell::Cell<usize>,
+}
+
+impl Backend for UpdateHistoryReads {
+    fn snapshot(&self, _at: Option<u64>) -> seeds::error::Result<seeds::model::Snapshot> {
+        Err(seeds::error::SdError::failed("whole-board read forbidden"))
+    }
+    fn snapshot_items(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.history_reads.set(self.history_reads.get() + 1);
+        if !self.allow_history {
+            return Err(seeds::error::SdError::failed("history read forbidden"));
+        }
+        self.inner.snapshot_items(ids)
+    }
+    fn snapshot_seeds(&self, ids: &[String]) -> seeds::error::Result<seeds::model::Snapshot> {
+        self.seed_reads.set(self.seed_reads.get() + 1);
+        if self.fail_seeds {
+            return Err(seeds::error::SdError::failed("seed preimage unavailable"));
+        }
+        let mut snapshot = self.inner.snapshot_items(ids)?;
+        snapshot.comments.clear();
+        Ok(snapshot)
+    }
+    fn ready_ids(&self, at: Option<u64>) -> seeds::error::Result<Vec<String>> {
+        self.inner.ready_ids(at)
+    }
+    fn claims_of(&self, id: &str) -> seeds::error::Result<Vec<(u64, seeds::backend::Claims)>> {
+        self.inner.claims_of(id)
+    }
+    fn commit(&mut self, batch: &WriteBatch, ctx: &Ctx) -> seeds::error::Result<u64> {
+        self.inner.commit(batch, ctx)
+    }
+}
+
+fn update_history_reader() -> (UpdateHistoryReads, String) {
+    let mut inner = backend();
+    let id = mk(&mut inner, "field edit with history", 1);
+    engine::comment_add(&mut inner, &ctx(2), &id, &"old history ".repeat(8192), None).unwrap();
+    engine::comment_add(&mut inner, &ctx(3), &id, "latest history", None).unwrap();
+    (
+        UpdateHistoryReads {
+            inner,
+            allow_history: false,
+            fail_seeds: false,
+            history_reads: Default::default(),
+            seed_reads: Default::default(),
+        },
+        id,
+    )
+}
+
+#[test]
+fn update_history_field_only_keeps_comments_and_revision_fence() {
+    let (mut b, id) = update_history_reader();
+    let before = b.inner.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    let expected = before.get(&id).unwrap().revision;
+    let req = UpdateReq {
+        notes: Some("new notes".into()),
+        if_revision: Some(expected),
+        transition_comment: Some("  ".into()),
+        ..Default::default()
+    };
+    engine::update(&mut b, &ctx(4), std::slice::from_ref(&id), &req).unwrap();
+    assert_eq!(b.history_reads.get(), 0);
+    assert_eq!(b.seed_reads.get(), 1);
+    let after = b.inner.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    assert_eq!(before.comments, after.comments);
+    assert_eq!(after.get(&id).unwrap().notes.as_deref(), Some("new notes"));
+    assert_eq!(after.get(&id).unwrap().revision, expected + 1);
+    let error = engine::update(
+        &mut b,
+        &ctx(5),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            notes: Some("stale notes".into()),
+            if_revision: Some(expected),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    let unchanged = b.inner.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    assert_eq!(after.seeds, unchanged.seeds);
+    assert_eq!(after.comments, unchanged.comments);
+}
+
+#[test]
+fn update_history_transition_comment_uses_existing_index() {
+    let (mut b, id) = update_history_reader();
+    b.allow_history = true;
+    engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            notes: Some("new notes".into()),
+            transition_comment: Some("atomic transition".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(b.history_reads.get(), 1);
+    assert_eq!(b.seed_reads.get(), 0);
+    let comments = engine::comment_list(&b.inner, &id, None).unwrap();
+    assert_eq!(comments.len(), 3);
+    assert_eq!(comments[2].index, 3);
+    assert_eq!(comments[2].text, "atomic transition");
+}
+
+#[test]
+fn update_history_missing_seed_preimage_refuses_without_history_fallback() {
+    let (mut b, id) = update_history_reader();
+    let before = b.inner.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    b.fail_seeds = true;
+    let error = engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&id),
+        &UpdateReq {
+            notes: Some("must not land".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(error.message.contains("seed preimage unavailable"));
+    assert_eq!(b.history_reads.get(), 0);
+    let after = b.inner.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    assert_eq!(before.seeds, after.seeds);
+    assert_eq!(before.comments, after.comments);
+}

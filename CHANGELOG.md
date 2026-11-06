@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.1] - 2026-11-06
+
+### Perf
+
+- *(update)* Avoid comment history hydration for field-only updates (#250) ([17c97a6](https://github.com/scbrown/seeds/commit/17c97a6cd90ca72fade798d447c4b04647c48652))
+
 ## [0.19.0] - 2026-11-06
 
 ### Fixed

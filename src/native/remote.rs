@@ -149,11 +149,9 @@ static FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Facts grouped by subject IRI.
 type Facts = BTreeMap<String, Vec<Fact>>;
 
-/// One combined read of some seeds and all of their comments, in the project
-/// graph and its ephemeral graph (aegis-83l). `subjects` is every subject the
-/// read found; a comment of one of `items` that it did not find does not
-/// exist, because the read selected every subject whose `comment_on` names
-/// that item.
+/// One combined seed or item-family read in the project and ephemeral graphs.
+/// `subjects` is every subject found. `items` contains only seeds whose entire
+/// comment family was selected, so only those establish comment absence.
 #[derive(Debug, Default)]
 struct ItemRead {
     items: BTreeSet<String>,
@@ -196,7 +194,7 @@ impl ItemRead {
 /// says which graph a row came from ("0" the project graph, "1" its
 /// ephemeral graph). Measured on aegis-g51c (139 subjects, 845 facts): one
 /// 0.07-0.16 s read, the same facts as the 17 reads it replaces.
-fn item_family_query(graphs: &[String; 2], items: &[&String]) -> String {
+fn item_family_query(graphs: &[String; 2], items: &[&String], comments: bool) -> String {
     let parent = term::comment_on();
     let mut branches = Vec::new();
     for (gi, g) in graphs.iter().enumerate() {
@@ -204,9 +202,11 @@ fn item_family_query(graphs: &[String; 2], items: &[&String]) -> String {
             branches.push(format!(
                 "{{ BIND(\"{gi}\" AS ?g) BIND(<{item}> AS ?s) GRAPH <{g}> {{ <{item}> ?p ?o }} }}"
             ));
-            branches.push(format!(
-                "{{ BIND(\"{gi}\" AS ?g) GRAPH <{g}> {{ ?s <{parent}> <{item}> . ?s ?p ?o }} }}"
-            ));
+            if comments {
+                branches.push(format!(
+                    "{{ BIND(\"{gi}\" AS ?g) GRAPH <{g}> {{ ?s <{parent}> <{item}> . ?s ?p ?o }} }}"
+                ));
+            }
         }
     }
     format!(
@@ -830,20 +830,35 @@ impl RemoteBackend {
     /// read holds, or an answer quipu truncated or gave up on. The caller then
     /// reads them the long way, which bounds and halves its reads.
     fn item_families(&self, items: &BTreeSet<String>) -> Result<Option<ItemRead>> {
+        self.scoped_item_read(items, true)
+    }
+
+    /// Read both graphs together, retaining the seed preimage for commit.
+    /// A seed-only read must never establish absence of unread comments.
+    fn scoped_item_read(
+        &self,
+        items: &BTreeSet<String>,
+        comments: bool,
+    ) -> Result<Option<ItemRead>> {
         if items.is_empty() || items.len() > FACT_SUBJECTS_PER_READ {
             return Ok(None);
         }
         let graphs = self.both_graphs();
         let all: Vec<&String> = items.iter().collect();
-        let (rows, truncated) = match self.select_marked(&item_family_query(&graphs, &all), None) {
-            Err(e) if is_query_timeout(&e) => return Ok(None),
-            other => other?,
-        };
+        let (rows, truncated) =
+            match self.select_marked(&item_family_query(&graphs, &all, comments), None) {
+                Err(e) if is_query_timeout(&e) => return Ok(None),
+                other => other?,
+            };
         if truncated || rows.len() >= ROW_CAP {
             return Ok(None);
         }
         let mut read = ItemRead {
-            items: items.clone(),
+            items: if comments {
+                items.clone()
+            } else {
+                BTreeSet::new()
+            },
             ..ItemRead::default()
         };
         for mut r in rows {
@@ -2205,7 +2220,14 @@ impl Backend for RemoteBackend {
     }
 
     fn snapshot_seeds(&self, ids: &[String]) -> Result<Snapshot> {
-        self.snapshot_of(&ids.iter().map(|id| vocab::item_iri(id)).collect())
+        let items: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
+        if let Some(read) = self.scoped_item_read(&items, false)? {
+            let snapshot = Snapshot::from_graphs(&read.main, &read.eph);
+            *self.last_items.borrow_mut() = Some(read);
+            return Ok(snapshot);
+        }
+        *self.last_items.borrow_mut() = None;
+        self.snapshot_of(&items)
     }
 
     /// The seeds [`vocab::seed_query_pattern`] lists, range-partitioned in each
@@ -2861,6 +2883,29 @@ mod scoped_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seed_only_preimage_does_not_claim_unread_comment_absence() {
+        let item = vocab::item_iri("seed-read-control");
+        let comment = vocab::comment_iri("seed-read-control", 13);
+        let read = ItemRead {
+            subjects: BTreeSet::from([item.clone()]),
+            ..ItemRead::default()
+        };
+        assert!(read.facts_of(&BTreeSet::from([item.clone()])).is_some());
+        assert!(read.facts_of(&BTreeSet::from([comment.clone()])).is_none());
+        let family = ItemRead {
+            items: BTreeSet::from([item.clone()]),
+            ..read
+        };
+        assert!(family.facts_of(&BTreeSet::from([comment])).is_some());
+        let graphs = ["urn:project".into(), "urn:ephemeral".into()];
+        let seeds = item_family_query(&graphs, &[&item], false);
+        let history = item_family_query(&graphs, &[&item], true);
+        assert!(!seeds.contains(term::comment_on()));
+        assert!(history.contains(term::comment_on()));
+        assert!(seeds.contains("urn:project") && seeds.contains("urn:ephemeral"));
+    }
 
     /// quipu's 401 for a refused signed write, byte-for-byte as captured from a
     /// real server on 2026-10-21 (aegis-m6o, the #687 incident).

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0] - 2026-11-06
+
+### Fixed
+
+- *(messages)* Include every live window in explicit message reads (#247) ([61424c3](https://github.com/scbrown/seeds/commit/61424c369a15a9017af7cbce5e024c3cd0e27e8e))
+
 ## [0.18.0] - 2026-11-06
 
 ### Added

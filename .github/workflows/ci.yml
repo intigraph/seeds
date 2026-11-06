@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# Stop superseded source heads; preserve every main/tag verdict.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main') }}
+
 permissions:
   contents: read
 

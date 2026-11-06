@@ -4337,8 +4337,18 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             v["written"] = serde_json::json!(written);
             Ok(ok(json, output::with_tx(v, Some(tx)), text, vec![]))
         }
-        MsgCommand::List { to, unread, weeks } => {
-            let mut ms = b.messages(&windows(*weeks)?, to.as_deref())?;
+        MsgCommand::List {
+            to,
+            unread,
+            weeks,
+            all_windows,
+        } => {
+            let selected = if *all_windows {
+                b.message_windows()?
+            } else {
+                windows(*weeks)?
+            };
+            let mut ms = b.messages(&selected, to.as_deref())?;
             if *unread {
                 ms.retain(|m| m.read_at.is_none());
             }
@@ -4366,9 +4376,19 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 vec![],
             ))
         }
-        MsgCommand::Count { to, unread, weeks } => {
+        MsgCommand::Count {
+            to,
+            unread,
+            weeks,
+            all_windows,
+        } => {
+            let selected = if *all_windows {
+                b.message_windows()?
+            } else {
+                windows(*weeks)?
+            };
             let n = b
-                .messages(&windows(*weeks)?, to.as_deref())?
+                .messages(&selected, to.as_deref())?
                 .iter()
                 .filter(|m| !*unread || m.read_at.is_none())
                 .count();
@@ -4379,10 +4399,19 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 vec![],
             ))
         }
-        MsgCommand::Read { ids, weeks } => {
+        MsgCommand::Read {
+            ids,
+            weeks,
+            all_windows,
+        } => {
             // Find each message's window from a bounded listing, then mark it.
             let mut found = Vec::new();
-            for w in windows(*weeks)? {
+            let selected = if *all_windows {
+                b.message_windows()?
+            } else {
+                windows(*weeks)?
+            };
+            for w in selected {
                 for m in b.messages(std::slice::from_ref(&w), None)? {
                     if ids.contains(&m.id) {
                         found.push((w.clone(), m));
@@ -4397,7 +4426,7 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 return Err(SdError::new(
                     crate::error::ErrorKind::NotFound,
                     format!(
-                        "no message {} in the last {weeks} week(s); nothing was marked",
+                        "no message {} in the requested message windows; nothing was marked",
                         missing
                             .iter()
                             .map(|s| s.as_str())
@@ -4414,8 +4443,17 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             let text = format!("marked {} read", out.len());
             Ok(ok(json, serde_json::json!(out), text, vec![]))
         }
-        MsgCommand::Show { id, weeks } => {
-            let ms = b.messages(&windows(*weeks)?, None)?;
+        MsgCommand::Show {
+            id,
+            weeks,
+            all_windows,
+        } => {
+            let selected = if *all_windows {
+                b.message_windows()?
+            } else {
+                windows(*weeks)?
+            };
+            let ms = b.messages(&selected, None)?;
             match ms.iter().find(|m| &m.id == id) {
                 Some(m) => Ok(ok(
                     json,
@@ -4433,7 +4471,7 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 )),
                 None => Err(SdError::new(
                     crate::error::ErrorKind::NotFound,
-                    format!("no message {id} in the last {weeks} week(s)"),
+                    format!("no message {id} in the requested message windows"),
                 )),
             }
         }

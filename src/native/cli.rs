@@ -1397,6 +1397,9 @@ pub enum MsgCommand {
         /// How many ISO weeks back, including this one
         #[arg(long, default_value_t = 2)]
         weeks: u32,
+        /// Include every registered local, unfrozen message window
+        #[arg(long, conflicts_with = "weeks")]
+        all_windows: bool,
     },
     /// Count messages
     Count {
@@ -1409,6 +1412,9 @@ pub enum MsgCommand {
         /// How many ISO weeks back, including this one
         #[arg(long, default_value_t = 2)]
         weeks: u32,
+        /// Include every registered local, unfrozen message window
+        #[arg(long, conflicts_with = "weeks")]
+        all_windows: bool,
     },
     /// Mark messages read (the first mark is kept; nothing is deleted)
     Read {
@@ -1418,6 +1424,9 @@ pub enum MsgCommand {
         /// How many ISO weeks back to look, including this one
         #[arg(long, default_value_t = 2)]
         weeks: u32,
+        /// Include every registered local, unfrozen message window
+        #[arg(long, conflicts_with = "weeks")]
+        all_windows: bool,
     },
     /// Show one message by id
     Show {
@@ -1426,6 +1435,9 @@ pub enum MsgCommand {
         /// How many ISO weeks back to look, including this one
         #[arg(long, default_value_t = 2)]
         weeks: u32,
+        /// Include every registered local, unfrozen message window
+        #[arg(long, conflicts_with = "weeks")]
+        all_windows: bool,
     },
 }
 

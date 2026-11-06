@@ -217,3 +217,30 @@ fn unavailable_original_payload_never_releases_a_delivery_key() {
     assert!(b.message_send(&ctx(later), &new, &retry, "test").is_err());
     assert!(b.messages(&[new], None).unwrap().is_empty());
 }
+
+#[test]
+fn all_live_windows_include_old_unread_and_exclude_other_projects() {
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let old = msg("old", "wu", "2025-12-22T10:00:00Z", "old unread");
+    let new = msg("new", "wu", "2026-11-02T10:00:00Z", "new unread");
+    for m in [&old, &new] {
+        let w = window_graph(GRAPH, &m.sent_at).unwrap();
+        b.message_send(&ctx(&m.sent_at), &w, m, "test").unwrap();
+    }
+    b.store_mut()
+        .graph_create("https://example.org/other/messages/2025-W52")
+        .unwrap();
+    let recent = seeds::message::recent_windows(GRAPH, &new.sent_at, 2).unwrap();
+    assert_eq!(b.messages(&recent, Some("wu")).unwrap(), vec![new.clone()]);
+    let live = b.message_windows().unwrap();
+    assert_eq!(live.len(), 2);
+    assert_eq!(
+        b.messages(&live, Some("wu")).unwrap(),
+        vec![old.clone(), new]
+    );
+    let w = window_graph(GRAPH, &old.sent_at).unwrap();
+    assert!(b
+        .message_mark_read(&ctx("2026-11-02T10:00:00Z"), &w, &old.id)
+        .unwrap());
+    assert!(b.messages(&live, Some("wu")).unwrap()[0].read_at.is_some());
+}

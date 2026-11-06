@@ -3610,3 +3610,80 @@ fn show_folds_old_comments_but_explicit_history_and_snapshot_remain_complete() {
     assert_eq!(both[1]["comments_folded"], 0);
     assert!(both[1]["comments"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn all_window_cli_lists_counts_shows_and_marks_an_old_live_message() {
+    use seeds::backend::{Backend, Claims, Ctx};
+    use seeds::message::{message_id, window_graph, Message};
+    use seeds::quipu_backend::QuipuBackend;
+    let sb = Sandbox::new("all-live-message-windows");
+    let db = sb.work().join("mail.db");
+    let path = db.to_str().unwrap();
+    let graph = "https://example.invalid/messages-test";
+    let at = "2000-01-03T10:00:00Z";
+    let message = Message {
+        id: message_id(Some("old-live-mail"), "reader", at, "old unread"),
+        recipient: "reader".into(),
+        sender: Some("sender".into()),
+        sent_at: at.into(),
+        text: "old unread".into(),
+        kind: "note".into(),
+        delivery_key: Some("old-live-mail".into()),
+        about: vec![],
+        read_at: None,
+    };
+    let mut b = QuipuBackend::writable(quipu::Store::open(path).unwrap(), graph).unwrap();
+    let ctx = Ctx {
+        now: at.into(),
+        actor: "sender".into(),
+        prefix: "test".into(),
+        claims: Claims::default(),
+    };
+    b.message_send(&ctx, &window_graph(graph, at).unwrap(), &message, "test")
+        .unwrap();
+    drop(b);
+    let invoke = |args: &[&str]| {
+        let mut argv = vec!["--store", path, "--graph", graph];
+        argv.extend_from_slice(args);
+        sb.json(&argv)
+    };
+    assert!(invoke(&["msg", "list", "--to", "reader"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let listed = invoke(&["msg", "list", "--to", "reader", "--all-windows", "--unread"]);
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], message.id);
+    assert_eq!(
+        invoke(&[
+            "msg",
+            "count",
+            "--to",
+            "reader",
+            "--all-windows",
+            "--unread"
+        ])["count"],
+        1
+    );
+    assert_eq!(
+        invoke(&["msg", "show", &message.id, "--all-windows"])["text"],
+        "old unread"
+    );
+    assert_eq!(
+        invoke(&["msg", "read", &message.id, "--all-windows"])[0]["marked"],
+        true
+    );
+    assert_eq!(
+        invoke(&[
+            "msg",
+            "count",
+            "--to",
+            "reader",
+            "--all-windows",
+            "--unread"
+        ])["count"],
+        0
+    );
+    let conflict = sb.run(&["msg", "list", "--all-windows", "--weeks", "2"]);
+    assert_eq!(code(&conflict), 2);
+}

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.2] - 2026-11-06
+
+### Fixed
+
+- Qualify projection counts against locked release features (#252) ([d578951](https://github.com/scbrown/seeds/commit/d57895187ff570d41845624d7280ad259c56f1e7))
+
 ## [0.19.1] - 2026-11-06
 
 ### Perf

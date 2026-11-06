@@ -2,9 +2,7 @@
 use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
 
-pub(super) fn server(
-    replies: Vec<(u16, &'static str)>,
-) -> (String, std::thread::JoinHandle<Vec<String>>) {
+fn server(replies: Vec<(u16, &'static str)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let worker = std::thread::spawn(move || {

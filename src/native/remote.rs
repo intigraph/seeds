@@ -56,6 +56,51 @@ mod projection;
 mod summary;
 mod tls;
 
+/// Registry coverage failures are UNKNOWN, never an empty or recent-only inbox.
+fn live_message_windows(project: &str, value: &Json) -> Result<Vec<String>> {
+    let bad = || SdError::failed("live message window registry incomplete or malformed");
+    if value
+        .get("truncated")
+        .is_some_and(|v| v != &Json::Bool(false))
+        || value
+            .get("has_more")
+            .is_some_and(|v| v != &Json::Bool(false))
+    {
+        return Err(bad());
+    }
+    let rows = value
+        .get("graphs")
+        .and_then(Json::as_array)
+        .ok_or_else(bad)?;
+    if value
+        .get("count")
+        .is_some_and(|v| v.as_u64() != Some(rows.len() as u64))
+    {
+        return Err(bad());
+    }
+    let mut windows = BTreeSet::new();
+    for row in rows {
+        let iri = row.get("iri").and_then(Json::as_str).ok_or_else(bad)?;
+        if !crate::message::is_window_of(project, iri) {
+            continue;
+        }
+        match row.get("source") {
+            Some(Json::Null) => (),
+            Some(Json::String(_)) => continue, // Attached graphs are not writable local windows.
+            _ => return Err(bad()),
+        }
+        match row.get("lifecycle") {
+            Some(Json::Null) => (),
+            Some(Json::String(state)) if state == "frozen" => continue,
+            _ => return Err(bad()),
+        }
+        if !windows.insert(iri.to_owned()) {
+            return Err(bad());
+        }
+    }
+    Ok(windows.into_iter().collect())
+}
+
 /// Subjects per targeted read, one `UNION` branch each. A seed carries a few
 /// dozen facts, so a chunk stays well under quipu's 10,000-row result cap (a
 /// truncated answer is split anyway), and the branch count stays far below
@@ -1791,6 +1836,27 @@ impl Backend for RemoteBackend {
                 ),
             )),
         }
+    }
+
+    fn message_windows(&self) -> Result<Vec<String>> {
+        let response = if self.signer.is_some() {
+            self.signed_request("GET", "/graphs", "", b"")?
+                .call()
+                .map_err(|e| SdError::failed(format!("message window registry unreadable: {e}")))?
+        } else {
+            retry_read(|| {
+                quipu_read_request(self.agent.get(&format!("{}/graphs", self.base)), "graphs")
+                    .call()
+                    .map_err(Box::new)
+            })
+            .map_err(|e| SdError::failed(format!("message window registry unreadable: {e}")))?
+        };
+        let text = response
+            .into_string()
+            .map_err(|e| SdError::failed(format!("message window registry unreadable: {e}")))?;
+        let value: Json = serde_json::from_str(&text)
+            .map_err(|e| SdError::failed(format!("message window registry malformed: {e}")))?;
+        live_message_windows(&self.graph, &value)
     }
 
     fn messages(

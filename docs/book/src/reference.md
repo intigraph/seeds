@@ -141,3 +141,16 @@ Rescope supersedes the current description atomically and retains its governed
 specification event; it does not delete comments. Do not append prior versions
 of the specification into the new description. Keep current state concise and
 use history for the evidence behind it.
+
+### Message window scope
+
+`sd msg list`, `count`, `show` and `read` normally use the two most recent ISO
+weeks. Pass `--all-windows` to include every registered local, unfrozen message
+window of this project instead. This option conflicts with an explicit
+`--weeks` bound. An unavailable, malformed or truncated graph registry refuses
+all-window reads rather than returning a recent subset as complete. Frozen
+windows and attached graphs remain outside this live scope.
+
+Readers that must preserve old unread mail should use `--all-windows` for both
+listing and read marks until an explicit expiry lifecycle is implemented.
+This scope option neither archives messages nor changes inbox configuration.

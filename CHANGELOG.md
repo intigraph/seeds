@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] - 2026-11-06
+
+### Added
+
+- *(history)* Expose qualified retained facts explicitly (#246) ([ca81d52](https://github.com/scbrown/seeds/commit/ca81d52fd73d9e9219c071445fed7338a4368310))
+
 ## [0.17.0] - 2026-11-06
 
 ### Fixed

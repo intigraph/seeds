@@ -2285,3 +2285,145 @@ fn push_only_preview_and_replay_keep_remote_only_changes_for_full_sync() {
     let refused = env.sd(&repo, &["sync", "--push-only"], &sync_env);
     assert_eq!(refused.status.code(), Some(4));
 }
+
+#[test]
+fn revision_field_updates_reconcile_a_lost_reply_by_their_own_marker() {
+    let mut env = Env::new("revision-field-reply");
+    let Some(url) = env.start_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for the real remote control");
+        return;
+    };
+    let work = env.dir("work");
+    let made: Value = serde_json::from_str(&env.ok(
+        &work,
+        &["create", "revision fixture", "--json"],
+        &[("SEEDS_QUIPU_URL", &url)],
+    ))
+    .unwrap();
+    let id = made["id"].as_str().unwrap();
+    env.ok(
+        &work,
+        &["update", id, "--notes", "first", "--if-revision", "1"],
+        &[("SEEDS_QUIPU_URL", &url)],
+    );
+    let stale = env.sd(
+        &work,
+        &[
+            "update",
+            id,
+            "--notes",
+            "stale",
+            "--force",
+            "--if-revision",
+            "1",
+            "--json",
+        ],
+        &[("SEEDS_QUIPU_URL", &url)],
+    );
+    assert_eq!(stale.status.code(), Some(4));
+    let error: Value = serde_json::from_slice(&stale.stdout).unwrap();
+    assert_eq!(error["error"]["details"]["current_revision"], 2);
+    let lossy = faulty_proxy(&url, Fault::LoseResponse);
+    let done = env.sd(
+        &work,
+        &[
+            "update",
+            id,
+            "--notes",
+            "first; rebased second",
+            "--force",
+            "--if-revision",
+            "2",
+        ],
+        &[("SEEDS_QUIPU_URL", &lossy)],
+    );
+    assert_eq!(
+        done.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert!(String::from_utf8_lossy(&done.stderr).contains("landed"));
+    let final_state: Value =
+        serde_json::from_str(&env.ok(&work, &["show", id, "--json"], &[("SEEDS_QUIPU_URL", &url)]))
+            .unwrap();
+    assert_eq!(final_state[0]["notes"], "first; rebased second");
+    assert_eq!(final_state[0]["revision"], 3);
+}
+
+#[test]
+fn a_foreign_identical_post_state_cannot_confirm_a_lost_field_write() {
+    use seeds::backend::{Backend, Claims, Ctx, SeedWrite, WriteBatch};
+    use seeds::native::remote::RemoteBackend;
+    let mut env = Env::new("foreign-field-marker");
+    let Some(url) = env.start_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for the real remote control");
+        return;
+    };
+    let work = env.dir("work");
+    let graph = "https://example.org/test/marker";
+    let made: Value = serde_json::from_str(&env.ok(
+        &work,
+        &["--graph", graph, "create", "marker fixture", "--json"],
+        &[("SEEDS_QUIPU_URL", &url)],
+    ))
+    .unwrap();
+    let id = made["id"].as_str().unwrap().to_string();
+    let lossy = faulty_proxy(&url, Fault::LoseResponse);
+    let mut stale = RemoteBackend::connect(&lossy, graph, None, None, &[]).unwrap();
+    let before = stale
+        .snapshot_items(std::slice::from_ref(&id))
+        .unwrap()
+        .get(&id)
+        .unwrap()
+        .clone();
+    let context = Ctx {
+        now: "2026-01-02T03:04:05Z".into(),
+        actor: "winner".into(),
+        prefix: "sd".into(),
+        claims: Claims::default(),
+    };
+    let mut peer = RemoteBackend::connect(&url, graph, None, None, &[]).unwrap();
+    seeds::engine::update(
+        &mut peer,
+        &context,
+        std::slice::from_ref(&id),
+        &seeds::engine::UpdateReq {
+            notes: Some("identical post-state".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut after = before.clone();
+    after.notes = Some("identical post-state".into());
+    after.revision += 1;
+    after.updated_at = context.now.clone();
+    let batch = WriteBatch {
+        seeds: vec![SeedWrite {
+            seed: after,
+            expected_revision: Some(before.revision),
+        }],
+        source: "seeds:update".into(),
+        ..Default::default()
+    };
+    let mut other = context.clone();
+    other.actor = "stale-writer".into();
+    let failure = stale.commit(&batch, &other).unwrap_err();
+    assert_eq!(
+        failure.kind,
+        seeds::error::ErrorKind::Indeterminate,
+        "{failure}"
+    );
+    let details = failure.details.unwrap();
+    assert_eq!(details["schema"], "seed-write-outcome/v1");
+    assert!(details["operation_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("urn:seeds:write:"));
+    let final_state = peer.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    assert_eq!(final_state.get(&id).unwrap().revision, before.revision + 1);
+    assert_eq!(
+        final_state.get(&id).unwrap().notes.as_deref(),
+        Some("identical post-state")
+    );
+}

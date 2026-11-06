@@ -109,6 +109,8 @@ pub struct SdError {
     pub kind: ErrorKind,
     /// What to tell the caller, including what to do next where that is known.
     pub message: String,
+    /// Optional stable command-specific diagnostic metadata.
+    pub details: Option<serde_json::Value>,
 }
 
 impl SdError {
@@ -117,7 +119,14 @@ impl SdError {
         Self {
             kind,
             message: message.into(),
+            details: None,
         }
+    }
+
+    /// Attach machine-readable diagnostics without changing the exit contract.
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 
     /// A usage error.

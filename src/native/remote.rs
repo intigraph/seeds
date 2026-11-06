@@ -2655,7 +2655,12 @@ impl Backend for RemoteBackend {
                         e.message,
                         missing.join(", ")
                     ),
-                )),
+                )
+                .with_details(serde_json::json!({
+                    "schema": "seed-write-outcome/v1", "operation_id": write_iri,
+                    "provenance_graph": provenance_graph(&self.graph),
+                    "item_ids": written, "outcome": "UNKNOWN",
+                }))),
                 Err(read) => Err(SdError::new(
                     ErrorKind::Indeterminate,
                     format!(
@@ -2666,7 +2671,12 @@ impl Backend for RemoteBackend {
                         read.message,
                         written.join(", ")
                     ),
-                )),
+                )
+                .with_details(serde_json::json!({
+                    "schema": "seed-write-outcome/v1", "operation_id": write_iri,
+                    "provenance_graph": provenance_graph(&self.graph),
+                    "item_ids": written, "outcome": "UNKNOWN",
+                }))),
             };
         }
 
@@ -2753,10 +2763,10 @@ impl RemoteBackend {
                 missing.push(format!("{} comment {}", c.seed, c.index));
             }
         }
-        if !batch.comments.is_empty() {
-            // A lost reply must not turn a different actor's identical comment
-            // into success. The marker binds this batch's content, time and
-            // writer; its facts are declarations, not authentication evidence.
+        {
+            // A lost reply must not turn another writer's identical post-state
+            // into success. Check this operation's marker for field updates as
+            // well as comments. Its facts are declarations, not authentication.
             let subjects = write_record.iter().map(|(iri, _)| iri.clone()).collect();
             let mut recorded = Facts::new();
             self.read_all(
@@ -2770,7 +2780,7 @@ impl RemoteBackend {
                     .get(iri)
                     .is_some_and(|facts| expected.iter().all(|fact| facts.contains(fact)))
                 {
-                    missing.push(format!("comment write marker {iri}"));
+                    missing.push(format!("write marker {iri}"));
                 }
             }
         }
@@ -3840,12 +3850,14 @@ mod tests {
         let (without, _) = cost(&bare);
         // One combined read before the write, on every server. A server older
         // than quipu#411 answers /update with no report, so seeds reads the
-        // seed back to decide landed or lost (two more reads): never more.
+        // seed back to decide landed or lost (two more reads), then reads
+        // this operation's provenance marker (one). That marker prevents a
+        // foreign writer's identical post-state from confirming our write.
         assert_eq!(
             with_comments, without,
             "comments cost reads: {with_comments} with 12, {without} with none"
         );
-        assert!(with_comments <= 3, "{with_comments} reads for one update");
+        assert!(with_comments <= 4, "{with_comments} reads for one update");
         assert_eq!(listed, 0, "no registry listing for an existing seed");
         let mut fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
         let after = fresh.snapshot_items(std::slice::from_ref(&id)).unwrap();

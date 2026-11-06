@@ -239,6 +239,7 @@ pub fn target(name: &str) -> Option<Json> {
                     .map(|o| {
                         let mut o = o.clone();
                         o["properties"]["code"] = json!({"type": "string", "enum": codes});
+                        o["properties"]["details"] = json!({"type": "object", "required": ["schema"]});
                         Json::Object(o)
                     })
                     .unwrap_or(Json::Null)}})

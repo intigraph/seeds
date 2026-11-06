@@ -1,0 +1,19 @@
+Script started on 2026-11-04 10:28:36-05:00 [COMMAND="python3 docs/probes/pr-demos/revision-conflicts/run-demo.py" <not executed on terminal>]
+
+BEFORE: two clients read revision 1
+$ sd update ITEM --notes author-one --if-revision 1
+exit=0; current revision=2
+$ sd update ITEM --notes author-two --force --if-revision 1 --json
+{"error": {"code": "CONFLICT", "message": "item revision changed; nothing written"}}
+exit=4; first writer preserved; no stale mutation
+Explicit reread + rebase: revision=3; notes=author-one; rebased author-two
+
+AFTER: two clients read revision 1
+$ sd update ITEM --notes author-one --if-revision 1
+exit=0; current revision=2
+$ sd update ITEM --notes author-two --force --if-revision 1 --json
+{"error": {"code": "CONFLICT", "details": {"comparison": "requested-fields-against-current", "current_revision": 2, "expected_revision": 1, "field_differences": [{"current": {"characters": 10, "text": "author-one", "truncated": false}, "field": "notes", "requested": {"characters": 10, "text": "author-two", "truncated": false}}], "item_id": "demo-2f2", "schema": "seed-update-conflict/v1"}, "message": "demo-2f2: expected revision 1, current revision 2; nothing written; reread and rebase"}}
+exit=4; first writer preserved; no stale mutation
+Explicit reread + rebase: revision=3; notes=author-one; rebased author-two
+
+Script done on 2026-11-04 10:28:38-05:00 [COMMAND_EXIT_CODE="0"]

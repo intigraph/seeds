@@ -2902,8 +2902,8 @@ mod tests {
         let graphs = ["urn:project".into(), "urn:ephemeral".into()];
         let seeds = item_family_query(&graphs, &[&item], false);
         let history = item_family_query(&graphs, &[&item], true);
-        assert!(!seeds.contains(term::comment_on()));
-        assert!(history.contains(term::comment_on()));
+        assert!(!seeds.contains(term::comment_on().as_str()));
+        assert!(history.contains(term::comment_on().as_str()));
         assert!(seeds.contains("urn:project") && seeds.contains("urn:ephemeral"));
     }
 

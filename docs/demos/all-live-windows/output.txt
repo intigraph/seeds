@@ -1,0 +1,5 @@
+{"fixture": "one native message dated 2000-01-03 in a registered local window", "sd_sha256": "91ff061d63c214d29eb9b42aedeca17b9bedbee245df62f91ac59bc84bd49dfc", "quipu_sha256": "9ad23a42ac9d1d93d10993d47e0e6a63642683560203bb0b7be39aa6fda44f9f"}
+{"command": ["sd", "msg", "list", "--to", "reader", "--unread"], "exit": 0, "response": []}
+{"command": ["sd", "msg", "list", "--to", "reader", "--unread", "--all-windows"], "exit": 0, "response": [{"about": [], "from": null, "id": "msg-old-demo", "key": null, "kind": "note", "read_at": null, "sent_at": "2000-01-03T10:00:00Z", "text": "old live mail", "to": "reader"}]}
+{"command": ["sd", "msg", "read", "msg-old-demo", "--all-windows"], "exit": 0, "response": [{"id": "msg-old-demo", "marked": true}]}
+{"command": ["sd", "msg", "count", "--to", "reader", "--unread", "--all-windows"], "exit": 0, "response": {"count": 0}}

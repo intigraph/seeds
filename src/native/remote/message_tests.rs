@@ -230,3 +230,30 @@ fn committed_message_with_lost_response_is_not_written_again() {
         2
     );
 }
+
+#[test]
+fn live_window_registry_refuses_unknown_coverage_and_keeps_old_windows() {
+    let project = "https://example.org/project/messages";
+    let old = format!("{project}/messages/2025-W52");
+    let row = json!({"iri": old, "source": null, "lifecycle": null});
+    assert_eq!(
+        live_message_windows(project, &json!({"graphs": [row.clone()], "count": 1})).unwrap(),
+        vec![old.clone()]
+    );
+    for value in [
+        json!({}),
+        json!({"graphs": [] ,"truncated": true}),
+        json!({"graphs": [], "count": 1}),
+        json!({"graphs": [], "has_more": true}),
+        json!({"graphs": [{"iri": old}]}),
+        json!({"graphs": [row.clone(), row.clone()]}),
+        json!({"graphs": [{"iri": old, "source": null, "lifecycle": "unknown"}]}),
+    ] {
+        assert!(live_message_windows(project, &value).is_err(), "{value}");
+    }
+    let registry = json!({"graphs": [row,
+        {"iri": format!("{project}/messages/2026-W01"), "source": null, "lifecycle": "frozen"},
+        {"iri": format!("{project}/messages/2026-W02"), "source": "attachment", "lifecycle": null},
+        {"iri": "https://example.org/foreign/messages/2026-W03", "source": null, "lifecycle": null}]});
+    assert_eq!(live_message_windows(project, &registry).unwrap(), vec![old]);
+}

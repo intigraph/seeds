@@ -430,6 +430,22 @@ impl Backend for QuipuBackend {
         Ok(true)
     }
 
+    fn message_windows(&self) -> Result<Vec<String>> {
+        let mut windows: Vec<_> = self
+            .store
+            .list_graphs(None, None)?
+            .into_iter()
+            .filter(|g| {
+                g.source.is_none()
+                    && g.lifecycle.as_deref() != Some("frozen")
+                    && crate::message::is_window_of(&self.graph_iri, &g.iri)
+            })
+            .map(|g| g.iri)
+            .collect();
+        windows.sort();
+        Ok(windows)
+    }
+
     fn messages(
         &self,
         windows: &[String],

@@ -308,6 +308,13 @@ pub trait Backend {
         ))
     }
 
+    /// Every registered local, unfrozen message window. Refuse unknown coverage.
+    fn message_windows(&self) -> Result<Vec<String>> {
+        Err(crate::error::SdError::usage(
+            "this backend cannot enumerate live message windows",
+        ))
+    }
+
     /// Messages in the named windows, for one recipient or all. A window that
     /// does not exist holds no messages; an unreadable one is an error.
     fn messages(

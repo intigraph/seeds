@@ -2530,8 +2530,17 @@ pub fn update(
     }
     let mut snap = if req.claim {
         blocking_snapshot(b, ids, false)?
-    } else {
+    } else if req
+        .transition_comment
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        // Allocating a transition comment needs the existing comment indexes.
         b.snapshot_items(ids)?
+    } else {
+        // Field edits replace seed facts, never comments. Keep the full seed
+        // preimage and revision fence without hydrating its comment history.
+        b.snapshot_seeds(ids)?
     };
     if let Some(parent) = req
         .parent

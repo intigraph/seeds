@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] - 2026-11-06
+
+### Fixed
+
+- *(update)* Expose revision conflicts and verify uncertain operation identity (#230) ([2b9a2ef](https://github.com/scbrown/seeds/commit/2b9a2ef2a6c14430c65d2322a86510f10c9ecb77))
+
 ## [0.16.0] - 2026-11-05
 
 ### Added

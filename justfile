@@ -38,7 +38,7 @@ wasm:
 # Run the core test suite on wasm32 under node (needs wasm-bindgen-test-runner
 # at the wasm-bindgen version in Cargo.lock; see .cargo/config.toml)
 wasm-test:
-    cargo test --target wasm32-unknown-unknown --no-default-features --test core
+    cargo test --target wasm32-unknown-unknown --no-default-features --test core --test deferral_provenance
 
 # Everything the native CI job runs
 check:

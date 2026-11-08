@@ -604,6 +604,38 @@ impl Seed {
         out
     }
 
+    /// Lower bound of explicit deferral commits observed since this protocol began.
+    /// Missing metadata is unknown, never zero or reconstructed history.
+    pub(crate) fn observed_deferral_writes(&self) -> Result<Option<(i64, String)>> {
+        let count_pred = vocab::seeds("observedDeferralWriteCount");
+        let since_pred = vocab::seeds("observedDeferralWriteCountSince");
+        let counts: Vec<_> = self
+            .extra
+            .iter()
+            .filter(|(p, _)| p == &count_pred)
+            .collect();
+        let dates: Vec<_> = self
+            .extra
+            .iter()
+            .filter(|(p, _)| p == &since_pred)
+            .collect();
+        if counts.is_empty() && dates.is_empty() {
+            return Ok(None);
+        }
+        if counts.len() == 1 && dates.len() == 1 {
+            if let (Obj::Int(count), Obj::Typed { lexical, datatype }) = (&counts[0].1, &dates[0].1)
+            {
+                if *count > 0
+                    && datatype == vocab::XSD_DATE_TIME
+                    && canonical_time(lexical, false).as_deref() == Some(lexical.as_str())
+                {
+                    return Ok(Some((*count, lexical.clone())));
+                }
+            }
+        }
+        Err(SdError::refused("observed deferral writes require one positive integer and one canonical dateTime origin"))
+    }
+
     /// Bridge-owned carry stays in `extra` on reads, but replaces old values on writes.
     pub(crate) fn owned_extra_predicates() -> Vec<String> {
         [
@@ -611,6 +643,8 @@ impl Seed {
             vocab::seeds("dependencyOrigin"),
             vocab::seeds("deferredAt"),
             vocab::seeds("deferredBy"),
+            vocab::seeds("observedDeferralWriteCount"),
+            vocab::seeds("observedDeferralWriteCountSince"),
             crate::blockers::ledger_predicate(),
             crate::blockers::edge_predicate(),
         ]
@@ -1469,5 +1503,31 @@ mod tests {
         assert!(parse_status("done").is_err());
         assert!(parse_type("tsak").is_err());
         assert!(parse_dep_type("block").is_err());
+    }
+    #[test]
+    fn observed_deferral_count_is_optional_paired_and_strict() {
+        let mut seed = sample();
+        assert_eq!(seed.observed_deferral_writes().unwrap(), None);
+        let count = vocab::seeds("observedDeferralWriteCount");
+        let since = vocab::seeds("observedDeferralWriteCountSince");
+        let origin = Obj::Typed {
+            lexical: "2026-10-22T00:00:00Z".into(),
+            datatype: vocab::XSD_DATE_TIME.into(),
+        };
+        seed.extra.insert((count.clone(), Obj::Int(1)));
+        assert!(seed.observed_deferral_writes().is_err());
+        seed.extra.insert((since.clone(), origin));
+        assert_eq!(
+            seed.observed_deferral_writes().unwrap(),
+            Some((1, "2026-10-22T00:00:00Z".into()))
+        );
+        for bad in [Obj::Int(0), Obj::Int(-1), Obj::Str("1".into())] {
+            let mut invalid = seed.clone();
+            invalid.extra.retain(|(p, _)| p != &count);
+            invalid.extra.insert((count.clone(), bad));
+            assert!(invalid.observed_deferral_writes().is_err());
+        }
+        seed.extra.insert((count, Obj::Int(2)));
+        assert!(seed.observed_deferral_writes().is_err());
     }
 }

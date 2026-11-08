@@ -23,7 +23,9 @@ seeds:RemoteActionShape a sh:NodeShape ;
           sh:property [ sh:path seeds:priority ; sh:maxCount 0 ] ;
           sh:property [ sh:path seeds:issueType ; sh:maxCount 0 ] ;
           sh:property [ sh:path seeds:deferredAt ; sh:maxCount 0 ] ;
-          sh:property [ sh:path seeds:deferredBy ; sh:maxCount 0 ] ]
+          sh:property [ sh:path seeds:deferredBy ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:observedDeferralWriteCount ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:observedDeferralWriteCountSince ; sh:maxCount 0 ] ]
         [ sh:node seeds:RemoteBoardActionShape ]
     ) .
 
@@ -87,3 +89,15 @@ seeds:RemoteMessageShape a sh:NodeShape ;
     sh:property [ sh:path seeds:messageKind ; sh:maxCount 1 ; sh:in ( "note" "alert" ) ] ;
     sh:property [ sh:path seeds:deliveryKey ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
     sh:property [ sh:path schema:about ; sh:nodeKind sh:IRI ] .
+
+# Observed writer-protocol commits are a lower bound, not historical churn.
+seeds:ObservedDeferralWriteShape a sh:NodeShape ;
+    sh:targetClass schema:Action ;
+    sh:property [ sh:path seeds:observedDeferralWriteCount ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ; sh:maxInclusive 9223372036854775807 ] ;
+    sh:property [ sh:path seeds:observedDeferralWriteCountSince ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
+    sh:or (
+        [ sh:property [ sh:path seeds:observedDeferralWriteCount ; sh:maxCount 0 ] ;
+          sh:property [ sh:path seeds:observedDeferralWriteCountSince ; sh:maxCount 0 ] ]
+        [ sh:property [ sh:path seeds:observedDeferralWriteCount ; sh:minCount 1 ] ;
+          sh:property [ sh:path seeds:observedDeferralWriteCountSince ; sh:minCount 1 ] ]
+    ) .

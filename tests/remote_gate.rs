@@ -123,6 +123,15 @@ fn only_explicit_scheduled_jobs_are_exempt_from_board_constraints() {
             "job marker cannot hide board property {property}"
         );
     }
+    let valid_pair = format!(
+        "{action} {marker} <urn:test:job> <https://seeds.local/ontology/observedDeferralWriteCount> 1 . \
+         <urn:test:job> <https://seeds.local/ontology/observedDeferralWriteCountSince> \
+         \"2026-10-22T00:00:00Z\"^^<http://www.w3.org/2001/XMLSchema#dateTime> ."
+    );
+    assert!(
+        !conforms(&valid_pair),
+        "even a valid counter pair cannot select the scheduled-job exception"
+    );
     let missing_status =
         format!("{action} {marker} <urn:test:job> <https://seeds.local/ontology/priority> 0 .");
     assert!(

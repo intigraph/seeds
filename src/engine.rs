@@ -2794,10 +2794,13 @@ pub fn update(
             ensure_ask_visible(&s)?;
         }
         if requesting_deferral {
-            stamp_deferral(&mut s, ctx)?;
+            stamp_deferral_metadata(&mut s, ctx)?;
         }
         if s == *before {
             continue;
+        }
+        if requesting_deferral {
+            increment_deferral_writes(&mut s, ctx)?;
         }
         s.updated_at = ctx.now.clone();
         s.revision = before.revision + 1;
@@ -3043,6 +3046,39 @@ fn refuse_ask_deferral(seed: &Seed) -> Result<()> {
 // Stamp only explicit deferral writes. Reads, unrelated updates, undefer and
 // historical records retain their existing facts; no migration or backfill.
 fn stamp_deferral(seed: &mut Seed, ctx: &Ctx) -> Result<()> {
+    stamp_deferral_metadata(seed, ctx)?;
+    increment_deferral_writes(seed, ctx)
+}
+
+fn increment_deferral_writes(seed: &mut Seed, ctx: &Ctx) -> Result<()> {
+    let (count, since) = match seed.observed_deferral_writes()? {
+        Some((count, since)) => (
+            count
+                .checked_add(1)
+                .ok_or_else(|| SdError::refused("observed deferral write count overflow"))?,
+            since,
+        ),
+        None => (
+            1,
+            model::canonical_time(&ctx.now, false)
+                .ok_or_else(|| SdError::usage("deferral requires a valid dateTime context"))?,
+        ),
+    };
+    let predicate = vocab::seeds("observedDeferralWriteCount");
+    seed.extra.retain(|(p, _)| p != &predicate);
+    seed.extra.insert((predicate, model::Obj::Int(count)));
+    seed.extra.insert((
+        vocab::seeds("observedDeferralWriteCountSince"),
+        model::Obj::Typed {
+            lexical: since,
+            datatype: vocab::XSD_DATE_TIME.into(),
+        },
+    ));
+    Ok(())
+}
+
+fn stamp_deferral_metadata(seed: &mut Seed, ctx: &Ctx) -> Result<()> {
+    seed.observed_deferral_writes()?;
     let at = model::canonical_time(&ctx.now, false)
         .ok_or_else(|| SdError::usage("deferral requires a valid dateTime context"))?;
     if ctx.actor.trim().is_empty() {

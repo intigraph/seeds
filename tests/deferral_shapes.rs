@@ -49,6 +49,29 @@ fn both_profiles_admit_legacy_and_typed_provenance_but_refuse_bad_values() {
             push_ntriples(&mut nt, "https://example.invalid/item/control", &facts);
             quipu::validate_shapes(shape, &nt).unwrap().conforms
         };
+        let count = (vocab::seeds("observedDeferralWriteCount"), Obj::Int(1));
+        let since = (
+            vocab::seeds("observedDeferralWriteCountSince"),
+            Obj::Typed {
+                lexical: ctx.now.clone(),
+                datatype: vocab::XSD_DATE_TIME.into(),
+            },
+        );
+        assert!(conforms(vec![count.clone(), since.clone()]));
+        assert!(!conforms(vec![count.clone()]));
+        assert!(!conforms(vec![since.clone()]));
+        for bad in [Obj::Int(0), Obj::Int(-1), Obj::Str("1".into())] {
+            assert!(!conforms(vec![(count.0.clone(), bad), since.clone()]));
+        }
+        assert!(!conforms(vec![
+            count.clone(),
+            (count.0.clone(), Obj::Int(2)),
+            since.clone()
+        ]));
+        assert!(!conforms(vec![
+            count.clone(),
+            (since.0.clone(), Obj::Str(ctx.now.clone()))
+        ]));
         assert!(conforms(vec![]), "historical records require no backfill");
         assert!(conforms(vec![at.clone(), by.clone()]));
         assert!(!conforms(vec![(at.0.clone(), Obj::Str(ctx.now.clone()))]));

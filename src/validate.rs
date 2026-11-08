@@ -23,6 +23,8 @@ use crate::vocab::{self, term};
 /// Predicates a seed holds at most one value of.
 pub fn functional_predicates() -> Vec<String> {
     let mut fields = vec![
+        vocab::seeds("observedDeferralWriteCount"),
+        vocab::seeds("observedDeferralWriteCountSince"),
         term::identifier(),
         term::name(),
         vocab::RDFS_LABEL.to_string(),
@@ -141,6 +143,9 @@ pub fn validate_batch(
     current_facts: &mut dyn FnMut(&str) -> Result<Option<Vec<Fact>>>,
 ) -> Result<()> {
     time_problems(batch)?;
+    for write in &batch.seeds {
+        write.seed.observed_deferral_writes()?;
+    }
     let written: BTreeSet<&str> = batch.seeds.iter().map(|w| w.seed.id.as_str()).collect();
     let deleted: BTreeSet<&str> = batch
         .delete_seeds
@@ -260,6 +265,9 @@ pub fn validate_ledger(nt: &str, by_subject: &BTreeMap<String, Vec<Fact>>) -> Ve
     for facts in by_subject.values() {
         if let Some(s) = crate::model::Seed::from_facts(facts) {
             problems.extend(s.time_problems());
+            if let Err(error) = s.observed_deferral_writes() {
+                problems.push(error.to_string());
+            }
         } else if let Some(c) = crate::model::Comment::from_facts(facts) {
             problems.extend(c.time_problems());
         }

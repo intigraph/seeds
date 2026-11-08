@@ -107,7 +107,7 @@ jobs:
           f=target/wasm32-unknown-unknown/release/examples/ready_demo.wasm
           echo "ready_demo.wasm: $(stat -c %s "$f") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Core tests on wasm32 (node)
-        run: cargo test --target wasm32-unknown-unknown --no-default-features --test core
+        run: cargo test --target wasm32-unknown-unknown --no-default-features --test core --test deferral_provenance
 
   # Mode 2 and mode 3 against a real quipu server: the released
   # quipu-server binary, pinned by version AND sha256, drives tests/modes.rs

@@ -114,6 +114,8 @@ fn only_explicit_scheduled_jobs_are_exempt_from_board_constraints() {
         "issueType",
         "deferredAt",
         "deferredBy",
+        "observedDeferralWriteCount",
+        "observedDeferralWriteCountSince",
     ] {
         let data = format!("{action} {marker} <urn:test:job> <https://seeds.local/ontology/{property}> \"invalid\" .");
         assert!(

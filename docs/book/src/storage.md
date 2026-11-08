@@ -313,3 +313,19 @@ allows ephemeral items to depend on shared items without joining property values
 or discovering unrelated projects. ROOT is not selected for those referenced
 types. The existing batch keeps its provenance, project and ephemeral writes
 atomic, and shared-to-ephemeral edges remain refused.
+
+### Observed deferral writes
+
+New explicit deferral commits carry `seeds:observedDeferralWriteCount` and
+`seeds:observedDeferralWriteCountSince` as extra RDF facts. The first is a positive
+integer; the second is the dateTime of the first commit observed by this writer
+protocol. They form an optional pair. Historical items without the pair have
+**unknown** counts, not zero. No notes or historical events are backfilled.
+
+This is a lower bound, not a total churn count: older clients can preserve the
+facts without incrementing them. A low count therefore does not prove low churn.
+Explicit create/defer/update routes increment on a committed deferral; an exact
+no-op update does not. Ordinary edits and undefer preserve the pair. Invalid or
+partial metadata and integer overflow refuse the whole write. The CLI JSON key
+contract is unchanged. These facts alone never change priority, dispatch, or
+lifecycle state.

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.0] - 2026-11-09
+
+### Added
+
+- Count observed deferral writes atomically (#254) ([4cf5b2f](https://github.com/scbrown/seeds/commit/4cf5b2f5ddb6d8e8473dd9f19c5ad2ec48a11764))
+
+### CI/CD
+
+- Cache pinned Quipu archives before remote tests (#258) ([03257c8](https://github.com/scbrown/seeds/commit/03257c826b348907100075a82881f68e84865bbb))
+
+### Fixed
+
+- *(errors)* Preserve typed tracker errors and ambiguous mutation outcomes (#257) ([9f95686](https://github.com/scbrown/seeds/commit/9f95686b0df41b140b0b7f665cdcc06220e481ee))
+
+### Perf
+
+- *(remote)* Skip registry discovery for existing comments (#259) ([9f51d42](https://github.com/scbrown/seeds/commit/9f51d423b2e199ec302a497352114fabd053bad8))
+
 ## [0.19.2] - 2026-11-06
 
 ### Fixed

@@ -5,7 +5,7 @@ A missing comment file keeps human output unchanged: exit 2 and no stdout.
 task/graph identity and an invocation ID. The final exact read finds zero
 comments, a positive control that this attempt submitted nothing.
 
-Recorded implementation: `66b0ae9fcc1659110ac51a9a3def2d2272c58b04`
+Recorded implementation: `26911896a29c3fedc8bcadeb08d2c3c4bcf9d046`
 (base `4cf5b2f5ddb6d8e8473dd9f19c5ad2ec48a11764`). This compares preserved
 human mode with the new mode on the recorded implementation. No independent
 base executable run is claimed; the new option has no base equivalent. The

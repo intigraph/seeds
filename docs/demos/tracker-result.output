@@ -1,4 +1,4 @@
-Script started on 2026-11-09 01:52:28-05:00 [COMMAND="stty -onlcr; python3 docs/demos/tracker-result-demo.py" <not executed on terminal>]
+Script started on 2026-11-09 02:05:34-05:00 [COMMAND="stty -onlcr; python3 docs/demos/tracker-result-demo.py" <not executed on terminal>]
 Preserved human output
 $ sd comments add FIXTURE --file missing-note.txt
 exit: 2
@@ -16,18 +16,19 @@ exit: 2
     "message": "Operation failed; private diagnostics omitted"
   },
   "exit_code": 2,
-  "graph": "https://seeds.local/project/sd-vacfiqe0f1",
+  "graph": "https://seeds.local/project/sd-5py41y7b5q",
   "mutation_outcome": "NOT_WRITTEN",
   "ok": false,
   "operation": "comments add",
-  "operation_id": "d36635920ac41bdf501cca07142688de",
+  "operation_id": "d8b9beee3e7c9cb0b928a9c7e6019ab6",
   "phase": "INPUT",
   "reconcile": "Read exact task status and operation evidence before any retry; never replay a comment blindly",
+  "recovery": null,
   "schema": "tracker-result/v1",
   "tasks": [
-    "sd-nql"
+    "sd-u9o"
   ]
 }
 Positive reconciliation: exact fixture has zero comments; nothing submitted.
 
-Script done on 2026-11-09 01:52:29-05:00 [COMMAND_EXIT_CODE="0"]
+Script done on 2026-11-09 02:05:35-05:00 [COMMAND_EXIT_CODE="0"]

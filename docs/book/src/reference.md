@@ -170,7 +170,7 @@ key or proof that the server stored a write. Task identities are reported for
 show, update, close, delete and comments; other commands may report none.
 
 Errors distinguish AUTH, POLICY, TIMEOUT, TRANSPORT, VALIDATION, MISSING_INPUT,
-NOT_FOUND, CONFLICT, MALFORMED_RESPONSE, CONFIG, INDETERMINATE and UNKNOWN.
+NOT_FOUND, CONFLICT, MALFORMED_RESPONSE, PARTIAL, CONFIG, INDETERMINATE and UNKNOWN.
 Known HTTP status is retained. Failure envelopes omit raw server bodies, private
 arguments and credentials. Ordinary human diagnostics remain in legacy mode.
 

@@ -1271,6 +1271,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
             crate::vocab::project_graph_iri(&format!("{}-none", cfg.prefix))
         }
     };
+    result::record_graph(&graph);
     let cfg = &Resolved {
         graph: Some(graph),
         ..cfg.clone()

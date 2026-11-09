@@ -776,6 +776,9 @@ fn result_envelope_populated_missing_input_and_usage() {
     let value: Value = serde_json::from_slice(&good.stdout).unwrap();
     assert_eq!(code(&good), 0);
     assert_eq!(value["data"][0]["title"], "populated");
+    assert!(value["graph"]
+        .as_str()
+        .is_some_and(|g| g.starts_with("https://seeds.local/project/")));
     assert_eq!(value["mutation_outcome"], "NOT_APPLICABLE");
     let missing = sb.run(&[
         "comments",

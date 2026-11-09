@@ -1,14 +1,19 @@
 //! Opt-in, body-free failure envelopes. Legacy JSON and exit codes stay intact.
 use super::{
     cli::{Cli, Command, CommentsCommand},
-    config, run_legacy, Outcome,
+    run_legacy, Outcome,
 };
 use serde_json::{json, Value};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     static PHASE: Cell<&'static str> = const { Cell::new("PREPARE") };
     static SUBMITTED: Cell<bool> = const { Cell::new(false) };
+    static GRAPH: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub(super) fn record_graph(graph: &str) {
+    GRAPH.with(|g| *g.borrow_mut() = Some(graph.to_owned()));
 }
 
 pub(super) fn request_phase(write: bool) {
@@ -26,12 +31,13 @@ pub(super) fn request_phase(write: bool) {
     });
 }
 
-struct Trace(&'static str, bool);
+struct Trace(&'static str, bool, Option<String>);
 impl Trace {
     fn new() -> Self {
         Self(
             PHASE.with(|p| p.replace("PREPARE")),
             SUBMITTED.with(|p| p.replace(false)),
+            GRAPH.with(|g| g.replace(None)),
         )
     }
 }
@@ -39,6 +45,7 @@ impl Drop for Trace {
     fn drop(&mut self) {
         PHASE.with(|p| p.set(self.0));
         SUBMITTED.with(|p| p.set(self.1));
+        GRAPH.with(|g| *g.borrow_mut() = self.2.take());
     }
 }
 
@@ -113,16 +120,7 @@ fn category(code: i32, error: &Value) -> &'static str {
 }
 
 pub(super) fn run(cli: &Cli) -> Outcome {
-    let graph = config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
-        .and_then(|i| config::resolve(&i))
-        .ok()
-        .and_then(|c| c.graph)
-        .filter(|g| {
-            url::Url::parse(g).is_ok_and(|u| {
-                u.username().is_empty() && u.password().is_none() && u.query().is_none()
-            })
-        });
-    capture(cli, graph, || run_legacy(cli))
+    capture(cli, cli.graph.clone(), || run_legacy(cli))
 }
 
 pub(super) fn capture(
@@ -133,6 +131,10 @@ pub(super) fn capture(
     let _trace = Trace::new();
     let id = operation_id();
     let mut o = execute();
+    let graph = GRAPH.with(|g| g.borrow().clone()).or(graph).filter(|g| {
+        url::Url::parse(g)
+            .is_ok_and(|u| u.username().is_empty() && u.password().is_none() && u.query().is_none())
+    });
     let value: Value = match serde_json::from_str(&o.stdout) {
         Ok(value) => value,
         Err(_) if o.code == 0 => {

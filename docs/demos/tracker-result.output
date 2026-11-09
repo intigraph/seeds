@@ -1,0 +1,33 @@
+Script started on 2026-11-09 01:52:28-05:00 [COMMAND="stty -onlcr; python3 docs/demos/tracker-result-demo.py" <not executed on terminal>]
+Preserved human output
+$ sd comments add FIXTURE --file missing-note.txt
+exit: 2
+stdout bytes: 0
+sd: cannot read missing-note.txt: No such file or directory (os error 2)
+Structured result
+$ sd comments add FIXTURE --file missing-note.txt --result-json
+exit: 2
+{
+  "data": null,
+  "error": {
+    "category": "MISSING_INPUT",
+    "code": "USAGE",
+    "http_status": null,
+    "message": "Operation failed; private diagnostics omitted"
+  },
+  "exit_code": 2,
+  "graph": "https://seeds.local/project/sd-vacfiqe0f1",
+  "mutation_outcome": "NOT_WRITTEN",
+  "ok": false,
+  "operation": "comments add",
+  "operation_id": "d36635920ac41bdf501cca07142688de",
+  "phase": "INPUT",
+  "reconcile": "Read exact task status and operation evidence before any retry; never replay a comment blindly",
+  "schema": "tracker-result/v1",
+  "tasks": [
+    "sd-nql"
+  ]
+}
+Positive reconciliation: exact fixture has zero comments; nothing submitted.
+
+Script done on 2026-11-09 01:52:29-05:00 [COMMAND_EXIT_CODE="0"]

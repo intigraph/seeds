@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix="tracker-demo-") as directory:
     item = setup.stdout.strip()
     for mode, flags in [("Preserved human output", []), ("Structured result", ["--result-json"])]:
         print(mode)
-        print("$ sd comments add FIXTURE --file missing-note.txt " + " ".join(flags))
+        print("$ sd comments add FIXTURE --file missing-note.txt" + (" --result-json" if flags else ""))
         output = run(["comments", "add", item, "--file", "missing-note.txt", *flags])
         print("exit:", output.returncode)
         assert output.returncode == 2

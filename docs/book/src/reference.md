@@ -186,3 +186,8 @@ Reconcile ambiguous writes through exact task status and operation evidence.
 Compare an original comment attempt's author, time and content before considering
 another submission. No retry, store fallback, credential action or override is
 added by this output mode.
+
+`recovery` is null unless the SDK supplied a recognized persisted write witness.
+When present it retains the native write operation IRI, provenance graph and
+item IDs, without field differences or bodies. This is separate from the new
+per-invocation `operation_id`; use the persisted witness for exact reconciliation.

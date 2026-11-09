@@ -74,7 +74,7 @@ fn tasks(command: &Command) -> Vec<String> {
 pub(super) fn usage_failure(code: i32) -> Outcome {
     Outcome { code, stdout: json!({"schema":"tracker-result/v1", "ok":false,
         "operation_id":operation_id(), "operation":null, "tasks":[], "graph":null,
-        "phase":"INPUT", "mutation_outcome":"NOT_WRITTEN", "exit_code":code,
+        "phase":"INPUT", "mutation_outcome":"NOT_WRITTEN", "exit_code":code, "recovery":null,
         "data":null, "error":{"category":"VALIDATION","code":"USAGE","http_status":null,
         "message":"Invalid command; arguments omitted"}, "reconcile":"Correct input; no automatic retry"}).to_string(),
         stderr:"sd: invalid command; see result envelope".into() }
@@ -119,6 +119,35 @@ fn category(code: i32, error: &Value) -> &'static str {
     }
 }
 
+fn recovery(error: &Value) -> Value {
+    let details = &error["details"];
+    let Some(id) = details["operation_id"].as_str().filter(|id| {
+        id.strip_prefix("urn:seeds:write:").is_some_and(|suffix| {
+            suffix.len() == 24 && suffix.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    }) else {
+        return Value::Null;
+    };
+    let graph = details["provenance_graph"].as_str().filter(|g| {
+        url::Url::parse(g)
+            .is_ok_and(|u| u.username().is_empty() && u.password().is_none() && u.query().is_none())
+    });
+    let items: Vec<&str> = details["item_ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(128)
+        .filter_map(Value::as_str)
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 256
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        })
+        .collect();
+    json!({"operation_id":id,"provenance_graph":graph,"item_ids":items})
+}
+
 pub(super) fn run(cli: &Cli) -> Outcome {
     capture(cli, cli.graph.clone(), || run_legacy(cli))
 }
@@ -154,7 +183,9 @@ pub(super) fn capture(
         "NOT_APPLICABLE"
     } else if o.code == 0 {
         "COMMITTED"
-    } else if error["details"]["phase"] == "INPUT" || !SUBMITTED.with(Cell::get) {
+    } else if error["details"]["phase"] == "INPUT"
+        || (!SUBMITTED.with(Cell::get) && PHASE.with(Cell::get) == "READ")
+    {
         "NOT_WRITTEN"
     } else {
         "UNKNOWN"
@@ -166,6 +197,7 @@ pub(super) fn capture(
         // A read-before-write can fail before mutation. Do not guess its boundary.
         "phase": if error["details"]["phase"] == "INPUT" { "INPUT" } else { PHASE.with(Cell::get) },
         "mutation_outcome": mutation, "exit_code": o.code,
+        "recovery": recovery(error),
         "data": if o.code == 0 { value } else { Value::Null },
         "error": if o.code == 0 { Value::Null } else { json!({
             "category": category(o.code, error),

@@ -323,6 +323,10 @@ fn result_envelope_retains_real_committed_comment_after_lost_reply() {
     assert_eq!(value["error"]["category"], "INDETERMINATE");
     assert_eq!(value["mutation_outcome"], "UNKNOWN");
     assert_eq!(value["phase"], "READBACK");
+    assert!(value["recovery"]["operation_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("urn:seeds:write:")));
+    assert_eq!(value["recovery"]["item_ids"], json!([id]));
     assert_eq!(proxy.updates.load(Ordering::SeqCst), 1);
     assert_eq!(engine::comment_list(&direct, &id, None).unwrap().len(), 1);
     assert!(!outcome.stdout.contains("identical fields"));

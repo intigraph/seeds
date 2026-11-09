@@ -2499,7 +2499,20 @@ impl Backend for RemoteBackend {
             && batch.seeds.iter().all(|w| {
                 w.expected_revision.is_some() && current.contains_key(&vocab::item_iri(&w.seed.id))
             });
-        if !existing_only {
+        // Comment-only writes have no replacement seed, but their target
+        // preimages prove the same project-existence premise as an update.
+        // Keep registration for creates, removals, ephemeral writes and any
+        // target that was not found in this commit's project read.
+        let existing_comments_only = eph.is_empty()
+            && batch.seeds.is_empty()
+            && batch.delete_seeds.is_empty()
+            && batch.delete_comments.is_empty()
+            && !batch.comments.is_empty()
+            && batch
+                .comments
+                .iter()
+                .all(|c| current.contains_key(&vocab::item_iri(&c.seed)));
+        if !existing_only && !existing_comments_only {
             self.register_graph(!eph.is_empty())?;
         }
 
@@ -3933,6 +3946,98 @@ mod tests {
                 .count(),
             23
         );
+    }
+
+    #[test]
+    fn existing_comment_write_skips_graph_discovery_and_keeps_history() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for this wire control");
+            return;
+        };
+        let graph = "urn:fixture:comment-registration";
+        let mut setup = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let id = seed_with_comments(&mut setup, "target", 2);
+        let mut fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let before = seeds_requests(&server.base, "/graphs");
+        crate::engine::comment_add(&mut fresh, &ctx83l(), &id, "new note", None).unwrap();
+        let listings = seeds_requests(&server.base, "/graphs") - before;
+        let comments = crate::engine::comment_list(&fresh, &id, None).unwrap();
+        assert_eq!(comments.len(), 3);
+        assert_eq!(comments[0].text, "note 0");
+        assert_eq!(comments[1].text, "note 1");
+        assert_eq!(comments[2].text, "new note");
+        assert_eq!(
+            listings, 0,
+            "an existing-target comment must not enumerate the registry"
+        );
+    }
+
+    #[test]
+    fn comment_registration_keeps_create_and_ephemeral_paths() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for this wire control");
+            return;
+        };
+        let graph = "urn:fixture:comment-registration-routing";
+        let mut backend = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let before = seeds_requests(&server.base, "/graphs");
+        seed_with_comments(&mut backend, "new seed", 0);
+        assert!(seeds_requests(&server.base, "/graphs") > before);
+        let (ephemeral, _) = crate::engine::create(
+            &mut backend,
+            &ctx83l(),
+            &crate::engine::CreateReq {
+                title: "ephemeral target".into(),
+                ephemeral: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut fresh = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let before = seeds_requests(&server.base, "/graphs");
+        crate::engine::comment_add(&mut fresh, &ctx83l(), &ephemeral.id, "ephemeral note", None)
+            .unwrap();
+        assert!(seeds_requests(&server.base, "/graphs") > before);
+        assert_eq!(
+            crate::engine::comment_list(&fresh, &ephemeral.id, None).unwrap()[0].text,
+            "ephemeral note"
+        );
+    }
+
+    #[test]
+    fn comment_registration_skip_preserves_concurrent_index_guard() {
+        let Some(server) = quipu_server() else {
+            eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for this wire control");
+            return;
+        };
+        let graph = "urn:fixture:comment-registration-conflict";
+        let mut setup = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let id = seed_with_comments(&mut setup, "target", 2);
+        let mut first = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        let mut second = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+        first.snapshot_items(std::slice::from_ref(&id)).unwrap();
+        second.snapshot_items(std::slice::from_ref(&id)).unwrap();
+        let mut batch = WriteBatch {
+            comments: vec![crate::model::Comment {
+                seed: id.clone(),
+                index: 3,
+                author: "fixture".into(),
+                text: "first".into(),
+                created_at: ctx83l().now,
+                extra: Default::default(),
+            }],
+            source: "seeds:comment".into(),
+            ..Default::default()
+        };
+        first.commit(&batch, &ctx83l()).unwrap();
+        batch.comments[0].text = "second".into();
+        assert_eq!(
+            second.commit(&batch, &ctx83l()).unwrap_err().kind,
+            ErrorKind::Conflict
+        );
+        let comments = crate::engine::comment_list(&first, &id, None).unwrap();
+        assert_eq!(comments.len(), 3);
+        assert_eq!(comments[2].text, "first");
     }
 
     // aegis-83l: an update reads its seed once. The commit reuses that read

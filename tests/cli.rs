@@ -765,8 +765,195 @@ fn errors_carry_their_exit_codes_and_a_json_body() {
     assert_eq!(code(&sb.run(&["frobnicate"])), 2);
 }
 
+#[test]
+fn result_envelope_populated_missing_input_and_usage() {
+    let sb = Sandbox::new("result-envelope");
+    let id = sb
+        .ok(&["create", "populated", "--silent"])
+        .trim()
+        .to_string();
+    let good = sb.run(&["show", &id, "--result-json"]);
+    let value: Value = serde_json::from_slice(&good.stdout).unwrap();
+    assert_eq!(code(&good), 0);
+    assert_eq!(value["data"][0]["title"], "populated");
+    assert!(value["graph"]
+        .as_str()
+        .is_some_and(|g| g.starts_with("https://seeds.local/project/")));
+    assert_eq!(value["mutation_outcome"], "NOT_APPLICABLE");
+    let missing = sb.run(&[
+        "comments",
+        "add",
+        &id,
+        "--file",
+        "absent-private-body",
+        "--result-json",
+    ]);
+    let value: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(code(&missing), 2);
+    assert_eq!(value["error"]["category"], "MISSING_INPUT");
+    assert_eq!(value["mutation_outcome"], "NOT_WRITTEN");
+    assert!(!String::from_utf8_lossy(&missing.stdout).contains("absent-private-body"));
+    assert!(sb
+        .json(&["comments", "list", &id])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let missing = sb.run(&["show", "missing", "--result-json"]);
+    let value: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(code(&missing), 3);
+    assert_eq!(value["error"]["category"], "NOT_FOUND");
+    let usage = sb.run(&["--result-json", "frobnicate"]);
+    let value: Value = serde_json::from_slice(&usage.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "VALIDATION");
+    assert_eq!(value["mutation_outcome"], "NOT_WRITTEN");
+}
+
+#[test]
+fn result_envelope_before_write_transport_failure_is_not_a_commit() {
+    let sb = Sandbox::new("result-before-write");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let o = sb
+        .cmd(
+            &sb.work(),
+            &[
+                "--quipu",
+                &url,
+                "--graph",
+                "https://example.org/project/fixture",
+                "create",
+                "not submitted",
+                "--result-json",
+            ],
+        )
+        .env_remove("SEEDS_QUIPU_TOKEN")
+        .env_remove("QUIPU_AUTH_TOKEN")
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(code(&o), 7);
+    assert_eq!(v["error"]["category"], "TRANSPORT");
+    assert_eq!(v["mutation_outcome"], "NOT_WRITTEN");
+    assert_eq!(v["phase"], "READ");
+    assert!(!sb.work().join(".seeds/seeds.db").exists());
+}
+
+#[test]
+fn result_envelope_http_status_has_no_private_response_body() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    for (status, category) in [(401, "AUTH"), (403, "POLICY"), (408, "TIMEOUT")] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).unwrap();
+            let body = "Bearer private-response-body";
+            write!(stream,"HTTP/1.1 {status} Failure\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let sb = Sandbox::new(&format!("envelope-http-{status}"));
+        let verb = if status == 401 { "show" } else { "create" };
+        let o = sb
+            .cmd(
+                &sb.work(),
+                &[
+                    "--quipu",
+                    &url,
+                    "--graph",
+                    "https://example.org/project/fixture",
+                    verb,
+                    "missing",
+                    "--result-json",
+                ],
+            )
+            .env_remove("SEEDS_QUIPU_TOKEN")
+            .env_remove("QUIPU_AUTH_TOKEN")
+            .output()
+            .unwrap();
+        thread.join().unwrap();
+        assert_ne!(code(&o), 0);
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["error"]["category"], category);
+        assert_eq!(v["error"]["http_status"], status);
+        assert_eq!(
+            v["mutation_outcome"],
+            if verb == "show" {
+                "NOT_APPLICABLE"
+            } else {
+                "NOT_WRITTEN"
+            }
+        );
+        assert!(!String::from_utf8_lossy(&o.stdout).contains("private-response-body"));
+        assert!(!String::from_utf8_lossy(&o.stderr).contains("private-response-body"));
+    }
+}
+
 // aegis-bqgdr3 / w3k75d.15 C1: `--defer` on update is stored as given, and a
 // value that is not an xsd:date or xsd:dateTime is refused, never coerced.
+#[test]
+fn result_envelope_malformed_remote_read_stays_failed() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let thread = std::thread::spawn(move || {
+        for reply in ["ok", "private malformed response"] {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = n.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+        }
+    });
+    let sb = Sandbox::new("envelope-malformed-read");
+    let o = sb
+        .cmd(
+            &sb.work(),
+            &[
+                "--quipu",
+                &url,
+                "--graph",
+                "https://example.org/project/fixture",
+                "show",
+                "missing",
+                "--result-json",
+            ],
+        )
+        .env_remove("SEEDS_QUIPU_TOKEN")
+        .env_remove("QUIPU_AUTH_TOKEN")
+        .output()
+        .unwrap();
+    thread.join().unwrap();
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_ne!(code(&o), 0);
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["category"], "MALFORMED_RESPONSE");
+    assert!(v["data"].is_null());
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("private malformed response"));
+}
+
 #[test]
 fn a_defer_that_is_not_an_xsd_date_or_date_time_is_refused_by_name() {
     let sb = Sandbox::new("defer-lexical");

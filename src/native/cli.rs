@@ -20,6 +20,9 @@ use clap::{Args, Parser, Subcommand};
                   a local store at .seeds/seeds.db, created on first write."
 )]
 pub struct Cli {
+    /// Stable result envelope on stdout, including failures; implies --json.
+    #[arg(long, global = true)]
+    pub result_json: bool,
     /// Check named-credential destination policy without executing the command or reading a token.
     #[arg(long, global = true)]
     pub credential_admission: bool,
@@ -1510,6 +1513,7 @@ impl Cli {
     /// a trailing `--json`; it still counts.
     pub fn wants_json(&self) -> bool {
         self.json
+            || self.result_json
             || self.format.as_deref() == Some("json")
             || match &self.command {
                 Command::Query(a)

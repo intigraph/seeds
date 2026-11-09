@@ -286,3 +286,48 @@ fn a_failed_readback_after_a_lost_reply_is_unknown_without_retry() {
     assert_eq!(proxy.updates.load(Ordering::SeqCst), 1);
     assert_eq!(engine::comment_list(&direct, &id, None).unwrap().len(), 1);
 }
+
+#[test]
+fn result_envelope_retains_real_committed_comment_after_lost_reply() {
+    use clap::Parser;
+    let Some(server) = super::tests::quipu_server() else {
+        return;
+    };
+    let mut direct = connect(&server.base);
+    let id = seed(&mut direct);
+    let proxy = Proxy::new(&server.base, None, Reply::LostAndReadFails);
+    let mut b = connect(&proxy.base);
+    let cli = crate::native::cli::Cli::try_parse_from([
+        "sd",
+        "--result-json",
+        "comments",
+        "add",
+        &id,
+        "identical fields",
+    ])
+    .unwrap();
+    let outcome =
+        crate::native::result::capture(&cli, Some("urn:test:comment-receipts".into()), || {
+            let error = engine::comment_add(
+                &mut b,
+                &ctx("writer"),
+                &id,
+                "identical fields",
+                Some("declared-author"),
+            )
+            .unwrap_err();
+            crate::native::error_outcome(true, &error, vec![])
+        });
+    let value: Json = serde_json::from_str(&outcome.stdout).unwrap();
+    assert_eq!(outcome.code, 8);
+    assert_eq!(value["error"]["category"], "INDETERMINATE");
+    assert_eq!(value["mutation_outcome"], "UNKNOWN");
+    assert_eq!(value["phase"], "READBACK");
+    assert!(value["recovery"]["operation_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("urn:seeds:write:")));
+    assert_eq!(value["recovery"]["item_ids"], json!([id]));
+    assert_eq!(proxy.updates.load(Ordering::SeqCst), 1);
+    assert_eq!(engine::comment_list(&direct, &id, None).unwrap().len(), 1);
+    assert!(!outcome.stdout.contains("identical fields"));
+}

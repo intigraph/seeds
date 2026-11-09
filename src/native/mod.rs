@@ -20,6 +20,7 @@ pub mod provenance;
 pub mod read_stream;
 pub mod remote;
 mod replica;
+mod result;
 mod retained_history_cli;
 mod show;
 pub mod store;
@@ -56,6 +57,13 @@ pub struct Outcome {
 
 /// Run a parsed command against the configuration in the environment.
 pub fn run(cli: &Cli) -> Outcome {
+    if cli.result_json {
+        return result::run(cli);
+    }
+    run_legacy(cli)
+}
+
+fn run_legacy(cli: &Cli) -> Outcome {
     let _command_context = command_context::Scope::new(&cli.command);
     // This must precede even init/merge-driver and the other early exits.
     // A launcher may ask about a mutating command, but admission never runs it.
@@ -89,7 +97,7 @@ pub fn run(cli: &Cli) -> Outcome {
         // Needs no store and no configuration: git runs it mid-merge.
         return match merge_driver(a) {
             Ok(o) => o,
-            Err(e) => error_outcome(cli.json, &e, Vec::new()),
+            Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
         };
     }
     if let Some(pointer) = mapped_pointer(&cli.command) {
@@ -100,18 +108,18 @@ pub fn run(cli: &Cli) -> Outcome {
         // Needs no store and no configuration.
         return match completions(a) {
             Ok(o) => o,
-            Err(e) => error_outcome(cli.json, &e, Vec::new()),
+            Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
         };
     }
     if let Command::Capabilities { command_path } = &cli.command {
         return match capabilities(command_path.as_deref()) {
             Ok(v) => ok(
-                cli.json,
+                cli.wants_json(),
                 v.clone(),
                 serde_json::to_string_pretty(&v).unwrap_or_default(),
                 vec![],
             ),
-            Err(e) => error_outcome(cli.json, &e, Vec::new()),
+            Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
         };
     }
     if let Command::Schema { target } = &cli.command {
@@ -123,7 +131,7 @@ pub fn run(cli: &Cli) -> Outcome {
         };
         return match value {
             Some(v) => ok(
-                cli.json,
+                cli.wants_json(),
                 v.clone(),
                 serde_json::to_string_pretty(&v).unwrap_or_default(),
                 vec![],
@@ -134,48 +142,48 @@ pub fn run(cli: &Cli) -> Outcome {
                     "unknown schema {target:?}; one of all, {}",
                     names.join(", ")
                 ));
-                error_outcome(cli.json, &e, Vec::new())
+                error_outcome(cli.wants_json(), &e, Vec::new())
             }
         };
     }
     if let Command::Version(a) = &cli.command {
         // Needs no store and no configuration.
         if a.check {
-            return match version_check(cli.json) {
+            return match version_check(cli.wants_json()) {
                 Ok(o) => o,
-                Err(e) => error_outcome(cli.json, &e, Vec::new()),
+                Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
             };
         }
-        return version(cli.json, a.short);
+        return version(cli.wants_json(), a.short);
     }
     if let Command::Info(a) = &cli.command {
         // "Show and exit": about this build, not the ledger, so no store.
         if a.whats_new {
-            return whats_new(cli.json);
+            return whats_new(cli.wants_json());
         }
         if a.thanks {
-            return thanks(cli.json);
+            return thanks(cli.wants_json());
         }
     }
     if let Command::Init(a) = &cli.command {
         return match init(cli, a) {
             Ok(o) => o,
-            Err(e) => error_outcome(cli.json, &e, Vec::new()),
+            Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
         };
     }
     let result = config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
         .and_then(|i| config::resolve(&i).map(|cfg| (i, cfg)))
         .and_then(|(inputs, cfg)| match &cli.command {
-            Command::Config { command } => config_outcome(cli.json, &inputs, &cfg, command),
-            Command::Key { command } => key_outcome(cli.json, &inputs, &cfg, command),
+            Command::Config { command } => config_outcome(cli.wants_json(), &inputs, &cfg, command),
+            Command::Key { command } => key_outcome(cli.wants_json(), &inputs, &cfg, command),
             // Reads only the configuration: never creates a project id or a store.
-            Command::Where => Ok(where_outcome(cli.json, &cfg)),
-            Command::Identity => identity_outcome(cli.json, &cfg),
+            Command::Where => Ok(where_outcome(cli.wants_json(), &cfg)),
+            Command::Identity => identity_outcome(cli.wants_json(), &cfg),
             _ => run_with(cli, &cfg),
         });
     match result {
         Ok(o) => o,
-        Err(e) => error_outcome(cli.json, &e, Vec::new()),
+        Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
     }
 }
 
@@ -1119,7 +1127,7 @@ fn init(cli: &Cli, a: &cli::InitArgs) -> Result<Outcome> {
             format!("; kept {}", r.kept.join(", "))
         }
     );
-    Ok(ok(cli.json, value, text, vec![]))
+    Ok(ok(cli.wants_json(), value, text, vec![]))
 }
 
 fn error_outcome(json: bool, e: &SdError, warnings: Vec<String>) -> Outcome {
@@ -1263,6 +1271,7 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
             crate::vocab::project_graph_iri(&format!("{}-none", cfg.prefix))
         }
     };
+    result::record_graph(&graph);
     let cfg = &Resolved {
         graph: Some(graph),
         ..cfg.clone()
@@ -1629,7 +1638,7 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     let replica = remote.replica().cloned();
     let result = run_connected(cli, cfg, ctx, &mut remote);
     match replica {
-        Some(r) => with_replica(cli.json, result, &r),
+        Some(r) => with_replica(cli.wants_json(), result, &r),
         None => result,
     }
 }
@@ -1686,7 +1695,7 @@ fn run_connected(
             let dir = export_dir(a.to.as_deref(), cfg)?;
             let p = pendant_of(remote)?;
             let changed = store::write_pendant_dir(&dir, &p)?;
-            remote_export_outcome(cli.json, &dir, &p, changed, cfg.graph())
+            remote_export_outcome(cli.wants_json(), &dir, &p, changed, cfg.graph())
         }
         Command::Import(a) => import_into(cli, ctx, remote, a),
         Command::Sync(_) => Err(SdError::usage(
@@ -1858,7 +1867,7 @@ fn import_into(cli: &Cli, ctx: &Ctx, b: &mut dyn Backend, a: &cli::ImportArgs) -
         ));
     }
     Ok(ok(
-        cli.json,
+        cli.wants_json(),
         report_json(&r),
         report_text("imported", &r),
         warnings,
@@ -1895,6 +1904,7 @@ fn report_text(verb: &str, r: &sync::Report) -> String {
 }
 
 fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Result<Outcome> {
+    result::request_phase(cli.command.writes());
     if transfer::selected(&cli.command) {
         if cli.command.writes() {
             let mut h = store::open_for_write(path, cfg.graph())?;
@@ -1938,7 +1948,7 @@ fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Re
             } else {
                 store::write_pendant_dir(&dir, &p)?
             };
-            return Ok(export_outcome(cli.json, &dir, &p, changed));
+            return Ok(export_outcome(cli.wants_json(), &dir, &p, changed));
         }
         Command::Import(a) => {
             let mut h = store::open_for_write(path, cfg.graph())?;
@@ -2072,7 +2082,13 @@ fn run_sync(
         // every command in mode 1, the pendant was reconciled above; nothing
         // else is written (no commit on either side, no sync base, no export).
         let o = if a.status {
-            sync_status(cli.json, &url, base_existed, &p, a.allow_remote_deletes)
+            sync_status(
+                cli.wants_json(),
+                &url,
+                base_existed,
+                &p,
+                a.allow_remote_deletes,
+            )
         } else {
             if let Some(refused) = p.refusal(a.allow_remote_deletes) {
                 return Err(refused);
@@ -2088,7 +2104,7 @@ fn run_sync(
                 "local": report_json(&p.local.1),
                 "remote": report_json(&p.remote.1),
             });
-            ok(cli.json, json, text, vec![])
+            ok(cli.wants_json(), json, text, vec![])
         };
         return Ok(with_notes(o, notes));
     }
@@ -2131,7 +2147,7 @@ fn run_sync(
         "local": report_json(&local_r),
         "remote": report_json(&remote_r),
     });
-    Ok(with_notes(ok(cli.json, json, text, vec![]), notes))
+    Ok(with_notes(ok(cli.wants_json(), json, text, vec![]), notes))
 }
 
 /// `sd sync --status`: where the local store and the remote stand, from the
@@ -2303,7 +2319,12 @@ fn read_text(path: &str) -> Result<String> {
             .map_err(|e| SdError::usage(format!("cannot read stdin: {e}")))?;
         return Ok(s);
     }
-    std::fs::read_to_string(path).map_err(|e| SdError::usage(format!("cannot read {path}: {e}")))
+    std::fs::read_to_string(path).map_err(|e| {
+        let missing = e.kind() == std::io::ErrorKind::NotFound;
+        SdError::usage(format!("cannot read {path}: {e}")).with_details(
+            json!({"phase":"INPUT", "category":if missing {"MISSING_INPUT"} else {"VALIDATION"}}),
+        )
+    })
 }
 
 fn split_csv(s: &Option<String>) -> Vec<String> {
@@ -2514,32 +2535,32 @@ fn vocabulary_check(
     match result {
         Ok(false) => Ok(()),
         Ok(true) => Err(old_vocabulary(label, "old-vocabulary data")),
-        Err(e) if check_timed_out(&e) => Err(SdError::new(
-            e.kind,
-            format!(
+        Err(mut e) if check_timed_out(&e) => {
+            e.message = format!(
                 "{label}: the old-vocabulary check timed out twice, {}s apart: the store may \
                  be warming up after a restart. Nothing was read or written; retry the \
                  command. ({})",
                 VOCABULARY_RETRY_BACKOFF.as_secs(),
                 e.message
-            ),
-        )),
-        Err(e) if e.message.contains("could not be completed") => Err(SdError::new(
-            e.kind,
-            format!(
+            );
+            Err(e)
+        }
+        Err(mut e) if e.message.contains("could not be completed") => {
+            e.message = format!(
                 "{label}: the old-vocabulary check returned an unreadable answer, so the \
                  ledger cannot be shown to be readable; nothing was read or written: {}",
                 e.message
-            ),
-        )),
-        Err(e) => Err(SdError::new(
-            e.kind,
-            format!(
+            );
+            Err(e)
+        }
+        Err(mut e) => {
+            e.message = format!(
                 "{label}: the old-vocabulary check could not be completed, so the ledger \
                  cannot be shown to be readable; nothing was read or written: {}",
                 e.message
-            ),
-        )),
+            );
+            Err(e)
+        }
     }
 }
 
@@ -2553,7 +2574,7 @@ struct DueBackfillPlan {
 }
 
 fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result<Outcome> {
-    let json = cli.json;
+    let json = cli.wants_json();
     // Doctor reports an old-vocabulary ledger as a failed check instead.
     if !matches!(&cli.command, Command::Doctor(_)) {
         refuse_old_vocabulary(&ledger_label(cfg), b)?;
@@ -3876,6 +3897,12 @@ pub fn main_entry() -> i32 {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
+            if code != 0 && std::env::args_os().any(|arg| arg == "--result-json") {
+                let outcome = result::usage_failure(code);
+                println!("{}", outcome.stdout);
+                eprintln!("{}", outcome.stderr);
+                return code;
+            }
             let _ = error.print();
             if let Some(hint) = cli::usage_hint(&error) {
                 eprintln!("{hint}");
@@ -3885,9 +3912,10 @@ pub fn main_entry() -> i32 {
     };
     // --format json is --json; normalise once so every verb sees one flag.
     cli.json = cli.wants_json();
+    cli.json |= cli.result_json;
     let o = run(&cli);
     // br's -q: no output except errors. A failure still says why.
-    if cli.quiet && o.code == 0 {
+    if cli.quiet && o.code == 0 && !cli.result_json {
         return 0;
     }
     if !o.stdout.is_empty() {

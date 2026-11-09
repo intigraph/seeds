@@ -1,0 +1,24 @@
+Script started on 2026-11-09 09:12:18-05:00 [COMMAND="bash docs/demos/comment-registration/record.sh" <not executed on terminal>]
+Existing-target comment registration: local disposable server fixture
+Base: 03257c826b348907100075a82881f68e84865bbb
+Code revision: 54966a2be79d100355ece65dfeaccbed086e6d46
+
+BEFORE: archived actual run of this same wire reproducer on base + test only.
+thread 'native::remote::tests::existing_comment_write_skips_graph_discovery_and_keeps_history' (3232129) panicked at src/native/remote.rs:3953:9:
+assertion `left == right` failed: an existing-target comment must not enumerate the registry
+  left: 1
+ right: 0
+
+AFTER: actual run on changed code; assertion requires zero graph-list requests.
+$ comment-tests --exact native::remote::tests::existing_comment_write_skips_graph_discovery_and_keeps_history --nocapture
+
+running 1 test
+test native::remote::tests::existing_comment_write_skips_graph_discovery_and_keeps_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 226 filtered out; finished in 0.74s
+
+
+Same target, two old comments + one append: all three texts preserved.
+This is a fixture proof of registry-read elimination, not installed latency acceptance.
+
+Script done on 2026-11-09 09:12:18-05:00 [COMMAND_EXIT_CODE="0"]

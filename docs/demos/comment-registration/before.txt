@@ -1,0 +1,4 @@
+thread 'native::remote::tests::existing_comment_write_skips_graph_discovery_and_keeps_history' (3232129) panicked at src/native/remote.rs:3953:9:
+assertion `left == right` failed: an existing-target comment must not enumerate the registry
+  left: 1
+ right: 0

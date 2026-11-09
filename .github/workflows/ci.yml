@@ -131,18 +131,35 @@ jobs:
     env:
       QUIPU_TAG: ${{ matrix.tag }}
       QUIPU_SHA256: ${{ matrix.sha256 }}
+      CI_ARTIFACT_MIRROR_URL: ${{ vars.CI_ARTIFACT_MIRROR_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Pinned acquisition controls
+        run: python3 scripts/test-ci-asset-mirror.py
+      - id: quipu-asset-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/pinned-ci-assets
+          key: pinned-quipu-${{ matrix.tag }}-${{ matrix.sha256 }}
       - name: Fetch and verify quipu-server
         run: |
           set -euo pipefail
           a="quipu-${QUIPU_TAG}-x86_64-unknown-linux-gnu"
-          curl -fsSL -o "$a.tar.gz" "https://github.com/scbrown/quipu/releases/download/${QUIPU_TAG}/$a.tar.gz"
+          python3 scripts/fetch-pinned-ci-asset.py \
+            --url "https://github.com/scbrown/quipu/releases/download/${QUIPU_TAG}/$a.tar.gz" \
+            --sha256 "$QUIPU_SHA256" --output "$a.tar.gz" \
+            --cache-dir "${{ runner.temp }}/pinned-ci-assets"
           echo "${QUIPU_SHA256}  $a.tar.gz" | sha256sum -c -
           tar xzf "$a.tar.gz"
           echo "SEEDS_TEST_QUIPU_SERVER=$PWD/$a/quipu-server" >> "$GITHUB_ENV"
+      - name: Save verified Quipu archive before tests
+        if: steps.quipu-asset-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/pinned-ci-assets
+          key: pinned-quipu-${{ matrix.tag }}-${{ matrix.sha256 }}
       - name: Storage modes against the server
         run: |
           set -euo pipefail

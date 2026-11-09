@@ -296,6 +296,17 @@ fn quipu_read_request(req: ureq::Request, operation: &str) -> ureq::Request {
 }
 
 fn transport(url: &str, e: &ureq::Transport) -> SdError {
+    let mut cause = std::error::Error::source(e);
+    let mut timeout = false;
+    while let Some(error) = cause {
+        if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            timeout |= matches!(
+                io.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            );
+        }
+        cause = error.source();
+    }
     SdError::new(
         ErrorKind::Unreachable,
         format!(
@@ -303,6 +314,7 @@ fn transport(url: &str, e: &ureq::Transport) -> SdError {
              because that would fork the ledger."
         ),
     )
+    .with_details(json!({"category":if timeout {"TIMEOUT"} else {"TRANSPORT"}}))
 }
 
 /// Prefix of the error for a read quipu gave up on (HTTP 408 to `/query`).
@@ -348,7 +360,8 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
         let reason = reason.map(|r| format!(": {r}")).unwrap_or_default();
         return SdError::failed(format!(
             "quipu {what}: signed write refused ({verdict}){reason}.{hint}"
-        ));
+        ))
+        .with_details(json!({"http_status": code}));
     }
     let hint = if code == 401 || code == 403 {
         " The server wants a bearer token for writes: set SEEDS_QUIPU_TOKEN, or \
@@ -358,6 +371,7 @@ fn status_error(what: &str, code: u16, body: &str) -> SdError {
     };
     let body: String = body.chars().take(500).collect();
     SdError::failed(format!("quipu {what} failed (HTTP {code}): {body}{hint}"))
+        .with_details(json!({"http_status": code}))
 }
 
 /// The longest server reason sd repeats, in characters.
@@ -463,6 +477,7 @@ impl RemoteBackend {
             replica: None,
         };
         b.audience = b.resolve_audience()?;
+        super::result::request_phase(false);
         let health = if b.signer.is_some() {
             b.signed_request("GET", "/health", "", b"")?.call()
         } else {
@@ -672,6 +687,7 @@ impl RemoteBackend {
                 }
             }
         }
+        super::result::request_phase(matches!(path, "/update" | "/graph/create"));
         let response = if path == "/query" && !auth && self.signer.is_none() {
             retry_read(|| req.clone().send_string(body).map_err(Box::new)).map_err(|error| *error)
         } else {
@@ -703,7 +719,7 @@ impl RemoteBackend {
                 SdError::failed(format!(
                     "{QUERY_TIMEOUT}: quipu {path} answered HTTP 408: {}",
                     r.into_string().unwrap_or_default()
-                )),
+                )).with_details(json!({"http_status": 408})),
             )),
             Err(ureq::Error::Status(code, r)) => Err((
                 code >= 500,
@@ -1456,9 +1472,17 @@ pub use crate::vocab::provenance_graph;
 /// Complete bounded W3C probe results only. The sentinel proves the query
 /// produced a result; unknown, duplicate or truncated bindings refuse.
 fn preflight_answer(body: &str) -> Result<(bool, bool, bool)> {
-    let invalid =
-        || SdError::failed("combined vocabulary/presence preflight incomplete or invalid");
+    let invalid = || {
+        SdError::failed("combined vocabulary/presence preflight incomplete or invalid")
+            .with_details(json!({"category":"MALFORMED_RESPONSE"}))
+    };
     let value: Json = serde_json::from_str(body).map_err(|_| invalid())?;
+    if value.get("truncated") == Some(&Json::Bool(true)) {
+        return Err(
+            SdError::failed("combined vocabulary/presence preflight truncated")
+                .with_details(json!({"category":"PARTIAL"})),
+        );
+    }
     if value
         .get("truncated")
         .is_some_and(|v| v != &Json::Bool(false))
@@ -1587,12 +1611,14 @@ fn decode_select_general(text: &str) -> Result<(Vec<BTreeMap<String, Obj>>, bool
         SdError::failed(format!(
             "quipu /query returned something that is not JSON: {e}"
         ))
+        .with_details(json!({"category":"MALFORMED_RESPONSE"}))
     })?;
     let Some(rows) = v["results"]["bindings"].as_array() else {
         return Err(SdError::failed(format!(
             "quipu /query did not return SPARQL results JSON: {}",
             text.chars().take(300).collect::<String>()
-        )));
+        ))
+        .with_details(json!({"category":"MALFORMED_RESPONSE"})));
     };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {

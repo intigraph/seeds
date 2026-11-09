@@ -154,3 +154,35 @@ windows and attached graphs remain outside this live scope.
 Readers that must preserve old unread mail should use `--all-windows` for both
 listing and read marks until an explicit expiry lifecycle is implemented.
 This scope option neither archives messages nor changes inbox configuration.
+
+## Structured operation results
+
+`sd --result-json <command>` returns a `tracker-result/v1` envelope on stdout
+for normal tracker operations, including failures. This opts into a new shape;
+`--json` and human output retain their contracts and exit codes. Inspect both
+the process status and `ok` before using `data`; failure never means empty board.
+
+Fields: `operation_id`, `operation`, `tasks`, `graph`, `phase`,
+`mutation_outcome`, `exit_code`, `data`, `error`, and `reconcile`. Unknown graph
+or operation identity is null. Argument-parse failures have no guessed task.
+The random operation ID correlates this invocation; it is not an idempotence
+key or proof that the server stored a write. Task identities are reported for
+show, update, close, delete and comments; other commands may report none.
+
+Errors distinguish AUTH, POLICY, TIMEOUT, TRANSPORT, VALIDATION, MISSING_INPUT,
+NOT_FOUND, CONFLICT, MALFORMED_RESPONSE, CONFIG, INDETERMINATE and UNKNOWN.
+Known HTTP status is retained. Failure envelopes omit raw server bodies, private
+arguments and credentials. Ordinary human diagnostics remain in legacy mode.
+
+READ, WRITE, READBACK and INPUT identify observed boundaries; PREPARE means
+no more specific boundary was witnessed. A failure before submission can report
+NOT_WRITTEN. Submitted writes and failed readback preserve UNKNOWN. Multi-item
+operations may partially commit before failure; UNKNOWN retains that possibility.
+Success reports COMMITTED for write operations, including already satisfied
+keyed operations; it does not promise a new transaction. Reads and planned
+create/delete have NOT_APPLICABLE mutation outcome.
+
+Reconcile ambiguous writes through exact task status and operation evidence.
+Compare an original comment attempt's author, time and content before considering
+another submission. No retry, store fallback, credential action or override is
+added by this output mode.

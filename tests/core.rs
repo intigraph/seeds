@@ -5619,3 +5619,44 @@ fn update_history_missing_seed_preimage_refuses_without_history_fallback() {
     assert_eq!(before.seeds, after.seeds);
     assert_eq!(before.comments, after.comments);
 }
+
+#[test]
+fn cas_transition_comment_rebinds_an_unchanged_assignment_atomically() {
+    let mut b = backend();
+    let id = mk(&mut b, "receipt assignment", 1);
+    let req = UpdateReq {
+        status: Some("in_progress".into()),
+        assignee: Some("worker".into()),
+        ..Default::default()
+    };
+    engine::update(&mut b, &ctx(2), std::slice::from_ref(&id), &req).unwrap();
+    let before = b.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    let revision = before.get(&id).unwrap().revision;
+    let receipt = UpdateReq {
+        if_revision: Some(revision),
+        transition_comment: Some("Dispatch receipt: new runtime binding".into()),
+        ..req
+    };
+    let (rows, tx) = engine::update(&mut b, &ctx(3), std::slice::from_ref(&id), &receipt).unwrap();
+    assert_eq!(
+        rows[0].revision,
+        revision + 1,
+        "receipt must have its own CAS revision"
+    );
+    assert_eq!(rows[0].status, "in_progress");
+    assert_eq!(rows[0].assignee.as_deref(), Some("worker"));
+    let comments = engine::comment_list(&b, &id, None).unwrap();
+    assert_eq!(
+        comments.last().unwrap().text,
+        "Dispatch receipt: new runtime binding"
+    );
+    assert!(engine::comment_list(&b, &id, Some(tx - 1))
+        .unwrap()
+        .is_empty());
+    let after = b.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    let error = engine::update(&mut b, &ctx(4), std::slice::from_ref(&id), &receipt).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    let unchanged = b.snapshot_items(std::slice::from_ref(&id)).unwrap();
+    assert_eq!(after.seeds, unchanged.seeds);
+    assert_eq!(after.comments, unchanged.comments);
+}

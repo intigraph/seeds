@@ -2796,7 +2796,16 @@ pub fn update(
         if requesting_deferral {
             stamp_deferral_metadata(&mut s, ctx)?;
         }
-        if s == *before {
+        // A revision-guarded transition comment is itself a new binding, even
+        // when assignment fields already match (for example a fresh runtime's
+        // dispatch receipt). Commit it with its own revision in the same CAS;
+        // ordinary no-op updates and empty comments remain no-ops.
+        let binding_comment = req.if_revision.is_some()
+            && req
+                .transition_comment
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty());
+        if s == *before && !binding_comment {
             continue;
         }
         if requesting_deferral {

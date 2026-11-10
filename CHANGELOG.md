@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.1] - 2026-11-10
+
+### CI/CD
+
+- Notify homebrew tap on published release (#260) ([6527293](https://github.com/scbrown/seeds/commit/6527293793ea65a70a079b22356b3e1f5c1a7b9b))
+
+### Fixed
+
+- *(update)* Commit CAS-bound comments for matching assignments (#256) ([11c6a95](https://github.com/scbrown/seeds/commit/11c6a95390a91934de72c4d9541dc7613dd21b45))
+
 ## [0.20.0] - 2026-11-09
 
 ### Added

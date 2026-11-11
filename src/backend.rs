@@ -133,6 +133,8 @@ pub struct SeedQuery {
     pub priority: Option<u8>,
     /// Only children of this seed.
     pub parent: Option<String>,
+    /// Only this work lane (`now`, `next` or `later`).
+    pub lane: Option<String>,
 }
 
 impl SeedQuery {
@@ -144,6 +146,7 @@ impl SeedQuery {
             && self.labels.is_empty()
             && self.priority.is_none()
             && self.parent.is_none()
+            && self.lane.is_none()
     }
 
     /// Whether `s` matches: the exact meaning a backend's answer must cover.
@@ -163,6 +166,10 @@ impl SeedQuery {
                 .parent
                 .as_ref()
                 .is_none_or(|p| s.parent.as_ref() == Some(p))
+            && self
+                .lane
+                .as_ref()
+                .is_none_or(|l| s.lane.as_ref() == Some(l))
     }
 }
 

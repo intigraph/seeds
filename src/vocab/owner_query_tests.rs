@@ -141,3 +141,54 @@ fn indexed_owner_discovery_keeps_board_ids_and_default_open_semantics() {
     assert_eq!(ids(&store, false).len(), 50);
     assert_eq!(ids(&store, true).len(), 53);
 }
+
+// aegis-6vto.4: the lane cap reads its cohort through this pattern on a remote
+// board, so it must select exactly the items whose lane literal matches.
+#[test]
+fn lane_pattern_selects_exactly_that_lane() {
+    use quipu::{Datum, Op, Store, Value};
+    let mut store = Store::open_in_memory().unwrap();
+    let graph = store.graph_create("urn:board").unwrap();
+    let ty = store.intern(RDF_TYPE).unwrap();
+    let class = store.intern(&term::work_item()).unwrap();
+    let lane = store.intern(&term::lane()).unwrap();
+    let mut datums = Vec::new();
+    for (i, value) in [Some("now"), Some("now"), Some("next"), Some("later"), None]
+        .into_iter()
+        .enumerate()
+    {
+        let entity = store.intern(&format!("urn:seed:{i}")).unwrap();
+        let mut facts = vec![(ty, Value::Ref(class))];
+        if let Some(v) = value {
+            facts.push((lane, Value::Str(v.into())));
+        }
+        for (attribute, value) in facts {
+            datums.push(Datum {
+                entity,
+                attribute,
+                value,
+                valid_from: "2026-01-01T00:00:00Z".into(),
+                valid_to: None,
+                op: Op::Assert,
+            });
+        }
+    }
+    store
+        .transact_to_graph(&datums, "2026-01-01T00:00:00Z", None, None, graph)
+        .unwrap();
+    let count = |l: &str| {
+        let query = SeedQuery {
+            lane: Some(l.into()),
+            ..Default::default()
+        };
+        let pattern = seed_query_pattern(&query).unwrap();
+        let q = format!("SELECT ?s WHERE {{ GRAPH <urn:board> {{ {pattern} }} }}");
+        let quipu::sparql::QueryResult::Select { rows, .. } =
+            quipu::sparql::query(&store, &q).unwrap()
+        else {
+            panic!("SELECT required")
+        };
+        rows.len()
+    };
+    assert_eq!((count("now"), count("next"), count("later")), (2, 1, 1));
+}

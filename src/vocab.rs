@@ -156,6 +156,11 @@ pub mod term {
     pub fn rank() -> String {
         seeds("rank")
     }
+    /// The work lane (aegis-6vto.4): `now`, `next` or `later`, a plain
+    /// string. Absent means no lane assigned yet; priority stays severity.
+    pub fn lane() -> String {
+        seeds("lane")
+    }
     /// `ical:due`: when the work is due (br's `due_at`), an `xsd:date` or an
     /// `xsd:dateTime`.
     pub fn due_at() -> String {
@@ -448,6 +453,13 @@ fn seed_query_pattern_scoped(
             "{{ {scope}{subject} <{}> <{}> }}",
             term::child_of(),
             item_iri(parent)
+        ));
+    }
+    if let Some(lane) = &q.lane {
+        groups.push(format!(
+            "{{ {scope}{subject} <{}> {} }}",
+            term::lane(),
+            lit(lane)
         ));
     }
     if let Some(want) = &q.statuses {

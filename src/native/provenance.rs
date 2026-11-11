@@ -155,7 +155,18 @@ pub fn read_headers_from(
     if declared.as_deref().and_then(clean).is_none() {
         result.retain(|(name, _)| *name != "X-Quipu-Agent");
     }
-    for (header, value) in [
+    result.extend(read_declarations_from(&env, operation));
+    result
+}
+
+/// The two bounded read declarations alone: source and operation. They name
+/// what is reading, not who, so they are safe on a signed request too, where
+/// the verified key (never these headers) supplies the actor (aegis-dnw).
+pub fn read_declarations_from(
+    env: impl Fn(&str) -> Option<String>,
+    operation: &str,
+) -> [(&'static str, String); 2] {
+    [
         (
             "X-Quipu-Source",
             env("QUIPU_SOURCE")
@@ -168,10 +179,7 @@ pub fn read_headers_from(
                 .and_then(|v| task_header(&v))
                 .unwrap_or_else(|| operation.to_string()),
         ),
-    ] {
-        result.push((header, value));
-    }
-    result
+    ]
 }
 
 /// Apply read metadata only. Writer provenance/signatures use `apply` unchanged.
@@ -183,6 +191,19 @@ pub fn apply_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
     for (name, value) in read_headers_from(
         |k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()),
         hostname,
+        operation,
+    ) {
+        req = req.set(name, &value);
+    }
+    req
+}
+
+/// Add only the read declarations to an already signed read. Agent and
+/// session stay withheld (see [`apply_signed`]); the signature covers method,
+/// path, content type and body, so these diagnostic headers do not alter it.
+pub fn apply_signed_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
+    for (name, value) in read_declarations_from(
+        |k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()),
         operation,
     ) {
         req = req.set(name, &value);

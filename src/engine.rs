@@ -2845,7 +2845,6 @@ pub fn update(
             expected_revision: Some(before.revision),
         });
     }
-    check_lane_caps(b, &snap, &writes)?;
     let result = finish_with(
         b,
         ctx,
@@ -3291,6 +3290,9 @@ fn transition(
             expected_revision: Some(before.revision),
         });
     }
+    // reopen/undefer can bring a closed or parked item back INTO a full lane;
+    // this path commits directly, so it checks the cap itself (ian, #264).
+    check_lane_caps(b, &snap, &writes)?;
     let tx = if writes.is_empty() {
         snap.tx
     } else {
@@ -4089,6 +4091,9 @@ fn finish_with(
     source: &str,
     transition_comment: Option<&str>,
 ) -> Result<(Vec<Seed>, u64)> {
+    // Every status/field write path (update, reopen, undefer, claim, ...)
+    // commits here, so the lane cap cannot be skipped by any of them.
+    check_lane_caps(b, snap, &writes)?;
     let comments = transition_comments(snap, ctx, &writes, transition_comment);
     let mut out: BTreeMap<String, Seed> = BTreeMap::new();
     for w in &writes {

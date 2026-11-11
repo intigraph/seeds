@@ -239,3 +239,27 @@ fn list_filters_by_lane() {
     want.sort();
     assert_eq!(got, want);
 }
+
+// ian's #264 review: `sd reopen` commits through transition(), which used to
+// skip the cap, so reopening a closed Now item could make a sixth.
+#[test]
+fn sd_reopen_into_a_full_lane_is_refused_and_writes_nothing() {
+    let mut b = backend();
+    let five = fill(&mut b, "now", 5, 1);
+    engine::close(&mut b, &ctx(300), &[five[0].clone()], None, false).unwrap();
+    let replacement = mk(&mut b, "replacement", 301);
+    lane(&mut b, &replacement, "now", 302).unwrap();
+    let err = engine::reopen(&mut b, &ctx(303), &[five[0].clone()], None).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Refused);
+    let status = b
+        .snapshot(None)
+        .unwrap()
+        .get(&five[0])
+        .unwrap()
+        .status
+        .clone();
+    assert_eq!(status, "closed", "nothing written");
+    // With a free slot, the same reopen goes through.
+    lane(&mut b, &replacement, "later", 304).unwrap();
+    engine::reopen(&mut b, &ctx(305), &[five[0].clone()], None).unwrap();
+}

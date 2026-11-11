@@ -611,3 +611,70 @@ fn lost_message_response_resolves_original_binding_without_replaying_update() {
         }
     }
 }
+
+/// aegis-dnw: a signed read still declares its source and operation (they name
+/// what reads, not who), while the actor stays key-derived: no declared agent
+/// or session is ever sent beside the attestation. Before this, an enrolled
+/// `sd` sent every /query undeclared, so no reader could be attributed.
+#[test]
+fn signed_reads_declare_source_and_operation_but_never_the_actor() {
+    let signer =
+        crate::native::attest::Signer::from_seed([47; 32], "synthetic-session", "urn:crew:i")
+            .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let worker = std::thread::spawn(move || {
+        let mut captured = Vec::new();
+        let bodies = [
+            r#"{"store_id":"urn:uuid:gateway-fixture"}"#,
+            "ok",
+            r#"{"results":{"bindings":[]}}"#,
+        ];
+        for body in bodies {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut headers = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = n.trim().parse().unwrap();
+                }
+                headers.push_str(&line);
+            }
+            let mut payload = vec![0; length];
+            reader.read_exact(&mut payload).unwrap();
+            captured.push(headers.to_ascii_lowercase());
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        captured
+    });
+    let backend = RemoteBackend::connect(&base, "urn:fixture", None, Some(signer), &[]).unwrap();
+    backend
+        .select("SELECT ?s WHERE { ?s ?p ?o } LIMIT 1", None)
+        .unwrap();
+    let requests = worker.join().unwrap();
+    assert!(requests[0].starts_with("get /stats "), "{}", requests[0]);
+    assert!(requests[1].starts_with("get /health "), "{}", requests[1]);
+    assert!(requests[2].starts_with("post /query "), "{}", requests[2]);
+    for (request, operation) in [(&requests[1], "health"), (&requests[2], "query")] {
+        assert!(request.contains("x-quipu-attestation:"), "{request}");
+        assert!(request.contains("x-quipu-source: "), "{request}");
+        assert!(
+            request.contains(&format!("x-quipu-operation: {operation}\r\n")),
+            "{request}"
+        );
+        assert!(!request.contains("x-quipu-agent:"), "{request}");
+        assert!(!request.contains("x-quipu-session:"), "{request}");
+        assert!(!request.contains("authorization:"), "{request}");
+    }
+}

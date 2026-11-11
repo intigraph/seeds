@@ -479,7 +479,11 @@ impl RemoteBackend {
         b.audience = b.resolve_audience()?;
         super::result::request_phase(false);
         let health = if b.signer.is_some() {
-            b.signed_request("GET", "/health", "", b"")?.call()
+            super::provenance::apply_signed_read(
+                b.signed_request("GET", "/health", "", b"")?,
+                "health",
+            )
+            .call()
         } else {
             retry_read(|| {
                 quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
@@ -651,8 +655,15 @@ impl RemoteBackend {
         let url = format!("{}{path}", self.base);
         let request = self.agent.post(&url);
         let request = if self.signer.is_some() {
-            self.signed_request("POST", path, content_type, body.as_bytes())
-                .map_err(|e| (false, e))?
+            let signed = self
+                .signed_request("POST", path, content_type, body.as_bytes())
+                .map_err(|e| (false, e))?;
+            if path == "/query" && !auth {
+                // aegis-dnw: a signed read still declares its source/operation.
+                super::provenance::apply_signed_read(signed, "query")
+            } else {
+                signed
+            }
         } else if path == "/query" && !auth {
             quipu_read_request(request, "query")
         } else {
@@ -1343,6 +1354,7 @@ impl RemoteBackend {
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
         let response = if self.signer.is_some() {
             self.signed_request("GET", "/graphs", "", b"")
+                .map(|r| super::provenance::apply_signed_read(r, "graphs"))
                 .ok()?
                 .call()
                 .ok()?
@@ -1881,7 +1893,8 @@ impl Backend for RemoteBackend {
 
     fn message_windows(&self) -> Result<Vec<String>> {
         let response = if self.signer.is_some() {
-            self.signed_request("GET", "/graphs", "", b"")?
+            self.signed_request("GET", "/graphs", "", b"")
+                .map(|r| super::provenance::apply_signed_read(r, "graphs"))?
                 .call()
                 .map_err(|e| SdError::failed(format!("message window registry unreadable: {e}")))?
         } else {

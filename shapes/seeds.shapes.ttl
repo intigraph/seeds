@@ -66,6 +66,8 @@ seeds:SeedShape a sh:NodeShape ;
     sh:property [ sh:path seeds:deferredAt ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ;
     sh:property [ sh:path seeds:deferredBy ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
     sh:property [ sh:path seeds:rank ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:pattern "^-?[0-9]+(\\.[0-9]{1,9})?$" ] ;
+    # aegis-6vto.4: work lane. Absent = not yet assigned (no backfill).
+    sh:property [ sh:path seeds:lane ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:in ( "now" "next" "later" ) ] ;
     sh:property [ sh:path seeds:specStartVersion ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
     sh:property [ sh:path seeds:specStartActor ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
     sh:property [ sh:path seeds:specStartSession ; sh:maxCount 1 ; sh:datatype xsd:string ] ;

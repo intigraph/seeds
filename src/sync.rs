@@ -503,6 +503,15 @@ fn merge_seed(base: Option<&Seed>, l: &Seed, r: &Seed, sides: Sides) -> (Seed, V
             sides,
             dbg,
         ),
+        lane: pick(
+            "lane",
+            base.map(|b| &b.lane),
+            &l.lane,
+            &r.lane,
+            &mut c,
+            sides,
+            dbg,
+        ),
         due_at: pick(
             "due_at",
             base.map(|b| &b.due_at),

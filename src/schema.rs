@@ -44,6 +44,7 @@ pub const SEED: &[(&str, Kind)] = &[
     ("external_ref", Kind::OptStr),
     ("due_at", Kind::OptStr),
     ("rank", Kind::OptStr),
+    ("lane", Kind::OptStr),
     ("estimated_minutes", Kind::OptInt),
     ("owner", Kind::OptStr),
     ("status", Kind::Enum(STATUSES)),

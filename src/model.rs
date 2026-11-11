@@ -86,6 +86,29 @@ pub fn parse_priority(s: &str) -> Result<u8> {
     }
 }
 
+/// Work lanes, in serving order (aegis-6vto.4).
+pub const LANES: [&str; 3] = ["now", "next", "later"];
+/// How many live items a lane may hold; `None` = uncapped.
+pub fn lane_cap(lane: &str) -> Option<usize> {
+    match lane {
+        "now" => Some(5),
+        "next" => Some(40),
+        _ => None,
+    }
+}
+
+/// Validate a lane name (case-insensitive input, lowercase stored).
+pub fn parse_lane(s: &str) -> Result<String> {
+    let t = s.trim().to_ascii_lowercase();
+    if LANES.contains(&t.as_str()) {
+        Ok(t)
+    } else {
+        Err(SdError::usage(format!(
+            "lane must be now, next or later, got {s:?}"
+        )))
+    }
+}
+
 /// Validate a dependency type.
 pub fn parse_dep_type(s: &str) -> Result<String> {
     let s = s.trim().to_ascii_lowercase();
@@ -123,6 +146,8 @@ pub struct Seed {
     pub due_at: Option<String>,
     /// Exact decimal ordering key within a priority; absent sorts last.
     pub rank: Option<String>,
+    /// Work lane: `now`, `next` or `later` ([`LANES`]); absent = unassigned.
+    pub lane: Option<String>,
     /// A time estimate in minutes (br's `estimated_minutes`).
     pub estimated_minutes: Option<u32>,
     /// Who owns the work (br's `owner`, usually an email); distinct from the
@@ -312,6 +337,7 @@ impl Seed {
         );
         opt(&mut f, term::external_ref(), &self.external_ref);
         opt(&mut f, term::rank(), &self.rank);
+        opt(&mut f, term::lane(), &self.lane);
         if let Some(d) = &self.due_at {
             f.push((term::due_at(), date_or_date_time(d)));
         }
@@ -401,6 +427,7 @@ impl Seed {
                 external_ref: some("e"),
                 due_at: some("2026-01-01"),
                 rank: some("1"),
+                lane: some("next"),
                 estimated_minutes: Some(30),
                 owner: some("o"),
                 status: "closed".into(),
@@ -516,6 +543,7 @@ impl Seed {
             external_ref: s(term::external_ref()),
             due_at: t(term::due_at()),
             rank: s(term::rank()),
+            lane: s(term::lane()),
             estimated_minutes: t(term::estimated_minutes())
                 .as_deref()
                 .and_then(parse_minutes_duration),
@@ -565,6 +593,11 @@ impl Seed {
         if let Some(rank) = &self.rank {
             if crate::rank::parse(rank).is_err() {
                 out.push(format!("{}: invalid rank", self.id));
+            }
+        }
+        if let Some(lane) = &self.lane {
+            if parse_lane(lane).is_err() {
+                out.push(format!("{}: invalid lane", self.id));
             }
         }
         let mut check = |field: &str, v: Option<&str>, date_ok: bool| {
@@ -765,6 +798,7 @@ impl Seed {
             "external_ref": self.external_ref,
             "due_at": self.due_at,
             "rank": self.rank,
+            "lane": self.lane,
             "estimated_minutes": self.estimated_minutes,
             "owner": self.owner,
             "status": self.status,

@@ -696,6 +696,7 @@ fn listing_query(f: &CompiledFilter, hidden: &[&str]) -> SeedQuery {
         labels: f.labels.clone(),
         priority: f.priority,
         parent: f.parent.clone(),
+        lane: f.lane.clone(),
     }
 }
 
@@ -756,6 +757,8 @@ pub struct Filter {
     pub priority: Option<String>,
     /// Only children of this seed.
     pub parent: Option<String>,
+    /// Only this work lane (now, next or later).
+    pub lane: Option<String>,
     /// Title contains this (case-insensitive).
     pub title_contains: Option<String>,
     /// Description contains this (case-insensitive).
@@ -797,6 +800,7 @@ impl Filter {
                 .map(model::parse_priority)
                 .transpose()?,
             parent: self.parent.clone(),
+            lane: self.lane.as_deref().map(model::parse_lane).transpose()?,
             title_contains: self.title_contains.as_deref().map(str::to_lowercase),
             desc_contains: self.desc_contains.as_deref().map(str::to_lowercase),
             notes_contains: self.notes_contains.as_deref().map(str::to_lowercase),
@@ -830,6 +834,7 @@ struct CompiledFilter {
     labels: BTreeSet<String>,
     priority: Option<u8>,
     parent: Option<String>,
+    lane: Option<String>,
     title_contains: Option<String>,
     desc_contains: Option<String>,
     notes_contains: Option<String>,
@@ -855,6 +860,10 @@ impl CompiledFilter {
                 .parent
                 .as_ref()
                 .is_none_or(|p| s.parent.as_ref() == Some(p))
+            && self
+                .lane
+                .as_ref()
+                .is_none_or(|l| s.lane.as_ref() == Some(l))
             && contains(&self.title_contains, Some(&s.title))
             && contains(&self.desc_contains, s.description.as_ref())
             && contains(&self.notes_contains, s.notes.as_ref())
@@ -2387,6 +2396,9 @@ pub struct UpdateReq {
     pub if_revision: Option<u64>,
     /// Exact decimal rank; empty clears it.
     pub rank: Option<String>,
+    /// Work lane `now`, `next` or `later`; empty clears it. Entering a capped
+    /// lane past its cap is refused (aegis-6vto.4).
+    pub lane: Option<String>,
     /// Move immediately before this same-priority seed.
     pub before: Option<String>,
     /// Move immediately after this same-priority seed.
@@ -2444,6 +2456,7 @@ fn revision_conflict(current: &Seed, expected: u64, req: &UpdateReq) -> SdError 
         ("owner", &req.owner),
         ("due_at", &req.due),
         ("rank", &req.rank),
+        ("lane", &req.lane),
         ("estimated_minutes", &req.estimate),
         ("parent", &req.parent),
     ] {
@@ -2615,6 +2628,17 @@ pub fn update(
     } else {
         None
     };
+    let lane = req
+        .lane
+        .as_deref()
+        .map(|l| {
+            if l.trim().is_empty() {
+                Ok(None)
+            } else {
+                model::parse_lane(l).map(Some)
+            }
+        })
+        .transpose()?;
     let explicit_rank = req
         .rank
         .as_deref()
@@ -2724,6 +2748,9 @@ pub fn update(
         }
         if let Some(rank) = &move_rank {
             s.rank = Some(rank.clone());
+        }
+        if let Some(l) = &lane {
+            s.lane = l.clone();
         }
         if let Some(m) = &req.estimate {
             s.estimated_minutes = Some(parse_estimate(m)?);
@@ -2845,6 +2872,89 @@ pub fn update(
         }
         other => other,
     }
+}
+
+/// Whether a seed occupies a lane slot: live (not closed, not a tombstone).
+fn occupies_lane(s: &Seed) -> bool {
+    s.status != "closed" && !s.is_tombstone()
+}
+
+/// Refuse writes that would put more live items into a capped lane than its
+/// cap (aegis-6vto.4: Now 5, Next 40), naming what could leave instead.
+///
+/// Only items ENTERING the lane are counted against it (a new lane, or a
+/// closed item reopened inside it); editing or reranking an item that is
+/// already in the lane is never refused. The cohort read is the same bounded
+/// `snapshot_where` a move uses; a failed read refuses, never passes.
+fn check_lane_caps(b: &dyn Backend, snap: &Snapshot, writes: &[SeedWrite]) -> Result<()> {
+    for lane in model::LANES {
+        let Some(cap) = model::lane_cap(lane) else {
+            continue;
+        };
+        let entering: Vec<&Seed> = writes
+            .iter()
+            .map(|w| &w.seed)
+            .filter(|s| s.lane.as_deref() == Some(lane) && occupies_lane(s))
+            .filter(|s| {
+                snap.get(&s.id).map_or(true, |before| {
+                    before.lane.as_deref() != Some(lane) || !occupies_lane(before)
+                })
+            })
+            .collect();
+        if entering.is_empty() {
+            continue;
+        }
+        let written: BTreeSet<&str> = writes.iter().map(|w| w.seed.id.as_str()).collect();
+        let cohort = b.snapshot_where(&SeedQuery {
+            lane: Some(lane.to_string()),
+            ..Default::default()
+        })?;
+        let mut members: Vec<&Seed> = cohort
+            .seeds
+            .values()
+            .filter(|s| s.lane.as_deref() == Some(lane) && occupies_lane(s))
+            .filter(|s| !written.contains(s.id.as_str()))
+            .collect();
+        // Staying members that are also written keep their slot.
+        let staying = writes
+            .iter()
+            .map(|w| &w.seed)
+            .filter(|s| s.lane.as_deref() == Some(lane) && occupies_lane(s))
+            .count()
+            - entering.len();
+        let total = members.len() + staying + entering.len();
+        if total <= cap {
+            continue;
+        }
+        if lane == "now" {
+            members.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then(a.id.cmp(&b.id)));
+        } else {
+            members.sort_by(|a, b| {
+                let key = |s: &Seed| s.rank.as_deref().and_then(|r| crate::rank::parse(r).ok());
+                (key(a).is_none(), key(a), &a.id).cmp(&(key(b).is_none(), key(b), &b.id))
+            });
+        }
+        let could_leave: Vec<serde_json::Value> = members
+            .iter()
+            .map(|s| {
+                serde_json::json!({"id": s.id, "priority": s.priority, "rank": s.rank,
+                    "title": s.title.chars().take(120).collect::<String>(),
+                    "updated_at": s.updated_at})
+            })
+            .collect();
+        let names: Vec<&str> = members.iter().map(|s| s.id.as_str()).collect();
+        return Err(SdError::refused(format!(
+            "lane {lane} is full ({total} would exceed cap {cap}); nothing written. \
+             Move one of these out first (e.g. to later): {}",
+            names.join(", ")
+        ))
+        .with_details(serde_json::json!({
+            "schema": "seed-lane-cap/v1", "lane": lane, "cap": cap,
+            "entering": entering.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            "could_leave": could_leave,
+        })));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- labels
@@ -3180,6 +3290,9 @@ fn transition(
             expected_revision: Some(before.revision),
         });
     }
+    // reopen/undefer can bring a closed or parked item back INTO a full lane;
+    // this path commits directly, so it checks the cap itself (ian, #264).
+    check_lane_caps(b, &snap, &writes)?;
     let tx = if writes.is_empty() {
         snap.tx
     } else {
@@ -3978,6 +4091,9 @@ fn finish_with(
     source: &str,
     transition_comment: Option<&str>,
 ) -> Result<(Vec<Seed>, u64)> {
+    // Every status/field write path (update, reopen, undefer, claim, ...)
+    // commits here, so the lane cap cannot be skipped by any of them.
+    check_lane_caps(b, snap, &writes)?;
     let comments = transition_comments(snap, ctx, &writes, transition_comment);
     let mut out: BTreeMap<String, Seed> = BTreeMap::new();
     for w in &writes {

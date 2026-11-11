@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "6756c418caa8459045cc3fe41bb35ed8a2a62fd4f2b8aa4c09717f5891ce675a",
+      "source_sha256": "d9cbf4ba257d894a58a8133c19103a9471e548883d96f8cd62f9ea402d506017",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"

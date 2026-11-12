@@ -892,10 +892,7 @@ fn ready_refuses_a_seed_stored_under_a_non_canonical_iri() {
 
 #[test]
 fn broad_full_search_uses_bounded_requests_and_matches_whole_snapshot() {
-    if std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_none() {
-        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_INDEX_PREPARER");
-        return;
-    }
+    let indexed = std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_some();
     let Some(server) = quipu_server() else {
         eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER");
         return;
@@ -937,6 +934,18 @@ fn broad_full_search_uses_bounded_requests_and_matches_whole_snapshot() {
             limit: Some(25),
             ..Default::default()
         };
+        if !indexed {
+            // The legacy-server matrix has no index preparer. Exercise its
+            // refusal instead of reporting a skipped remote test as a pass.
+            let error = remote.search_page(&req).unwrap_err();
+            assert!(
+                error.message.contains("substring")
+                    || error.message.contains("acknowledge readiness"),
+                "unprepared broad search must refuse, all={all}: {error}"
+            );
+            eprintln!("unprepared broad full search refusal verified (all={all})");
+            continue;
+        }
         let expected = engine::search(&Whole(&mut remote), &req, None).unwrap();
         let before = super::tests::seeds_queries(&server.base);
         let actual = engine::search(&remote, &req, None).unwrap();

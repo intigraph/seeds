@@ -1,1 +1,2 @@
 docs/design/assets/targeted-unlock/output.log -text whitespace=cr-at-eol
+docs/pr-demos/bounded-search.typescript -text whitespace=cr-at-eol

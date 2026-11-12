@@ -42,4 +42,8 @@ Selection keeps a seed live when any of these hold:
 
 Each batch is one update. Its branches name each seed as a bound IRI, never `VALUES` (not pushed down, so a whole-graph scan) and never a `BIND` of an outer variable (unbound inside the nested group, so it matches the whole graph). A forward branch also requires the seed to still be `closed`, so a seed reopened since selection stays. After each update the batch is verified: the facts read from the source before the move must be exactly the facts in the destination after it, with none left in the source. A mismatch stops the run before the next batch. A lost response is never resent: the verification read decides whether it landed.
 
+The log gets an `intent` line naming the batch's ids, written and synced BEFORE its update is sent, and a `result` line after verification. An update can commit and still fail verification (a timed-out read-back, a lost response, a fact added since the pre-read), so the run stops with that batch in the archive and no `result` line; the error names the batch ids and the log to reverse. `sd unarchive --from-log` reads both line kinds and moves back only what the archive holds, so an intent for a batch that never landed restores nothing.
+
+Dependency protection follows edges from seeds that stay live because they are open or closed on or after the cutoff. A closed seed kept live only by the protect file or a label does not protect its own dependency targets: such an edge can point into the archive. That is intended; by-id reads (`show`, dependency status) look in the archive.
+
 A writer with exact graph scope needs the archive graph in its grant.

@@ -343,6 +343,12 @@ impl RemoteBackend {
         );
         // A lost response may still have committed: never resend blind. The
         // verification below reads both graphs and decides what happened.
+        #[cfg(test)]
+        BEFORE_UPDATE.with(|hook| {
+            if let Some(f) = hook.borrow().as_ref() {
+                f(self);
+            }
+        });
         let (tx, lost) =
             match self.send("/update", "application/x-www-form-urlencoded", &form, true) {
                 Ok(body) => (
@@ -382,10 +388,12 @@ impl RemoteBackend {
         if !after_src.is_empty() || after_dst != expected {
             return Err(SdError::failed(format!(
                 "archive batch verification FAILED after tx {tx}: {} subject(s) left in the source, \
-                 destination holds {} of {} expected subject(s). Stop: no further batch was sent.",
+                 destination holds {} of {} expected subject(s). Stop: no further batch was sent. \
+                 Batch ids: {}",
                 after_src.len(),
                 after_dst.len(),
-                expected.len()
+                expected.len(),
+                found_vec.join(" ")
             )));
         }
         Ok(Moved {
@@ -395,6 +403,16 @@ impl RemoteBackend {
             tx,
         })
     }
+}
+
+/// Test-only fault injection: runs after the pre-read and before the
+/// update is sent, so a test can change the graph in that gap.
+#[cfg(test)]
+type BeforeUpdate = Box<dyn Fn(&RemoteBackend)>;
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BEFORE_UPDATE: std::cell::RefCell<Option<BeforeUpdate>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

@@ -461,8 +461,8 @@ pub struct ArchiveArgs {
     /// Move them; without it, print the plan and move nothing
     #[arg(long)]
     pub execute: bool,
-    /// Append one JSON line per moved batch here (required with --execute);
-    /// `sd unarchive --from-log` reverses exactly those batches
+    /// Append an intent line before each batch and a result line after it
+    /// (required with --execute); `sd unarchive --from-log` reverses them
     #[arg(long)]
     pub log: Option<std::path::PathBuf>,
 }

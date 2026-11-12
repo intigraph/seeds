@@ -1,7 +1,7 @@
 //! `sd archive` / `sd unarchive` (aegis-n0wc.1): the operator verbs over
 //! [`remote::archive`](super::remote::archive). A plan unless `--execute`;
-//! an executed run appends one JSON line per batch to its log, and stops at
-//! the first batch that fails verification.
+//! an executed run logs each batch's intent before its update and its result
+//! after, and stops at the first batch that fails verification.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -121,11 +121,35 @@ pub(super) fn archive(
     let mut moved_seeds = 0usize;
     let mut moved_subjects = 0usize;
     for (n, chunk) in movable.chunks(a.batch).enumerate() {
-        let m = remote.archive_move(ctx, chunk, true)?;
+        // The intent line is durable BEFORE the update is sent: an update can
+        // commit and still fail verification (timeout, lost response, a fact
+        // added since the pre-read), and `--from-log` must reverse it then.
+        // `unarchive` moves back only what the archive actually holds, so an
+        // intent for a batch that never landed restores nothing.
         append(
             log,
-            &json!({"op": "archive", "batch": n, "tx": m.tx, "ids": m.ids, "subjects": m.subjects, "facts": m.facts}),
+            &json!({"op": "archive", "phase": "intent", "batch": n, "ids": chunk}),
         )?;
+        let m = remote.archive_move(ctx, chunk, true).map_err(|e| {
+            SdError::failed(format!(
+                "{}\nbatch {n} ids: {}\nits intent is logged; reverse it with: sd unarchive --from-log {} --execute",
+                e.message,
+                chunk.join(" "),
+                log.display()
+            ))
+        })?;
+        append(
+            log,
+            &json!({"op": "archive", "phase": "result", "batch": n, "tx": m.tx, "ids": m.ids, "subjects": m.subjects, "facts": m.facts}),
+        )
+        .map_err(|e| {
+            SdError::failed(format!(
+                "{}\nbatch {n} moved (tx {}) but its result line was not written; its intent line names ids: {}",
+                e.message,
+                m.tx,
+                chunk.join(" ")
+            ))
+        })?;
         moved_seeds += m.ids.len();
         moved_subjects += m.subjects;
     }

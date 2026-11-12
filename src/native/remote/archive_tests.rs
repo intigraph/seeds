@@ -431,3 +431,107 @@ fn archive_then_unarchive_restores_every_fact_byte_for_byte() {
     );
     assert_eq!(r.archived_count().unwrap(), Some(0));
 }
+
+/// ian review of #266: an update can commit and still fail verification. The
+/// batch's intent line is logged BEFORE the update, the error names its ids,
+/// and `unarchive --from-log` restores it.
+#[test]
+fn a_batch_that_fails_verification_after_commit_is_logged_and_reversible() {
+    let Some(server) = server_or_skip() else {
+        return;
+    };
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/archive-fault",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let mut c = ctx();
+    c.now = "2026-09-01T00:00:00Z".into();
+    let a = create(&mut r, &c, "a", None);
+    engine::comment_add(&mut r, &c, &a, "one", None).unwrap();
+    engine::close(&mut r, &c, std::slice::from_ref(&a), Some("done"), false).unwrap();
+    let ids = vec![a.clone()];
+    let live = r.graph.clone();
+    let before = r.family_facts_for_test(&live, &ids);
+
+    let dir =
+        std::env::temp_dir().join(format!("seeds-archive-fault-{}-{}", std::process::id(), a));
+    std::fs::create_dir_all(&dir).unwrap();
+    let protect = dir.join("protect.json");
+    std::fs::write(&protect, r#"{"items":[]}"#).unwrap();
+    let log = dir.join("log.jsonl");
+
+    // A fact added to the seed in the gap between the pre-read and the update:
+    // the update commits and moves it too, so the read-back cannot match.
+    let injected = "https://seeds.local/test#injected";
+    let (g, item) = (live.clone(), vocab::item_iri(&a));
+    super::archive::BEFORE_UPDATE.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move |r: &RemoteBackend| {
+            let update =
+                format!("INSERT DATA {{ GRAPH <{g}> {{ <{item}> <{injected}> \"late\" }} }}");
+            let form = format!(
+                "update={}&actor=tester&source={}",
+                form_encode(&update),
+                form_encode("seeds:test-fault")
+            );
+            r.send("/update", "application/x-www-form-urlencoded", &form, true)
+                .expect("inject a fact");
+        }));
+    });
+    let args = crate::native::cli::ArchiveArgs {
+        closed_before: "2026-10-01T00:00:00Z".into(),
+        protect: protect.clone(),
+        batch: 100,
+        limit: 0,
+        execute: true,
+        log: Some(log.clone()),
+    };
+    let result = crate::native::archive_cli::archive(false, &c, &r, &args);
+    super::archive::BEFORE_UPDATE.with(|h| *h.borrow_mut() = None);
+    let err = result.err().expect("verification must fail");
+    assert!(
+        err.message.contains("verification FAILED"),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.message.contains(&a),
+        "the error names the batch ids: {}",
+        err.message
+    );
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains("\"phase\":\"intent\"") && text.contains(&a),
+        "the intent was logged before the update: {text}"
+    );
+    assert!(
+        !text.contains("\"phase\":\"result\""),
+        "a failed batch has no result line: {text}"
+    );
+    assert!(
+        r.snapshot_items(&ids).unwrap().seeds.is_empty(),
+        "the committed batch did leave the live board"
+    );
+
+    let un = crate::native::cli::UnarchiveArgs {
+        ids: Vec::new(),
+        from_log: Some(log.clone()),
+        batch: 100,
+        execute: true,
+    };
+    crate::native::archive_cli::unarchive(false, &c, &r, &un).unwrap();
+    let mut after = r.family_facts_for_test(&live, &ids);
+    for facts in after.values_mut() {
+        facts.retain(|(p, _)| p != injected);
+    }
+    assert_eq!(before, after, "the log restores every original fact");
+    assert!(
+        r.family_facts_for_test(&vocab::archive_graph(&live), &ids)
+            .is_empty(),
+        "nothing left in the archive"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

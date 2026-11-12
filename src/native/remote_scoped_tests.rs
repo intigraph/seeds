@@ -891,6 +891,80 @@ fn ready_refuses_a_seed_stored_under_a_non_canonical_iri() {
 }
 
 #[test]
+fn broad_full_search_uses_bounded_requests_and_matches_whole_snapshot() {
+    let indexed = std::env::var_os("SEEDS_TEST_QUIPU_INDEX_PREPARER").is_some();
+    let Some(server) = quipu_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER");
+        return;
+    };
+    let graph = "https://seeds.local/project/broad-search";
+    let mut remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+    // Enough matching metadata to exceed the request budget when read as
+    // small per-subject UNION batches, without large bodies or comments.
+    for batch in 0..15 {
+        let mut triples = String::new();
+        for n in batch * 200..(batch + 1) * 200 {
+            let id = format!("broad-{n:04}");
+            let status = if n % 4 == 0 { "closed" } else { "open" };
+            triples +=
+                &format!(
+                "<{}> a <{}> ; <{}> \"{id}\" ; <{}> \"broad needle {n}\" ; <{}> \"{status}\" . ",
+                vocab::item_iri(&id), term::work_item(), term::identifier(),
+                term::name(), term::status());
+        }
+        remote
+            .post(
+                "/update",
+                "application/x-www-form-urlencoded",
+                &format!(
+                    "update={}",
+                    super::form_encode(&format!(
+                        "INSERT DATA {{ GRAPH <{graph}> {{ {triples} }} }}"
+                    ))
+                ),
+                true,
+            )
+            .unwrap();
+    }
+    for all in [true, false] {
+        let req = engine::SearchReq {
+            query: "needle".into(),
+            full: true,
+            all,
+            limit: Some(25),
+            ..Default::default()
+        };
+        if !indexed {
+            // The legacy-server matrix has no index preparer. Exercise its
+            // refusal instead of reporting a skipped remote test as a pass.
+            let error = remote.search_page(&req).unwrap_err();
+            assert!(
+                error.message.contains("substring")
+                    || error.message.contains("acknowledge readiness"),
+                "unprepared broad search must refuse, all={all}: {error}"
+            );
+            eprintln!("unprepared broad full search refusal verified (all={all})");
+            continue;
+        }
+        let expected = engine::search(&Whole(&mut remote), &req, None).unwrap();
+        let before = super::tests::seeds_queries(&server.base);
+        let actual = engine::search(&remote, &req, None).unwrap();
+        let calls = super::tests::seeds_queries(&server.base) - before;
+        eprintln!(
+            "full search (all={all}): {calls} upstream queries, {} matches, {} hidden closed",
+            actual.page.total, actual.hidden_closed
+        );
+        assert!(
+            calls <= 20,
+            "broad full search made {calls} upstream queries"
+        );
+        assert_eq!(actual.page.total, if all { 3000 } else { 2250 });
+        assert_eq!(actual.hidden_closed, if all { 0 } else { 750 });
+        assert_eq!(output::search_json(&actual), output::search_json(&expected));
+    }
+}
+
+#[test]
 fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
     let Some(server) = quipu_server() else {
         eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER");
@@ -899,6 +973,10 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
     let graph = "https://seeds.local/project/shadow-controls";
     let eph = vocab::ephemeral_graph(graph);
     let mut remote = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+    // Force matching metadata to page through a multi-valued subject. A row
+    // boundary can split one seed's projected fields; it must not lose facts
+    // or skip that seed when advancing the subject cursor.
+    remote.subject_page = 2;
     let item = |id: &str| vocab::item_iri(id);
     let a = term::work_item();
     let id = term::identifier();
@@ -915,7 +993,7 @@ fn search_shadowing_and_identifier_counts_match_effective_snapshot() {
         .unwrap();
     };
     update(&remote, format!("INSERT DATA {{ GRAPH <{graph}> {{
-        <{}> a <{a}> ; <{id}> \"control\" ; <{name}> \"positive needle\" ; <{status}> \"open\" .
+        <{}> a <{a}>, <https://example.org/ExtraType> ; <{id}> \"control\" ; <{name}> \"positive needle\" ; <{status}> \"open\" .
         <{}> a <{a}> ; <{id}> \"shadow\" ; <{name}> \"obsolete needle\" ; <{desc}> \"old needle description\" ; <{status}> \"open\" .
         <https://example.org/alias> a <{a}> ; <{id}> \"control\" ; <{name}> \"positive needle\" .
         <{}> a <{a}> ; <{id}> 42 ; <{name}> \"numeric needle\" .

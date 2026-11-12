@@ -575,6 +575,18 @@ pub fn ephemeral_graph(graph: &str) -> String {
     }
 }
 
+/// The side graph holding seeds the board archive moved out of the live
+/// project graph (aegis-n0wc.1): closed seeds past an age cutoff, with their
+/// comments, under their unchanged IRIs. Board reads (list, ready, stats) skip
+/// it; reads by exact id fall back to it, so an archived seed is still found.
+pub fn archive_graph(graph: &str) -> String {
+    if graph.contains('#') {
+        format!("{graph}-seeds-archive")
+    } else {
+        format!("{graph}#seeds-archive")
+    }
+}
+
 /// The side graph holding who wrote what (`seeds:Write` records and their
 /// attribution claims). Snapshots and exports never read it.
 pub fn provenance_graph(graph: &str) -> String {

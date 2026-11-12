@@ -41,6 +41,9 @@ fn view_json(v: &SeedView) -> Json {
     o["comments"] = v.comments.iter().map(Comment::to_json).collect();
     o["comments_total"] = json!(v.comments.len());
     o["comments_folded"] = json!(0);
+    // Ids (this seed, or a seed on one of its edges) read from the board
+    // archive, not the live graph (aegis-n0wc.1). Always present.
+    o["archived"] = json!(v.archived.iter().collect::<Vec<_>>());
     // The native adapter replaces this with a live observation.
     o["external_blockers"] = json!({"status":"not_observed","blockers":[]});
     o
@@ -504,6 +507,13 @@ pub fn view_text(v: &SeedView) -> String {
         out.push(format!(
             "  closed {c}: {}",
             s.close_reason.as_deref().unwrap_or("(no reason)")
+        ));
+    }
+    if !v.archived.is_empty() {
+        let ids: Vec<&str> = v.archived.iter().map(String::as_str).collect();
+        out.push(format!(
+            "  archived (read from the board archive): {}",
+            ids.join(", ")
         ));
     }
     if let Some(d) = &s.defer_until {

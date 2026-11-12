@@ -191,6 +191,10 @@ pub fn target(name: &str) -> Option<Json> {
             ("comments", json!({"type": "array", "items": comment})),
             ("comments_total", kind(Kind::Int)),
             ("comments_folded", kind(Kind::Int)),
+            (
+                "archived",
+                json!({"type": "array", "items": {"type": "string"}}),
+            ),
         ]),
         "blocked-issue" => seed_with(&[
             dependent_count,

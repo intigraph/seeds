@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.0] - 2026-11-12
+
+### Added
+
+- *(archive)* Sd archive / sd unarchive, archived counts in stats, archived writes refused (#266) ([ff1fa8e](https://github.com/scbrown/seeds/commit/ff1fa8e60260dedae857bbd31a0e472bca01aff4))
+
 ## [0.21.0] - 2026-11-12
 
 ### Added

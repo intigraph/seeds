@@ -131,9 +131,10 @@ fn probe(extra: &[(&str, &str)]) -> Vec<Headers> {
     let result = seen.lock().unwrap().clone();
     assert_eq!(
         result.len(),
-        5,
+        6,
         "health and four queries: one combined item-and-comments read replaces the comment \
-         discovery, the facts reads and the ephemeral existence check (aegis-83l)"
+         discovery, the facts reads and the ephemeral existence check (aegis-83l); plus ONE \
+         combined board-archive read for an id the live graph lacks (aegis-n0wc.1)"
     );
     for headers in &result {
         assert_eq!(headers["x-quipu-client"], "seeds/show");

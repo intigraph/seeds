@@ -409,6 +409,16 @@ pub trait Backend {
         self.snapshot_items(ids)
     }
 
+    /// The current state of the named seeds in the board ARCHIVE (aegis-n0wc.1),
+    /// with their comments: closed seeds a board archive moved out of the live
+    /// graph. Asked only for ids a live read did not find, so a read by exact id
+    /// still finds an archived seed and an edge to one still has a status. The
+    /// default (a backend with no archive) finds nothing. An error is an error,
+    /// never "not archived".
+    fn snapshot_archived(&self, _ids: &[String]) -> Result<Snapshot> {
+        Ok(Snapshot::default())
+    }
+
     /// Resolve a history search probe to its next committed source transaction.
     /// `None` is a proven upper bound, not a current-state snapshot. Legacy/local
     /// backends support arbitrary historical bounds; remote backends must resolve

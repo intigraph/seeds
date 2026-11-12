@@ -194,7 +194,8 @@ fn every_verb_prints_its_documented_keys() {
                 "comments_folded",
                 "dependencies",
                 "dependents",
-                "external_blockers"
+                "external_blockers",
+                "archived"
             ]
         ),
         "show"

@@ -497,6 +497,11 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
     }
     let mut snap = b.snapshot_items(&referenced)?;
     if let Some(id) = &keyed {
+        if !snap.seeds.contains_key(id) {
+            // A keyed create is idempotent: a seed the archive holds under
+            // this key already exists and must not be created again live.
+            merge_snapshots(&mut snap, b.snapshot_archived(std::slice::from_ref(id))?);
+        }
         if let Some(existing) = existing_keyed(&snap, id, run.as_deref())? {
             return Ok(Created {
                 seed: existing,
@@ -522,9 +527,14 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
         if keyed.is_some() {
             break candidate;
         }
-        let occupied = b.snapshot_items(std::slice::from_ref(&candidate))?;
+        let mut occupied = b.snapshot_items(std::slice::from_ref(&candidate))?;
         if !occupied.seeds.contains_key(&candidate) {
-            break candidate;
+            // An archived seed still owns its id (aegis-n0wc.1): reusing it
+            // would put two seeds under one IRI, one live and one archived.
+            occupied = b.snapshot_archived(std::slice::from_ref(&candidate))?;
+            if !occupied.seeds.contains_key(&candidate) {
+                break candidate;
+            }
         }
         // Feed only observed collisions back into the unchanged ID generator.
         // Native commit still requires absence atomically under the write lock.
@@ -612,16 +622,75 @@ pub struct SeedView {
     pub dependents: Vec<(String, &'static str, Option<Seed>)>,
     /// Its comments, in order.
     pub comments: Vec<Comment>,
+    /// The ids among this seed and the seeds on its edges that were found in
+    /// the board archive (aegis-n0wc.1), not the live graph.
+    pub archived: BTreeSet<String>,
 }
 
 /// `sd show`: the seeds named, as of `at`.
+///
+/// A current read falls back to the board archive (aegis-n0wc.1) for a named
+/// seed, or an edge target, that the live graph does not hold. So an archived
+/// seed is still shown by exact id, and an edge to one carries the archived
+/// seed's status instead of null (a null status reads as "not closed" to a
+/// consumer, and an archived blocker would look open). A pinned read (`--at`)
+/// reads the live graph's history only.
 pub fn show(b: &dyn Backend, ids: &[String], at: Option<u64>) -> Result<Vec<SeedView>> {
-    let snap = if scoped(b, at) {
+    let mut snap = if scoped(b, at) {
         show_scope(b, ids)?
     } else {
         b.snapshot(at)?
     };
-    ids.iter().map(|id| view(&snap, id)).collect()
+    let archived = if at.is_none() {
+        with_archived(b, &mut snap, ids)?
+    } else {
+        BTreeSet::new()
+    };
+    ids.iter()
+        .map(|id| {
+            let mut v = view(&snap, id)?;
+            v.archived = std::iter::once(id.as_str())
+                .chain(v.dependencies.iter().map(|(t, _, _)| t.as_str()))
+                .chain(v.dependents.iter().map(|(d, _, _)| d.as_str()))
+                .filter(|x| archived.contains(*x))
+                .map(str::to_string)
+                .collect();
+            Ok(v)
+        })
+        .collect()
+}
+
+/// Add to `snap` the named seeds, then their missing edge targets, from the
+/// board archive; return the ids found there. Two bounded reads at most, and
+/// none when the live read found everything.
+fn with_archived(b: &dyn Backend, snap: &mut Snapshot, ids: &[String]) -> Result<BTreeSet<String>> {
+    let mut found = BTreeSet::new();
+    let missing: Vec<String> = ids
+        .iter()
+        .filter(|id| !snap.seeds.contains_key(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !missing.is_empty() {
+        let more = b.snapshot_archived(&missing)?;
+        found.extend(more.seeds.keys().cloned());
+        merge_snapshots(snap, more);
+    }
+    let targets: Vec<String> = ids
+        .iter()
+        .filter_map(|id| snap.seeds.get(id))
+        .flat_map(|s| s.dependencies().into_iter().map(|(t, _)| t))
+        .filter(|t| !snap.seeds.contains_key(t))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !targets.is_empty() {
+        let more = b.snapshot_archived(&targets)?;
+        found.extend(more.seeds.keys().cloned());
+        merge_snapshots(snap, more);
+    }
+    Ok(found)
 }
 
 /// Whether a command should read only the items it answers from
@@ -735,6 +804,7 @@ fn view(snap: &Snapshot, id: &str) -> Result<SeedView> {
         dependencies,
         dependents,
         comments,
+        archived: BTreeSet::new(),
     })
 }
 

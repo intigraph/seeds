@@ -45,6 +45,8 @@ use crate::vocab::{self, term};
 
 pub mod acquisition;
 #[cfg(test)]
+mod archive_tests;
+#[cfg(test)]
 mod comment_tests;
 #[cfg(test)]
 mod gateway_tests;
@@ -212,6 +214,25 @@ fn item_family_query(graphs: &[String; 2], items: &[&String], comments: bool) ->
     }
     format!(
         "SELECT ?g ?s ?p ?o WHERE {{ {} }} LIMIT {ROW_CAP}",
+        branches.join(" UNION ")
+    )
+}
+
+/// [`item_family_query`] over the board archive graph alone (aegis-n0wc.1):
+/// one bound branch per item and per item's comments, never `VALUES`.
+fn archive_family_query(archive: &str, items: &[&String]) -> String {
+    let parent = term::comment_on();
+    let branches: Vec<String> = items
+        .iter()
+        .flat_map(|item| {
+            [
+                format!("{{ BIND(<{item}> AS ?s) GRAPH <{archive}> {{ <{item}> ?p ?o }} }}"),
+                format!("{{ GRAPH <{archive}> {{ ?s <{parent}> <{item}> . ?s ?p ?o }} }}"),
+            ]
+        })
+        .collect();
+    format!(
+        "SELECT ?s ?p ?o WHERE {{ {} }} LIMIT {ROW_CAP}",
         branches.join(" UNION ")
     )
 }
@@ -2268,6 +2289,46 @@ impl Backend for RemoteBackend {
         }
         *self.last_items.borrow_mut() = None;
         self.snapshot_of(&items)
+    }
+
+    /// The named seeds and their comments in the board archive graph
+    /// (aegis-n0wc.1). Reads only that graph, bounded like every scoped read,
+    /// and never replaces the live read a write retains as its preimage: an
+    /// archived seed is read-only until it is unarchived.
+    fn snapshot_archived(&self, ids: &[String]) -> Result<Snapshot> {
+        if ids.is_empty() {
+            return Ok(Snapshot::default());
+        }
+        let archive = vocab::archive_graph(&self.graph);
+        let items: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
+        // One combined item-and-comments read, like a live show: a miss costs
+        // a NOT_FOUND show exactly one request (aegis-83l read budget).
+        if items.len() <= FACT_SUBJECTS_PER_READ {
+            let all: Vec<&String> = items.iter().collect();
+            let query = archive_family_query(&archive, &all);
+            match self.select_marked(&query, None) {
+                Err(e) if is_query_timeout(&e) => {}
+                Err(e) => return Err(e),
+                Ok((rows, truncated)) if !truncated && rows.len() < ROW_CAP => {
+                    let mut facts = Facts::new();
+                    for mut r in rows {
+                        if let (Some(Obj::Iri(s)), Some(Obj::Iri(p)), Some(o)) =
+                            (r.remove("s"), r.remove("p"), r.remove("o"))
+                        {
+                            facts.entry(s).or_default().push((p, o));
+                        }
+                    }
+                    return Ok(Snapshot::from_graphs(&facts, &Facts::new()));
+                }
+                Ok(_) => {}
+            }
+        }
+        // Too many, truncated or timed out: the long way, bounded and halved.
+        let mut subjects = items.clone();
+        subjects.extend(self.subjects_pointing_at(&archive, &[term::comment_on()], &items)?);
+        let mut facts = Facts::new();
+        self.read_all(&archive, &subjects, None, &mut facts)?;
+        Ok(Snapshot::from_graphs(&facts, &Facts::new()))
     }
 
     /// The seeds [`vocab::seed_query_pattern`] lists, range-partitioned in each

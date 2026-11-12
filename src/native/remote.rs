@@ -3953,7 +3953,7 @@ mod tests {
     }
 
     /// `/query` requests this server has counted from seeds.
-    fn seeds_queries(base: &str) -> u64 {
+    pub(super) fn seeds_queries(base: &str) -> u64 {
         let text = ureq::get(&format!("{base}/metrics"))
             .call()
             .unwrap()

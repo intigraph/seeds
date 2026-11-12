@@ -46,56 +46,12 @@ fn epoch_expression(variable: &str) -> String {
 impl RemoteBackend {
     pub(super) fn search_summary(&self, req: &engine::SearchReq) -> Result<engine::SearchPage> {
         let needle = literal(&req.query.trim().to_lowercase());
-        let hidden = req.filter.status.is_none() && !req.all;
-        let visible = if req.filter.status.is_some() || req.all {
-            String::new()
-        } else {
-            let mut guard = format!("FILTER NOT EXISTS {{ ?s <{}> \"closed\" }} FILTER NOT EXISTS {{ ?s <{}> \"tombstone\" }}",term::status(),term::status());
-            if !req.deferred {
-                guard += &format!(
-                    " FILTER NOT EXISTS {{ ?s <{}> \"deferred\" }}",
-                    term::status()
-                );
-            }
-            guard
-        };
-        let mut subjects = BTreeSet::new();
-        let branches = self
-            .both_graphs()
-            .into_iter()
-            .map(|graph| {
-                let pattern = self
-                    .search_branches(&needle, &visible, false, req.full, &graph)
-                    .join(" UNION ");
-                format!("{{ GRAPH <{graph}> {{ {pattern} }} }}")
-            })
-            .collect::<Vec<_>>()
-            .join(" UNION ");
-        subjects.extend(self.subjects_scoped(&branches, "search graphs", None)?);
-        let hidden_closed = if hidden {
-            let fields = if req.filter == Filter::default() {
-                String::new()
-            } else {
-                self.filter_fields(&req.filter)?
-            };
-            let eph = vocab::ephemeral_graph(&self.graph);
-            let main_branches = self
-                .search_branches(&needle, &fields, true, req.full, &self.graph)
-                .join(" UNION ");
-            let eph_branches = self
-                .search_branches(&needle, &fields, true, req.full, &eph)
-                .join(" UNION ");
-            let pattern = format!("{{ GRAPH <{}> {{ {main_branches} }} }} UNION {{ GRAPH <{eph}> {{ {eph_branches} }} }}",self.graph);
-            self.aggregate_number(&format!(
-                "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {pattern} }}"
-            ))?
-        } else {
-            0
-        };
-        let (compact, has_ephemeral) =
-            self.metadata_snapshot(&subjects, &req.filter, req.sort.as_deref(), false)?;
+        // Project only the metadata needed for filtering, counting and ordering.
+        // A broad match must not turn into a point read for every matching seed.
+        // Closed hits travel through the same decoder as visible hits, avoiding
+        // a second, separately planned full-field aggregate.
+        let (compact, has_ephemeral) = self.search_metadata_snapshot(req, &needle)?;
         let mut page = engine::search_matches_page(req, &compact)?;
-        page.hidden_closed = hidden_closed;
         let ids = page
             .page
             .issues
@@ -120,21 +76,13 @@ impl RemoteBackend {
         Ok(page)
     }
 
-    fn search_branches(
-        &self,
-        needle: &str,
-        guard: &str,
-        closed: bool,
-        full: bool,
-        source_graph: &str,
-    ) -> Vec<String> {
-        let fields = if closed {
-            format!("?s <{}> \"closed\" .", term::status())
-        } else {
-            String::new()
-        };
+    fn search_branches(&self, needle: &str, full: bool, source_graph: &str) -> Vec<String> {
+        // OPTIONAL followed by the binding guard has mandatory-join semantics.
+        // Its projected right relation uses the keyed left-join evaluator even
+        // when a broad match exceeds the subject bind-join work bound. A plain
+        // Join would then fall back to comparing every pair of rows.
         let valid_id = format!(
-            "?s <{}> ?id . FILTER(isLiteral(?id) && sameTerm(?id, STR(?id)))",
+            "OPTIONAL {{ {{ SELECT ?s ?id WHERE {{ ?s <{}> ?id }} }} }} FILTER(isLiteral(?id) && sameTerm(?id, STR(?id)))",
             term::identifier()
         );
         let eph = vocab::ephemeral_graph(&self.graph);
@@ -163,34 +111,27 @@ impl RemoteBackend {
                 // Project matching subjects before joining their metadata. Keeping
                 // the text binding out of those joins avoids retaining every
                 // description through type/status/shadow evaluation.
-                format!("{{ {{ SELECT ?s WHERE {{ ?s <{p}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} {valid_id} FILTER EXISTS {{ ?s a <{}> . {fields} {guard} {fallback} {shadow} }} }}", term::work_item())
+                format!("{{ {{ SELECT ?s WHERE {{ ?s <{p}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} {valid_id} FILTER EXISTS {{ ?s a <{}> . {fallback} {shadow} }} }}", term::work_item())
             }
         }).collect::<Vec<_>>();
         if full {
-            // Snapshot retains project comments when an ephemeral seed replaces
-            // its fields, and also accepts ephemeral comments on project seeds.
-            let parent = format!("?s a <{}> . {valid_id} {fields} {guard}", term::work_item());
-            let effective_parent = format!("{{ GRAPH <{}> {{ {parent} }} FILTER NOT EXISTS {{ GRAPH <{eph}> {{ ?shadow a <{}> ; <{}> ?id }} }} }} UNION {{ GRAPH <{eph}> {{ {parent} }} }}",self.graph,term::work_item(),term::identifier());
-            // Public hits and hidden counts are identity sets. Validate each
-            // comment, then collapse repeated parent identities before checking
-            // item status and shadowing for every matching comment again.
-            let identifier = term::identifier();
-            branches.push(format!("{{ {{ SELECT DISTINCT ?s ?id WHERE {{ {{ SELECT ?comment WHERE {{ ?comment <{}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} ?comment <{}> ?s . {{ {{ GRAPH <{}> {{ ?s <{identifier}> ?id }} }} UNION {{ GRAPH <{eph}> {{ ?s <{identifier}> ?id }} }} }} FILTER(isLiteral(?id) && sameTerm(?id, STR(?id))) FILTER(isIRI(?s) && STRSTARTS(STR(?s), {})) FILTER EXISTS {{ ?comment a <{}> ; <{}> ?index . FILTER({}) }} }} }} FILTER EXISTS {{ {effective_parent} }} }}",term::text(),term::comment_on(),self.graph,literal(&format!("{}item/",vocab::SEEDS_BASE)),term::comment(),term::comment_index(),nonnegative_integer_guard("?index")));
+            // Parent metadata is decoded after identities from both graphs
+            // have been combined. Joining parent identifiers, status and
+            // shadowing into every comment match repeats that work and loses
+            // inherited comments when the parent's effective graph differs.
+            // Project each validation relation once and use the same keyed
+            // OPTIONAL + binding-guard form as the identifier lookup above.
+            branches.push(format!("{{ {{ SELECT DISTINCT ?s WHERE {{ {{ SELECT ?comment WHERE {{ ?comment <{}> ?text . FILTER(isLiteral(?text) && sameTerm(?text, STR(?text)) && CONTAINS(LCASE(STR(?text)), {needle})) }} }} OPTIONAL {{ {{ SELECT ?comment ?s WHERE {{ ?comment <{}> ?s }} }} }} OPTIONAL {{ {{ SELECT ?comment ?valid_comment WHERE {{ ?comment a <{}> . BIND(\"valid\" AS ?valid_comment) }} }} }} OPTIONAL {{ {{ SELECT ?comment ?index WHERE {{ ?comment <{}> ?index }} }} }} FILTER(isIRI(?s) && STRSTARTS(STR(?s), {}) && ?valid_comment = \"valid\" && ({})) }} }} }}",term::text(),term::comment_on(),term::comment(),term::comment_index(),literal(&format!("{}item/",vocab::SEEDS_BASE)),nonnegative_integer_guard("?index")));
         }
 
         branches
     }
 
-    fn metadata_snapshot(
-        &self,
-        subjects: &BTreeSet<String>,
+    fn metadata_predicates(
         filter: &Filter,
         sort: Option<&str>,
         defer_until_present: bool,
-    ) -> Result<(Snapshot, bool)> {
-        let mut main = Facts::new();
-        let mut eph = Facts::new();
-        let mut has_ephemeral = false;
+    ) -> Vec<String> {
         let mut predicates = vec![vocab::RDF_TYPE.into(), term::identifier(), term::status()];
         if defer_until_present {
             predicates.push(term::defer_until());
@@ -236,6 +177,139 @@ impl RemoteBackend {
                 predicates.push(p);
             }
         }
+        predicates
+    }
+
+    /// Read matching metadata as wide, ordered rows, not one triple per field
+    /// and one UNION branch per subject. Bodies and comments never enter this
+    /// projection unless an explicit metadata filter needs a body field.
+    fn search_metadata_snapshot(
+        &self,
+        req: &engine::SearchReq,
+        needle: &str,
+    ) -> Result<(Snapshot, bool)> {
+        let predicates = Self::metadata_predicates(&req.filter, req.sort.as_deref(), false);
+        let mut main = Facts::new();
+        let mut eph = Facts::new();
+        let has_ephemeral = self.ephemeral_may_hold_facts()?;
+        // Matching comments can live in either graph while their effective
+        // parent lives in the other. Select identities across both graphs
+        // before reading either version of their metadata.
+        let graphs = self.both_graphs();
+        let matching = graphs
+            .iter()
+            .map(|graph| {
+                let branches = self
+                    .search_branches(needle, req.full, graph)
+                    .join(" UNION ");
+                format!("{{ GRAPH <{graph}> {{ {branches} }} }}")
+            })
+            .collect::<Vec<_>>()
+            .join(" UNION ");
+        let mut columns = Vec::new();
+        let mut fields = Vec::new();
+        for (origin, graph) in graphs
+            .iter()
+            .enumerate()
+            .take(if has_ephemeral { 2 } else { 1 })
+        {
+            for (i, predicate) in predicates.iter().enumerate() {
+                let variable = format!("?m{origin}_{i}");
+                columns.push(variable.clone());
+                fields.push(format!(
+                    "OPTIONAL {{ GRAPH <{graph}> {{ ?s <{predicate}> {variable} }} }}"
+                ));
+            }
+        }
+        let columns = columns.join(" ");
+        let fields = fields.join(" ");
+        let page_size = if self.subject_page < SUBJECT_PAGE {
+            self.subject_page
+        } else {
+            ROW_CAP - 1
+        };
+        let mut lower: Option<String> = None;
+        loop {
+            let bound = lower
+                .as_ref()
+                .map(|s| format!("FILTER(STR(?s) > {})", literal(s)))
+                .unwrap_or_default();
+            // Limit identities before OPTIONAL metadata. Keeping each lookup
+            // beside the bounded identity table lets the evaluator bind its
+            // subject; a separate UNION of whole-graph metadata would first
+            // materialize both graphs and only then discard unmatched rows.
+            let query = format!(
+                "SELECT ?s {columns} WHERE {{ {{ SELECT DISTINCT ?s WHERE {{ {matching} FILTER(isIRI(?s)) {bound} }} ORDER BY STR(?s) LIMIT {page_size} }} {fields} }} ORDER BY STR(?s) LIMIT {page_size}");
+            let (rows, truncated) = self.select_marked(&query, None)?;
+            if truncated || rows.len() > page_size {
+                return Err(SdError::failed("quipu truncated matching search metadata"));
+            }
+            let mut last: Option<&String> = None;
+            for row in &rows {
+                let Some(Obj::Iri(subject)) = row.get("s") else {
+                    return Err(SdError::failed(
+                        "quipu returned an invalid search metadata subject",
+                    ));
+                };
+                if lower.as_ref().is_some_and(|s| subject <= s) || last.is_some_and(|s| subject < s)
+                {
+                    return Err(SdError::failed("quipu returned unordered search metadata"));
+                }
+                last = Some(subject);
+            }
+            let complete = rows.len() < page_size;
+            // A full page may split a subject's multi-valued fields or its
+            // project/ephemeral versions. Read that boundary identity's raw
+            // metadata before advancing, preserving both complete versions.
+            let boundary = if complete { None } else { last.cloned() };
+            for row in &rows {
+                let Some(Obj::Iri(subject)) = row.get("s") else {
+                    unreachable!()
+                };
+                if boundary.as_ref() == Some(subject) {
+                    continue;
+                }
+                for (origin, facts) in [&mut main, &mut eph]
+                    .into_iter()
+                    .enumerate()
+                    .take(if has_ephemeral { 2 } else { 1 })
+                {
+                    let target = facts.entry(subject.clone()).or_default();
+                    for (i, predicate) in predicates.iter().enumerate() {
+                        if let Some(value) = row.get(&format!("m{origin}_{i}")) {
+                            let fact = (predicate.clone(), value.clone());
+                            if !target.contains(&fact) {
+                                target.push(fact);
+                            }
+                        }
+                    }
+                }
+            }
+            if complete {
+                break;
+            }
+            let boundary =
+                boundary.ok_or_else(|| SdError::failed("search metadata made no progress"))?;
+            self.read_metadata(&self.graph, &[&boundary], &predicates, &mut main)?;
+            if has_ephemeral {
+                self.read_metadata(&graphs[1], &[&boundary], &predicates, &mut eph)?;
+            }
+            lower = Some(boundary);
+        }
+        Ok((Snapshot::from_graphs(&main, &eph), has_ephemeral))
+    }
+
+    fn metadata_snapshot(
+        &self,
+        subjects: &BTreeSet<String>,
+        filter: &Filter,
+        sort: Option<&str>,
+        defer_until_present: bool,
+    ) -> Result<(Snapshot, bool)> {
+        let mut main = Facts::new();
+        let mut eph = Facts::new();
+        let mut has_ephemeral = false;
+        let predicates = Self::metadata_predicates(filter, sort, defer_until_present);
         for (graph, facts) in [
             (self.graph.clone(), &mut main),
             (vocab::ephemeral_graph(&self.graph), &mut eph),
@@ -535,15 +609,6 @@ impl RemoteBackend {
             *groups.entry(value).or_default() += n;
         }
         Ok(groups.into_iter().collect())
-    }
-
-    fn filter_fields(&self, f: &Filter) -> Result<String> {
-        let (drive, fields) = self.filter_parts(f)?;
-        Ok(if drive.is_empty() {
-            fields
-        } else {
-            format!("{fields} {drive}")
-        })
     }
 
     /// Required triples that select an explicit assignee and/or a single

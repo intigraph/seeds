@@ -8,6 +8,7 @@
 
 mod actor_policy;
 mod agent_context;
+mod archive_cli;
 pub mod attest;
 pub mod cli;
 mod command_context;
@@ -1636,10 +1637,36 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     // Every outcome after the connect, an identity or vocabulary refusal
     // included, says when the server is a read replica.
     let replica = remote.replica().cloned();
-    let result = run_connected(cli, cfg, ctx, &mut remote);
+    let connected = run_connected(cli, cfg, ctx, &mut remote);
+    let result = archived_refusal(cli, &remote, connected);
     match replica {
         Some(r) => with_replica(cli.wants_json(), result, &r),
         None => result,
+    }
+}
+
+/// A write that failed because its seed is not in the live graph, when the
+/// board archive holds that seed (aegis-n0wc.1), is refused with the reason
+/// and the way back, instead of a bare NOT_FOUND. Nothing was written.
+fn archived_refusal(
+    cli: &Cli,
+    remote: &remote::RemoteBackend,
+    result: Result<Outcome>,
+) -> Result<Outcome> {
+    match result {
+        Err(e) if cli.command.writes() && e.kind == crate::error::ErrorKind::NotFound => {
+            let Some(id) = e.message.strip_prefix("no seed with id ").map(str::trim) else {
+                return Err(e);
+            };
+            match remote.snapshot_archived(&[id.to_string()]) {
+                Ok(s) if s.seeds.contains_key(id) => Err(SdError::refused(format!(
+                    "{id} is in the board archive and is read-only; restore it first with \
+                     `sd unarchive {id} --execute`. Nothing was written."
+                ))),
+                _ => Err(e),
+            }
+        }
+        other => other,
     }
 }
 
@@ -1689,6 +1716,12 @@ fn run_connected(
     }
     if transfer::selected(&cli.command) {
         return transfer::run(cli, cfg, ctx, remote);
+    }
+    if let Command::Archive(a) = &cli.command {
+        return archive_cli::archive(cli.wants_json(), ctx, remote, a);
+    }
+    if let Command::Unarchive(a) = &cli.command {
+        return archive_cli::unarchive(cli.wants_json(), ctx, remote, a);
     }
     match &cli.command {
         Command::Export(a) => {
@@ -3640,6 +3673,9 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         },
         Command::Info(a) => info_outcome(json, cfg, b, a.schema, a.exact_comments),
         Command::Doctor(a) => doctor(json, cfg, b, a),
+        Command::Archive(_) | Command::Unarchive(_) => Err(SdError::refused(
+            "the board archive is a remote-board operation; a local store has no archive graph",
+        )),
         Command::Prime(_)
         | Command::Cutover(_)
         | Command::Export(_)

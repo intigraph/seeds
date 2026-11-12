@@ -304,6 +304,11 @@ pub enum Command {
 
     /// Lossless legacy JSONL import, export, verification and three-way cutover sync
     Cutover(CutoverArgs),
+    /// Move closed seeds older than a cutoff, with their comments, into the board
+    /// archive graph (a plan unless --execute)
+    Archive(ArchiveArgs),
+    /// Move archived seeds back into the live board graph (a plan unless --execute)
+    Unarchive(UnarchiveArgs),
     /// Read a pendant into the configured store; conflicts are reported, never
     /// resolved silently
     Import(ImportArgs),
@@ -435,6 +440,47 @@ pub struct InitArgs {
     /// Restore missing files in an existing project. Never changes its id or prefix.
     #[arg(long)]
     pub force: bool,
+}
+
+/// `sd archive`: move closed seeds past a cutoff out of the live board graph.
+#[derive(Debug, Args)]
+pub struct ArchiveArgs {
+    /// Archive seeds closed and last modified before this RFC 3339 UTC instant
+    #[arg(long)]
+    pub closed_before: String,
+    /// Operator protect file (JSON: items[].id, protected_labels,
+    /// protected_label_prefixes); required, so no run forgets it
+    #[arg(long)]
+    pub protect: std::path::PathBuf,
+    /// Seeds per update (each with its comments)
+    #[arg(long, default_value_t = 100)]
+    pub batch: usize,
+    /// Consider at most this many candidates (a sample run); 0 = all
+    #[arg(long, default_value_t = 0)]
+    pub limit: usize,
+    /// Move them; without it, print the plan and move nothing
+    #[arg(long)]
+    pub execute: bool,
+    /// Append an intent line before each batch and a result line after it
+    /// (required with --execute); `sd unarchive --from-log` reverses them
+    #[arg(long)]
+    pub log: Option<std::path::PathBuf>,
+}
+
+/// `sd unarchive`: move archived seeds back into the live board graph.
+#[derive(Debug, Args)]
+pub struct UnarchiveArgs {
+    /// Seed ids to restore
+    pub ids: Vec<String>,
+    /// Restore every seed a `sd archive --log` file recorded
+    #[arg(long)]
+    pub from_log: Option<std::path::PathBuf>,
+    /// Seeds per update
+    #[arg(long, default_value_t = 100)]
+    pub batch: usize,
+    /// Move them; without it, print the plan and move nothing
+    #[arg(long)]
+    pub execute: bool,
 }
 
 /// A cutover operation on an explicit local store and a copied JSONL board.
@@ -1544,6 +1590,8 @@ impl Command {
             #[cfg(unix)]
             Command::ReadStream { .. } | Command::ReadStreamQuery => false,
             Command::Cutover(a) => !a.dry_run && matches!(a.operation.as_str(), "import" | "sync"),
+            Command::Archive(a) => a.execute,
+            Command::Unarchive(a) => a.execute,
             Command::Q(_) => true,
             Command::DueBackfill { apply_plan, .. } => apply_plan.is_some(),
             Command::Rescope { dry_run, .. } => !dry_run,
@@ -1628,6 +1676,8 @@ impl Command {
             Command::ReadStreamQuery => "read-stream-query",
             Command::Prime(_) => "prime",
             Command::Cutover(_) => "cutover",
+            Command::Archive(_) => "archive",
+            Command::Unarchive(_) => "unarchive",
             Command::Create(_) => "create",
             Command::Rescope { .. } => "rescope",
             Command::Ack { .. } => "ack",

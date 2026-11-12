@@ -156,6 +156,7 @@ pub fn stats_json(st: &Stats) -> Json {
         "pinned_issues": 0,
         "epics_eligible_for_closure": st.epics_eligible_for_closure,
         "average_lead_time_hours": st.average_lead_time_hours,
+        "archived_issues": st.archived,
     }});
     if !st.breakdowns.is_empty() {
         o["breakdowns"] = st
@@ -195,6 +196,12 @@ pub fn stats_text(st: &Stats) -> String {
         format!("  epics ready to close {}", st.epics_eligible_for_closure),
         format!("  average lead time {:.1} h", st.average_lead_time_hours),
     ];
+    match st.archived {
+        Some(n) if n > 0 => lines.push(format!(
+            "  archived {n} (closed seeds in the board archive; not counted above)"
+        )),
+        _ => {}
+    }
     for (dim, counts) in &st.breakdowns {
         lines.push(format!("by {dim}:"));
         lines.extend(counts.iter().map(|(k, n)| format!("  {k}: {n}")));

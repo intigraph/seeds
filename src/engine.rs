@@ -1401,10 +1401,23 @@ pub struct Stats {
     pub breakdowns: Vec<(&'static str, Vec<(String, usize)>)>,
     /// Recent activity, when asked for.
     pub activity: Option<Activity>,
+    /// Seeds in the board archive (aegis-n0wc.1), counted in NONE of the
+    /// numbers above: the live counts and the lead time cover the live graph
+    /// only. `None` when the backend has no archive or the count is unknown.
+    pub archived: Option<usize>,
 }
 
 /// `sd stats`, as of `at`. Breakdowns count every seed, closed included (br).
 pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Result<Stats> {
+    let mut st = stats_live(b, ctx, req, at)?;
+    if at.is_none() {
+        st.archived = b.archived_count()?;
+    }
+    Ok(st)
+}
+
+/// [`stats`] over the live graph.
+fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Result<Stats> {
     if scoped(b, at) {
         if let Some(stats) = b.aggregate_stats(ctx, req)? {
             return Ok(stats);
@@ -1483,6 +1496,7 @@ pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Resu
             lead.iter().sum::<f64>() / lead.len() as f64
         },
         breakdowns,
+        archived: None,
         activity: match req.activity_hours {
             None => None,
             Some(h) => {

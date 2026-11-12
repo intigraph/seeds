@@ -491,7 +491,7 @@ fn a_batch_that_fails_verification_after_commit_is_logged_and_reversible() {
     };
     let result = crate::native::archive_cli::archive(false, &c, &r, &args);
     super::archive::BEFORE_UPDATE.with(|h| *h.borrow_mut() = None);
-    let err = result.err().expect("verification must fail");
+    let err = result.expect_err("verification must fail");
     assert!(
         err.message.contains("verification FAILED"),
         "{}",

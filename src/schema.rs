@@ -227,6 +227,7 @@ pub fn target(name: &str) -> Option<Json> {
             ];
             let mut fields: Vec<(&str, Kind)> = ints.iter().map(|n| (*n, Kind::Int)).collect();
             fields.push(("average_lead_time_hours", Kind::Num));
+            fields.push(("archived_issues", Kind::OptInt));
             json!({"type": "object", "required": ["summary"], "properties": {
                 "summary": object(&fields, &[]),
                 "breakdowns": {"type": "array", "items": {"type": "object",

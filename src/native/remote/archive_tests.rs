@@ -326,12 +326,19 @@ fn selection_keeps_every_protected_seed_live() {
     let open = mk(&mut r, &c, "open work");
     let deferred = mk(&mut r, &c, "deferred work");
     engine::dep_add(&mut r, &c, &open, &blocker, "blocks").unwrap();
-    let mut u = engine::UpdateReq::default();
-    u.notes = Some(format!("waiting\nresume_when: closed:{gate}"));
-    u.status = Some("deferred".into());
+    let u = engine::UpdateReq {
+        notes: Some(format!(
+            "waiting
+resume_when: closed:{gate}"
+        )),
+        status: Some("deferred".into()),
+        ..Default::default()
+    };
     engine::update(&mut r, &c, std::slice::from_ref(&deferred), &u).unwrap();
-    let mut l = engine::UpdateReq::default();
-    l.add_labels = vec!["recurring-class:abc".into()];
+    let l = engine::UpdateReq {
+        add_labels: vec!["recurring-class:abc".into()],
+        ..Default::default()
+    };
     engine::update(&mut r, &c, std::slice::from_ref(&pinned), &l).unwrap();
     for id in [&plain, &listed, &blocker, &gate, &pinned] {
         engine::close(&mut r, &c, std::slice::from_ref(id), Some("done"), false).unwrap();
@@ -402,6 +409,17 @@ fn archive_then_unarchive_restores_every_fact_byte_for_byte() {
     let shown = engine::show(&r, std::slice::from_ref(&a), None).unwrap();
     assert_eq!(shown[0].comments.len(), 2);
 
+    assert_eq!(
+        r.archived_count().unwrap(),
+        Some(2),
+        "stats counts the archive explicitly"
+    );
+    let st = engine::stats(&r, &c, engine::StatsReq::default(), None).unwrap();
+    assert_eq!(st.archived, Some(2));
+    assert_eq!(
+        st.closed, 0,
+        "the live closed count no longer includes archived seeds"
+    );
     let back = r.archive_move(&c, &[a.clone(), b.clone()], false).unwrap();
     assert_eq!(back.subjects, 4);
     let after = r.family_facts_for_test(&r.graph.clone(), &ids);
@@ -411,4 +429,5 @@ fn archive_then_unarchive_restores_every_fact_byte_for_byte() {
             .is_empty(),
         "nothing left in the archive"
     );
+    assert_eq!(r.archived_count().unwrap(), Some(0));
 }

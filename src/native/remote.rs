@@ -2292,6 +2292,29 @@ impl Backend for RemoteBackend {
         self.snapshot_of(&items)
     }
 
+    /// One COUNT over the archive graph's seeds. A timeout is `None`
+    /// (unknown), never zero.
+    fn archived_count(&self) -> Result<Option<usize>> {
+        let sparql = format!(
+            "SELECT (COUNT(?s) AS ?n) WHERE {{ GRAPH <{}> {{ ?s a <{}> }} }}",
+            vocab::archive_graph(&self.graph),
+            term::work_item()
+        );
+        let rows = match self.select_marked(&sparql, None) {
+            Err(e) if is_query_timeout(&e) => return Ok(None),
+            Err(e) => return Err(e),
+            Ok((rows, _)) => rows,
+        };
+        Ok(rows
+            .into_iter()
+            .next()
+            .and_then(|mut r| match r.remove("n") {
+                Some(Obj::Int(n)) => usize::try_from(n).ok(),
+                Some(Obj::Str(s)) => s.parse().ok(),
+                _ => None,
+            }))
+    }
+
     /// The named seeds and their comments in the board archive graph
     /// (aegis-n0wc.1). Reads only that graph, bounded like every scoped read,
     /// and never replaces the live read a write retains as its preimage: an

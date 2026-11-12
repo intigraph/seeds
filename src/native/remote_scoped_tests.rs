@@ -26,6 +26,14 @@ impl Backend for Whole<'_> {
     fn snapshot(&self, at: Option<u64>) -> Result<Snapshot> {
         self.0.snapshot(at)
     }
+    // The board archive is a separate graph, not a scoped read of the live
+    // one: the whole-snapshot reference reads it exactly as the scoped path.
+    fn snapshot_archived(&self, ids: &[String]) -> Result<Snapshot> {
+        self.0.snapshot_archived(ids)
+    }
+    fn archived_count(&self) -> Result<Option<usize>> {
+        self.0.archived_count()
+    }
     fn ready_ids(&self, at: Option<u64>) -> Result<Vec<String>> {
         self.0.ready_ids(at)
     }

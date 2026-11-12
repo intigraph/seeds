@@ -419,6 +419,12 @@ pub trait Backend {
         Ok(Snapshot::default())
     }
 
+    /// How many seeds the board archive holds (aegis-n0wc.1), or `None` when
+    /// this backend has no archive or the count could not be read.
+    fn archived_count(&self) -> Result<Option<usize>> {
+        Ok(None)
+    }
+
     /// Resolve a history search probe to its next committed source transaction.
     /// `None` is a proven upper bound, not a current-state snapshot. Legacy/local
     /// backends support arbitrary historical bounds; remote backends must resolve

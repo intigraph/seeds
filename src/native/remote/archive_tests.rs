@@ -276,3 +276,139 @@ fn a_write_to_an_archived_seed_is_refused_and_leaves_no_live_stub() {
     );
     assert_eq!(shown[0].seed.close_reason.as_deref(), Some("done"));
 }
+
+// ------------------------------------------------------------ the move itself
+
+use super::archive::{resume_ids, Protect};
+
+#[test]
+fn resume_conditions_name_their_closed_targets() {
+    let notes = "text\nresume_when: closed:aegis-q94\nhistorical resume condition: closed:old-1\n  resume_when: closed:a.1, closed:b-2;pr-merged:x";
+    let ids: Vec<String> = resume_ids(notes).into_iter().collect();
+    assert_eq!(
+        ids,
+        vec!["a.1", "aegis-q94", "b-2"],
+        "historical lines are not live conditions"
+    );
+}
+
+#[test]
+fn a_protect_file_is_parsed_strictly() {
+    let p = Protect::parse(r#"{"items":[{"id":"x-1","reason":"r","source":"s"}],"protected_labels":["pin:never-archive"],"protected_label_prefixes":["recurring-class:"]}"#).unwrap();
+    assert!(p.ids.contains("x-1"));
+    assert!(p.labels.contains("pin:never-archive"));
+    assert_eq!(p.label_prefixes, vec!["recurring-class:"]);
+    assert!(Protect::parse(r#"{"items":[{"reason":"no id"}]}"#).is_err());
+    assert!(Protect::parse("not json").is_err());
+}
+
+#[test]
+fn selection_keeps_every_protected_seed_live() {
+    let Some(server) = server_or_skip() else {
+        return;
+    };
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/archive-select",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let mut c = ctx();
+    c.now = "2026-09-01T00:00:00Z".into();
+    let mk = |r: &mut RemoteBackend, c: &Ctx, title: &str| create(r, c, title, None);
+    let plain = mk(&mut r, &c, "plain old close");
+    let listed = mk(&mut r, &c, "listed control");
+    let blocker = mk(&mut r, &c, "blocker of open work");
+    let gate = mk(&mut r, &c, "named in a resume condition");
+    let pinned = mk(&mut r, &c, "pinned by label");
+    let open = mk(&mut r, &c, "open work");
+    let deferred = mk(&mut r, &c, "deferred work");
+    engine::dep_add(&mut r, &c, &open, &blocker, "blocks").unwrap();
+    let mut u = engine::UpdateReq::default();
+    u.notes = Some(format!("waiting\nresume_when: closed:{gate}"));
+    u.status = Some("deferred".into());
+    engine::update(&mut r, &c, std::slice::from_ref(&deferred), &u).unwrap();
+    let mut l = engine::UpdateReq::default();
+    l.add_labels = vec!["recurring-class:abc".into()];
+    engine::update(&mut r, &c, std::slice::from_ref(&pinned), &l).unwrap();
+    for id in [&plain, &listed, &blocker, &gate, &pinned] {
+        engine::close(&mut r, &c, std::slice::from_ref(id), Some("done"), false).unwrap();
+    }
+    let protect = Protect {
+        ids: [listed.clone()].into(),
+        label_prefixes: vec!["recurring-class:".into()],
+        ..Protect::default()
+    };
+    let cutoff = "2026-10-01T00:00:00Z";
+    let protected = r.archive_protected(cutoff, &protect).unwrap();
+    for id in [&listed, &blocker, &gate, &pinned] {
+        assert!(
+            protected.contains_key(id),
+            "{id} must be protected: {protected:?}"
+        );
+    }
+    assert!(!protected.contains_key(&plain));
+    let candidates = r.archive_candidates(cutoff, "", 100).unwrap();
+    let movable: Vec<&String> = candidates
+        .iter()
+        .filter(|id| !protected.contains_key(*id))
+        .collect();
+    assert_eq!(
+        movable,
+        vec![&plain],
+        "only the unprotected old close moves"
+    );
+    // A cutoff before every close selects nothing.
+    assert!(r
+        .archive_candidates("2026-08-01T00:00:00Z", "", 100)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn archive_then_unarchive_restores_every_fact_byte_for_byte() {
+    let Some(server) = server_or_skip() else {
+        return;
+    };
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/archive-roundtrip",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let c = ctx();
+    let a = create(&mut r, &c, "a", None);
+    let b = create(&mut r, &c, "b", None);
+    let reopened = create(&mut r, &c, "reopened", None);
+    let keep = create(&mut r, &c, "keep", None);
+    engine::comment_add(&mut r, &c, &a, "one", None).unwrap();
+    engine::comment_add(&mut r, &c, &a, "two", None).unwrap();
+    for id in [&a, &b] {
+        engine::close(&mut r, &c, std::slice::from_ref(id), Some("done"), false).unwrap();
+    }
+    let ids = vec![a.clone(), b.clone(), reopened.clone()];
+    let before = r.family_facts_for_test(&r.graph.clone(), &ids);
+
+    let moved = r.archive_move(&c, &ids, true).unwrap();
+    let mut expect = vec![a.clone(), b.clone()];
+    expect.sort();
+    assert_eq!(moved.ids, expect, "an open seed is never moved");
+    assert_eq!(moved.subjects, 4, "two seeds and two comments");
+    assert_moved_only(&r, &[&a, &b], &[&reopened, &keep]);
+    let shown = engine::show(&r, std::slice::from_ref(&a), None).unwrap();
+    assert_eq!(shown[0].comments.len(), 2);
+
+    let back = r.archive_move(&c, &[a.clone(), b.clone()], false).unwrap();
+    assert_eq!(back.subjects, 4);
+    let after = r.family_facts_for_test(&r.graph.clone(), &ids);
+    assert_eq!(before, after, "restore is byte-equal per subject");
+    assert!(
+        r.family_facts_for_test(&vocab::archive_graph(&r.graph), &ids)
+            .is_empty(),
+        "nothing left in the archive"
+    );
+}

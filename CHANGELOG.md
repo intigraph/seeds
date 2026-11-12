@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.0] - 2026-11-12
+
+### Added
+
+- *(lane)* Work lane field with caps checked on write (#264) ([2157c5e](https://github.com/scbrown/seeds/commit/2157c5ecfc90853f1139b1aeafdb2a067d80d5bc))
+- *(archive)* Read archived seeds by id; edges keep their status; ids stay owned (#265) ([06158ed](https://github.com/scbrown/seeds/commit/06158ed678c5dc6232af2196cd3bc60b00e6701d))
+
+### Fixed
+
+- *(reads)* Declare source and operation on signed reads (#262) ([4f8c37b](https://github.com/scbrown/seeds/commit/4f8c37b1aeb3692e11b84a79343aff34a0847b06))
+
 ## [0.20.1] - 2026-11-10
 
 ### CI/CD

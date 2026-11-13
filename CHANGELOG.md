@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.1] - 2026-11-12
+
+### Perf
+
+- *(search)* Bound metadata projection for broad matches (#268) ([243a449](https://github.com/scbrown/seeds/commit/243a449e4b3285196d6878abbfab6ec95e3c815f))
+
 ## [0.22.0] - 2026-11-12
 
 ### Added

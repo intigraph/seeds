@@ -52,6 +52,7 @@ mod comment_tests;
 #[cfg(test)]
 mod gateway_tests;
 pub mod history;
+mod message_listing;
 #[cfg(test)]
 mod message_tests;
 mod owner_query;
@@ -1940,8 +1941,18 @@ impl Backend for RemoteBackend {
         windows: &[String],
         recipient: Option<&str>,
     ) -> Result<Vec<crate::message::Message>> {
-        let s = crate::vocab::SCHEMA;
-        let mut out = Vec::new();
+        let listing = self.message_listing(windows, recipient)?;
+        if !listing.warnings.is_empty() {
+            return Err(SdError::failed(listing.warnings.join("; ")));
+        }
+        Ok(listing.messages)
+    }
+
+    fn message_listing(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<crate::message::Listing> {
         for window in windows {
             if !crate::message::is_window_of(&self.graph, window) {
                 return Err(SdError::usage(format!(
@@ -1949,44 +1960,8 @@ impl Backend for RemoteBackend {
                     self.graph
                 )));
             }
-            let filter = recipient
-                .map(|r| format!(" ; <{s}recipient> <{}>", crate::vocab::principal_iri(r)))
-                .unwrap_or_default();
-            let q = format!(
-                "SELECT ?m ?p ?o WHERE {{ GRAPH <{window}> {{ ?m a <{s}Message>{filter} . ?m ?p ?o }} }}"
-            );
-            let (rows, truncated) = self.select_marked(&q, None)?;
-            if truncated {
-                return Err(SdError::failed(format!(
-                    "the server cut the message listing of {window} short; refusing a partial answer"
-                )));
-            }
-            let mut by: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
-            for row in rows {
-                let (Some(Obj::Iri(m)), Some(Obj::Iri(p)), Some(o)) =
-                    (row.get("m"), row.get("p"), row.get("o"))
-                else {
-                    return Err(SdError::failed(format!(
-                        "a malformed row in the message listing of {window}"
-                    )));
-                };
-                by.entry(m.clone())
-                    .or_default()
-                    .push((p.clone(), o.clone()));
-            }
-            for (m, facts) in by {
-                match crate::message::Message::from_facts(&facts) {
-                    Some(msg) => out.push(msg),
-                    None => {
-                        return Err(SdError::failed(format!(
-                            "{m} in {window} is malformed; refusing a partial listing"
-                        )))
-                    }
-                }
-            }
         }
-        out.sort_by(|a, b| (&a.sent_at, &a.id).cmp(&(&b.sent_at, &b.id)));
-        Ok(out)
+        message_listing::collect(windows, recipient, |q| self.select_marked(q, None))
     }
 
     fn spec_change_ids(&self) -> Result<Vec<String>> {

@@ -4420,7 +4420,8 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             } else {
                 windows(*weeks)?
             };
-            let mut ms = b.messages(&selected, to.as_deref())?;
+            let listing = b.message_listing(&selected, to.as_deref())?;
+            let mut ms = listing.messages;
             if *unread {
                 ms.retain(|m| m.read_at.is_none());
             }
@@ -4445,7 +4446,7 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 json,
                 serde_json::json!(ms.iter().map(view).collect::<Vec<_>>()),
                 text,
-                vec![],
+                listing.warnings,
             ))
         }
         MsgCommand::Count {
@@ -4483,10 +4484,20 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             } else {
                 windows(*weeks)?
             };
-            for w in selected {
-                for m in b.messages(std::slice::from_ref(&w), None)? {
-                    if ids.contains(&m.id) {
-                        found.push((w.clone(), m));
+            for id in ids {
+                if let Some((window, message)) = b.message_receipt(id)? {
+                    if selected.contains(&window) {
+                        found.push((window, message));
+                    }
+                } else {
+                    // Legacy mail may predate delivery bindings. Do not widen
+                    // the caller's selected windows on that compatibility path.
+                    for window in &selected {
+                        for message in b.messages(std::slice::from_ref(window), None)? {
+                            if &message.id == id {
+                                found.push((window.clone(), message));
+                            }
+                        }
                     }
                 }
             }
@@ -4525,7 +4536,15 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             } else {
                 windows(*weeks)?
             };
-            let ms = b.messages(&selected, None)?;
+            let ms = if let Some((window, message)) = b.message_receipt(id)? {
+                if selected.contains(&window) {
+                    vec![message]
+                } else {
+                    Vec::new()
+                }
+            } else {
+                b.messages(&selected, None)?
+            };
             match ms.iter().find(|m| &m.id == id) {
                 Some(m) => Ok(ok(
                     json,

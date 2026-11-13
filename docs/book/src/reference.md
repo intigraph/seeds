@@ -155,6 +155,18 @@ Readers that must preserve old unread mail should use `--all-windows` for both
 listing and read marks until an explicit expiry lifecycle is implemented.
 This scope option neither archives messages nor changes inbox configuration.
 
+Remote listings page message subjects before fetching their facts, so a server
+result cap cannot split a message into a false malformed record. `msg list`
+returns good messages and names genuinely malformed records on stderr; those
+records are omitted, not repaired or marked read. Counts refuse malformed
+records rather than claiming a complete unread total. Transport failures,
+incomplete pages and exhausted traversal bounds remain errors. This is a live
+traversal, not an atomic mailbox snapshot.
+
+`msg show` and `msg read` use a message's delivery binding when available,
+without scanning unrelated mail. They still enforce the requested window
+scope; messages predating bindings retain the listing compatibility path.
+
 ## Structured operation results
 
 `sd --result-json <command>` returns a `tracker-result/v1` envelope on stdout

@@ -19,3 +19,7 @@ __pycache__/
 !/docs/demos/task-transfer/timing.log
 !/docs/design/assets/targeted-unlock/output.log
 !/docs/design/assets/targeted-unlock/timing.log
+
+# Deliberate, checked-in book message demo recordings.
+!/docs/book/src/demos/messages/output.log
+!/docs/book/src/demos/messages/timing.log

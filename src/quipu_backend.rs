@@ -451,7 +451,20 @@ impl Backend for QuipuBackend {
         windows: &[String],
         recipient: Option<&str>,
     ) -> Result<Vec<crate::message::Message>> {
+        let listing = self.message_listing(windows, recipient)?;
+        if !listing.warnings.is_empty() {
+            return Err(SdError::failed(listing.warnings.join("; ")));
+        }
+        Ok(listing.messages)
+    }
+
+    fn message_listing(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<crate::message::Listing> {
         let mut out = Vec::new();
+        let mut warnings = Vec::new();
         for window in windows {
             let Some(wg) = self.store.lookup(window)? else {
                 continue;
@@ -482,15 +495,18 @@ impl Backend for QuipuBackend {
                 match crate::message::Message::from_facts(&facts) {
                     Some(m) => out.push(m),
                     None => {
-                        return Err(SdError::failed(format!(
-                            "message {id} in {window} is malformed; refusing a partial listing"
-                        )))
+                        warnings.push(format!(
+                            "message {id} in {window} is malformed; omitted from this listing"
+                        ));
                     }
                 }
             }
         }
         out.sort_by(|a, b| (&a.sent_at, &a.id).cmp(&(&b.sent_at, &b.id)));
-        Ok(out)
+        Ok(crate::message::Listing {
+            messages: out,
+            warnings,
+        })
     }
 
     fn project_graph(&self) -> Option<&str> {

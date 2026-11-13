@@ -41,6 +41,14 @@ pub struct Message {
     pub read_at: Option<String>,
 }
 
+/// Complete traversal of a mailbox, with corrupt records named separately.
+/// Transport/coverage failures remain errors, never warnings.
+#[derive(Debug, Default)]
+pub struct Listing {
+    pub messages: Vec<Message>,
+    pub warnings: Vec<String>,
+}
+
 fn schema(local: &str) -> String {
     format!("{}{local}", vocab::SCHEMA)
 }

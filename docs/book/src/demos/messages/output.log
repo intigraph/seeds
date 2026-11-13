@@ -1,0 +1,13 @@
+Script started [COMMAND="read-only comparison; metadata sanitized"]
+BASE installed version: sd 0.19.2 (seeds)
+command: sd msg show <selected-message> --json (identity redacted)
+exit: 1
+error code: FAILED
+CANDIDATE source version: sd 0.22.0 (seeds)
+command: sd msg show <selected-message> --json (identity redacted)
+exit: 0
+selected message returned: True
+required fields present: True
+PASS: same read-only selection failed before and returned a complete message after.
+
+Script done [COMMAND_EXIT_CODE="0"]

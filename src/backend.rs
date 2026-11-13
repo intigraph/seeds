@@ -334,6 +334,19 @@ pub trait Backend {
         ))
     }
 
+    /// A mailbox listing that reports malformed records without hiding good
+    /// messages. Coverage and transport failures must still fail the read.
+    fn message_listing(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+    ) -> Result<crate::message::Listing> {
+        Ok(crate::message::Listing {
+            messages: self.messages(windows, recipient)?,
+            warnings: Vec::new(),
+        })
+    }
+
     /// An indexed search page. The backend selects and counts matches before
     /// retrieving the full facts of just the requested page.
     fn search_page(

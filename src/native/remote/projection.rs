@@ -2,6 +2,7 @@
 //! normalized Seeds model: prove compatibility on each call, never cache it.
 use super::*;
 use crate::engine::{Count, CountReq, Filter};
+mod certificate;
 mod scoped;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -92,6 +93,21 @@ impl RemoteBackend {
     }
 
     pub(super) fn projection_count(&self, req: &CountReq) -> Result<Option<Count>> {
+        self.projection_count_inner(req, false)
+    }
+
+    pub(super) fn projection_status_totals(&self) -> Result<Option<Vec<(String, usize)>>> {
+        let req = CountReq {
+            by: Some("status".into()),
+            include_closed: true,
+            ..CountReq::default()
+        };
+        Ok(self
+            .projection_count_inner(&req, true)?
+            .and_then(|count| count.groups))
+    }
+
+    fn projection_count_inner(&self, req: &CountReq, tombstones: bool) -> Result<Option<Count>> {
         // Only declared scalar column filters are representable. Joins and
         // all other scopes retain the normalized SPARQL path.
         let mut filter = req.filter.clone();
@@ -177,7 +193,13 @@ impl RemoteBackend {
                 return Ok(None);
             }
         }
-        let request = |group: &str, keys: &[String]| json!({"name":"board","graph":self.graph,"group_by":group,"key_in":keys,"max_groups":ROW_CAP});
+        let request = |group: &str, keys: &[String]| {
+            let mut body = json!({"name":"board","graph":self.graph,"group_by":group,"key_in":keys,"max_groups":ROW_CAP});
+            if required.is_empty() {
+                body["certificate"] = json!({"class":term::work_item()});
+            }
+            body
+        };
         let Some(before) = self.projection_read(request("key", &[]))? else {
             return Ok(None);
         };
@@ -202,7 +224,7 @@ impl RemoteBackend {
             }
             sum = sum.checked_add(number(&row["n"])?).ok_or_else(invalid)?;
             if status.as_deref().map_or(
-                value != "tombstone" && (req.include_closed || value != "closed"),
+                (tombstones || value != "tombstone") && (req.include_closed || value != "closed"),
                 |s| value == s,
             ) {
                 keys.push(value.to_string());
@@ -234,9 +256,29 @@ impl RemoteBackend {
         if self.ephemeral_may_hold_facts()? {
             return Ok(None);
         }
-        let Some(expected_total) = self.projection_scope(req, &required, &predicates, &keys)?
-        else {
-            return Ok(None);
+        let certified =
+            required.is_empty() && self.certified_status_scope(&list, &before, tx, total)?;
+        let expected_total = if certified {
+            statuses
+                .iter()
+                .filter(|row| {
+                    row["value"]
+                        .as_str()
+                        .is_some_and(|value| keys.iter().any(|key| key == value))
+                })
+                .try_fold(0usize, |sum, row| {
+                    sum.checked_add(number(&row["n"])?).ok_or_else(invalid)
+                })?
+        } else {
+            // Stats already has its own normalized aggregate fallback. Do not
+            // add a whole-board compatibility discovery before that query.
+            if tombstones {
+                return Ok(None);
+            }
+            let Some(total) = self.projection_scope(req, &required, &predicates, &keys)? else {
+                return Ok(None);
+            };
+            total
         };
         // Compare watermarks around ALL compatibility reads. A concurrent
         // commit (including an ephemeral write) discards the optimization.

@@ -61,3 +61,5 @@
 - [Specification replacement and acknowledgement](rescope.md)
 
 - [Push-backed local reads](push-reads.md)
+
+- [Complete message reads demo](message-listing-demo.md)

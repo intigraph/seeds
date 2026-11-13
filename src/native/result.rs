@@ -178,7 +178,10 @@ pub(super) fn capture(
         Command::Delete(a) => a.dry_run,
         _ => false,
     };
-    let writes = cli.command.writes() && !planned && !cli.credential_admission;
+    let writes = cli.command.writes()
+        && !planned
+        && !cli.credential_admission
+        && !cli.authentication_admission;
     let mutation = if !writes {
         "NOT_APPLICABLE"
     } else if o.code == 0 {

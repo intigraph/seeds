@@ -140,6 +140,55 @@ def main():
             denied = subprocess.run([binary, "show", "fixture", "--credential-admission"],
                                     cwd=tmp, env=env, capture_output=True, timeout=10)
             assert denied.returncode != 0 and not observed, "untrusted project destination admitted"
+            # Signing admission reads neither missing key nor token and never
+            # repurposes the legacy bearer-provider proof.
+            (root / ".seeds/config.toml").unlink()
+            user_config = root / ".config/seeds"
+            user_config.mkdir()
+            config = user_config / "config.toml"
+            config.write_text('[quipu]\nsigning_key_file="absent-key"\nsigning_session="fixture-session"\nsigning_introducer="fixture-lead"\n')
+            signed_command = [binary, "--quipu", url, "create", "fixture", "--authentication-admission"]
+            admitted = subprocess.run(signed_command, cwd=tmp, env=env, capture_output=True, timeout=10)
+            proof = json.loads(admitted.stdout)
+            assert admitted.returncode == 0 and proof == {
+                "contract": "seeds-authentication-admission/v1", "admitted": True,
+                "destination": url, "authentication": "attested_session",
+                "provider_required": False, "authenticated": False,
+                "signing_session": "fixture-session"}, admitted.stderr
+            assert not observed and not (root / "absent-key").exists()
+            for flag in ("--credential-admission",):
+                denied = subprocess.run(signed_command[:-1] + [flag], cwd=tmp, env=env,
+                                        capture_output=True, timeout=10)
+                assert denied.returncode == 6 and not observed
+            selected = dict(env, SEEDS_QUIPU_CREDENTIAL_PRINCIPAL="fixture",
+                            SEEDS_QUIPU_TOKEN_FD="2147483647")
+            denied = subprocess.run(signed_command, cwd=tmp, env=selected, capture_output=True, timeout=10)
+            assert denied.returncode == 6 and not observed
+            for destination in ("https://u:p@example.org", "https://example.org/?secret=fixture"):
+                denied = subprocess.run([binary, "--quipu", destination, "init", "--authentication-admission"],
+                                        cwd=tmp, env=env, capture_output=True, timeout=10)
+                assert denied.returncode == 6 and not observed
+            (root / ".seeds/config.toml").write_text('[quipu]\nurl="https://example.org"\n')
+            denied = subprocess.run([binary, "create", "fixture", "--authentication-admission"],
+                                    cwd=tmp, env=env, capture_output=True, timeout=10)
+            assert denied.returncode == 6 and not observed
+            (root / ".seeds/config.toml").unlink()
+            config.write_text('[quipu]\nrequire_identity=true\n')
+            denied = subprocess.run(signed_command, cwd=tmp, env=env, capture_output=True, timeout=10)
+            assert denied.returncode != 0 and not observed
+            config.unlink()
+            admitted = subprocess.run(signed_command, cwd=tmp, env=env, capture_output=True, timeout=10)
+            proof = json.loads(admitted.stdout)
+            assert admitted.returncode == 0 and proof["authentication"] == "bearer" and proof["provider_required"] is True
+            assert proof["authenticated"] is False and not observed
+            denied = subprocess.run([binary, "--store", str(root / "auth-must-not-create"),
+                                     "init", "--authentication-admission"], cwd=tmp, env=env,
+                                    capture_output=True, timeout=10)
+            assert denied.returncode == 6 and not (root / "auth-must-not-create").exists()
+            denied = subprocess.run(signed_command + ["--credential-admission"], cwd=tmp,
+                                    env=env, capture_output=True, timeout=10)
+            assert denied.returncode == 2 and not observed
+            print("authentication admission: configured signer, no secret reads/HTTP/mutation; legacy/selected/trust/identity refusals PASS")
             print("admission CLI: no HTTP/token-file read/init mutation, destination bind, trust/transport/URL/local refusals PASS")
     finally:
         server.shutdown()

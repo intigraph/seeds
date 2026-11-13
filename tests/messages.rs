@@ -244,3 +244,98 @@ fn all_live_windows_include_old_unread_and_exclude_other_projects() {
         .unwrap());
     assert!(b.messages(&live, Some("wu")).unwrap()[0].read_at.is_some());
 }
+
+// Model legacy mail by removing only the binding in a private in-memory store.
+fn retract_fixture_facts(b: &mut QuipuBackend, graph: &str, iri: &str, predicate: Option<&str>) {
+    use quipu::store::Datum;
+    use quipu::types::Op;
+    let store = b.store_mut();
+    let e = store.lookup(iri).unwrap().unwrap();
+    let g = store.lookup(graph).unwrap().unwrap();
+    let facts = store.entity_facts_in_graph(e, g).unwrap();
+    let datums: Vec<_> = facts
+        .into_iter()
+        .filter(|f| predicate.is_none_or(|p| store.resolve(f.attribute).unwrap() == p))
+        .map(|f| Datum {
+            entity: e,
+            attribute: f.attribute,
+            value: f.value,
+            valid_from: "2026-11-13T01:00:00Z".into(),
+            valid_to: None,
+            op: Op::Retract,
+        })
+        .collect();
+    store
+        .transact_graph_batches(
+            &[(g, datums)],
+            "2026-11-13T01:00:00Z",
+            Some("fixture"),
+            Some("legacy mail fixture"),
+        )
+        .unwrap();
+}
+
+#[test]
+fn exact_legacy_lookup_ignores_bad_neighbour_and_preserves_window_scope() {
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let at = "2026-11-13T00:00:00Z";
+    let w = window_graph(GRAPH, at).unwrap();
+    let good = msg("legacy-good", "wu", at, "good");
+    let bad = msg("legacy-bad", "wu", at, "bad");
+    for m in [&good, &bad] {
+        b.message_send(&ctx(at), &w, m, "test").unwrap();
+        retract_fixture_facts(
+            &mut b,
+            &seeds::message::binding_graph(GRAPH),
+            &seeds::message::message_iri(&m.id),
+            None,
+        );
+    }
+    retract_fixture_facts(
+        &mut b,
+        &w,
+        &seeds::message::message_iri(&bad.id),
+        Some("https://schema.org/recipient"),
+    );
+    assert!(b.messages(std::slice::from_ref(&w), None).is_err());
+    assert_eq!(
+        b.message_lookup(std::slice::from_ref(&w), &good.id)
+            .unwrap(),
+        Some((w.clone(), good.clone()))
+    );
+    let error = b
+        .message_lookup(std::slice::from_ref(&w), &bad.id)
+        .unwrap_err();
+    assert!(error.message.contains(&bad.id));
+    let other = window_graph(GRAPH, "2026-11-01T00:00:00Z").unwrap();
+    assert!(b.message_lookup(&[other], &good.id).unwrap().is_none());
+    assert!(b
+        .message_lookup(std::slice::from_ref(&w), "msg-x> ?p ?o")
+        .is_err());
+    // Reading still marks just the resolved target, never the bad neighbour.
+    assert!(b.message_mark_read(&ctx(at), &w, &good.id).unwrap());
+    assert!(b
+        .message_lookup(&[w], &good.id)
+        .unwrap()
+        .unwrap()
+        .1
+        .read_at
+        .is_some());
+}
+
+#[test]
+fn exact_lookup_retains_binding_scope_and_dangling_binding_errors() {
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let at = "2026-11-13T00:00:00Z";
+    let w = window_graph(GRAPH, at).unwrap();
+    let m = msg("bound-lookup", "wu", at, "bound");
+    b.message_send(&ctx(at), &w, &m, "test").unwrap();
+    assert_eq!(
+        b.message_lookup(std::slice::from_ref(&w), &m.id).unwrap(),
+        Some((w.clone(), m.clone()))
+    );
+    let other = window_graph(GRAPH, "2026-11-01T00:00:00Z").unwrap();
+    assert!(b.message_lookup(&[other], &m.id).unwrap().is_none());
+    retract_fixture_facts(&mut b, &w, &seeds::message::message_iri(&m.id), None);
+    assert!(b.message_lookup(&[w], &m.id).is_err());
+}

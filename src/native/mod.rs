@@ -4477,7 +4477,7 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             weeks,
             all_windows,
         } => {
-            // Find each message's window from a bounded listing, then mark it.
+            // Resolve every exact target before marking any message.
             let mut found = Vec::new();
             let selected = if *all_windows {
                 b.message_windows()?
@@ -4485,20 +4485,8 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                 windows(*weeks)?
             };
             for id in ids {
-                if let Some((window, message)) = b.message_receipt(id)? {
-                    if selected.contains(&window) {
-                        found.push((window, message));
-                    }
-                } else {
-                    // Legacy mail may predate delivery bindings. Do not widen
-                    // the caller's selected windows on that compatibility path.
-                    for window in &selected {
-                        for message in b.messages(std::slice::from_ref(window), None)? {
-                            if &message.id == id {
-                                found.push((window.clone(), message));
-                            }
-                        }
-                    }
+                if let Some(pair) = b.message_lookup(&selected, id)? {
+                    found.push(pair);
                 }
             }
             let missing: Vec<&String> = ids
@@ -4536,15 +4524,11 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             } else {
                 windows(*weeks)?
             };
-            let ms = if let Some((window, message)) = b.message_receipt(id)? {
-                if selected.contains(&window) {
-                    vec![message]
-                } else {
-                    Vec::new()
-                }
-            } else {
-                b.messages(&selected, None)?
-            };
+            let ms: Vec<_> = b
+                .message_lookup(&selected, id)?
+                .map(|(_, m)| m)
+                .into_iter()
+                .collect();
             match ms.iter().find(|m| &m.id == id) {
                 Some(m) => Ok(ok(
                     json,

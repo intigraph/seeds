@@ -24,6 +24,68 @@ the same [compare-and-set](storage.md#how-a-write-lands). The native CLI picks
 the storage; the core never touches a file or the network, which keeps it
 [wasm-clean](wasm.md).
 
+## Quipu project graphs
+
+A repository with `.quipu/project` uses Quipu's project identity:
+`urn:quipu:project:<id>`. Without an explicit store or server setting its local
+working store is `.quipu/local.db`. Its committed artifact is `.quipu/graph`.
+A clone carrying just `.quipu/project` and `.quipu/graph` can be read by `sd`;
+it does not need a Seeds-specific identity file. Existing destination and graph
+overrides retain their precedence. Existing legacy projects keep using their
+legacy identity until explicitly migrated.
+
+```bash
+sd migrate-project --json
+```
+
+Run this only in the local legacy repository, with its sealed
+`.seeds/pendant` configured. The command refuses remote destinations, destination
+or graph overrides, an existing `.quipu` directory, broken seals, symlinked
+inputs, and a working store that differs from its artifact. It imports through
+Quipu's ordinary share gates, changes only the named graph, and verifies that
+**every exported fact** is identical before switching the configured artifact.
+Item and comment IRIs stay unchanged. The legacy bundle and identity remain as
+rollback evidence; the command never deletes them or migrates a remote board.
+Back up the repository and reconcile any divergence before retrying a refusal.
+
+Commit `.quipu/project`, `.quipu/graph`, `.quipu/.gitignore` and the updated
+`.seeds/config.toml`. Quipu's allow-list keeps local databases and signing keys
+out of `git add .quipu`. Once the migrated artifact has been independently
+accepted, retire the legacy committed bundle in a separate deliberate cleanup.
+Before new writes, rollback means restoring the prior config and continuing
+with the intact legacy bundle. After new writes, export and reconcile those
+changes first: reverting the config alone would select the older ledger.
+
+Canonical project bundles are strict: reads refuse a broken seal instead of
+repairing it. Updates use Quipu's share writer and atomic bundle swap. Loads and
+read-only transfer previews use its verified import and named-graph promotion,
+preserving facts outside Seeds' own projection.
+
+Plain Quipu uses the same artifact:
+
+```bash
+quipu load .quipu/graph --db recipient.db --destination internal
+```
+
+The recipient must already have an explicitly admitted Seeds vocabulary profile.
+The reviewed profile is `shapes/seeds.shapes.ttl` from released
+`seeds-ai-v0.22.1`, peeled commit `30e17964c5a9f82b25e61614ed3fa71ada321901`,
+SHA256 `b1b3bf0846298e437da15f89d3fc599ee41663f9258c3d40b03f033804d6a04f`.
+Verify that file from the release source before admitting it:
+
+```bash
+quipu shapes load seeds shapes/seeds.shapes.ttl --db recipient.db
+```
+
+This explicit, reversible setup is separate from loading the data. To remove
+that profile, use `quipu shapes remove seeds --db recipient.db`. Existing
+recipient policies still apply; setup does not force promotion or waive them.
+
+A truly empty Quipu store quarantines the Seeds types as `off_vocabulary`;
+carrying shapes in a bundle does **not** authorize installing incoming policy.
+Do not force promotion or silently load that policy to bypass the refusal.
+Seeds' own local backend already installs its compiled-in Seeds profile.
+
 ## The pendant
 
 A **pendant** is quipu's share artifact, used as is.

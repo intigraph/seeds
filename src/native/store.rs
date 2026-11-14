@@ -347,14 +347,14 @@ pub fn write_sync_base(path: &Path, remote: &str, graph: &str, nt: &str) -> Resu
     Ok(())
 }
 
-fn read_marker(store: &Path) -> Option<String> {
+pub(super) fn read_marker(store: &Path) -> Option<String> {
     fs::read_to_string(marker_path(store))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
-fn write_marker(store: &Path, hash: &str) -> Result<()> {
+pub(super) fn write_marker(store: &Path, hash: &str) -> Result<()> {
     fs::write(marker_path(store), format!("{hash}\n"))
         .map_err(|e| SdError::failed(format!("cannot write the pendant marker: {e}")))
 }
@@ -391,6 +391,9 @@ pub fn ensure_gitignore(store: &Path) {
 /// seal, it is left alone: the manifest names the producing store, so
 /// rewriting it would dirty a fresh clone's working tree for no change in data.
 pub fn export_to_pendant(b: &QuipuBackend, store: &Path, dir: &Path) -> Result<bool> {
+    if super::project_artifact::is_project_dir(dir) {
+        return super::project_artifact::export(b, store, dir);
+    }
     let p = pendant::export(b)?;
     let same_data = |d: &Pendant| {
         d.export_nt() == p.export_nt()
@@ -420,6 +423,9 @@ pub fn export_to_pendant(b: &QuipuBackend, store: &Path, dir: &Path) -> Result<b
 ///
 /// Returns notes for stderr.
 pub fn hydrate(b: &mut QuipuBackend, store: &Path, dir: &Path, ctx: &Ctx) -> Result<Vec<String>> {
+    if super::project_artifact::is_project_dir(dir) {
+        return super::project_artifact::hydrate(b, store, dir, ctx);
+    }
     use crate::backend::Backend;
     let mut notes = Vec::new();
     let mine = pendant::export(b)?;
@@ -497,6 +503,9 @@ pub fn preview_hydrated(
     ctx: &Ctx,
     graph: &str,
 ) -> Result<QuipuBackend> {
+    if super::project_artifact::is_project_dir(dir) {
+        return super::project_artifact::preview(b, store, dir, ctx);
+    }
     use crate::backend::Backend;
     let mine = pendant::export(b)?;
     let mine_hash = mine.export_hash().unwrap_or_default();

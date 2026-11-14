@@ -16,6 +16,7 @@ pub mod config;
 pub mod credentials;
 mod cutover;
 pub mod prime;
+mod project_artifact;
 pub mod provenance;
 #[cfg(unix)]
 pub mod read_stream;
@@ -165,6 +166,12 @@ fn run_legacy(cli: &Cli) -> Outcome {
         if a.thanks {
             return thanks(cli.wants_json());
         }
+    }
+    if matches!(cli.command, Command::MigrateProject) {
+        return match project_artifact::migrate(cli) {
+            Ok(o) => o,
+            Err(e) => error_outcome(cli.wants_json(), &e, Vec::new()),
+        };
     }
     if let Command::Init(a) = &cli.command {
         return match init(cli, a) {
@@ -494,7 +501,15 @@ fn doctor(json: bool, cfg: &Resolved, b: &mut dyn Backend, a: &cli::DoctorArgs) 
         format!("from {}", cfg.location_source),
     );
     match std::fs::read_to_string(&cfg.project_id_file) {
-        Ok(id) if !id.trim().is_empty() && id.trim().chars().all(|c| c.is_ascii_alphanumeric()) => {
+        Ok(id)
+            if (cfg
+                .project_id_file
+                .file_name()
+                .is_some_and(|n| n == "project")
+                && quipu::project_graph::validate_project_id(id.trim()).is_ok())
+                || (!id.trim().is_empty()
+                    && id.trim().chars().all(|c| c.is_ascii_alphanumeric())) =>
+        {
             add("project.id", "ok", id.trim().to_string())
         }
         Ok(_) => add(
@@ -3685,6 +3700,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
         | Command::Version(_)
         | Command::Completions(_)
         | Command::Init(_)
+        | Command::MigrateProject
         | Command::Identity
         | Command::Where
         | Command::Schema { .. }

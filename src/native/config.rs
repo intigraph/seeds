@@ -401,10 +401,10 @@ fn read_file(path: &Path) -> Result<Option<FileConfig>> {
     }
 }
 
-/// The nearest directory at or above `cwd` holding a `.seeds/` directory.
+/// The nearest repository identity: legacy `.seeds/` or committed `.quipu/project`.
 pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
-        .find(|d| d.join(PROJECT_DIR).is_dir())
+        .find(|d| d.join(PROJECT_DIR).is_dir() || d.join(".quipu/project").is_file())
         .map(Path::to_path_buf)
 }
 
@@ -478,6 +478,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     }
     let home = inputs.home.as_deref();
     let root = project_root.clone().unwrap_or_else(|| inputs.cwd.clone());
+    let canonical_id = quipu::project_graph::read_project_id(&root)?;
 
     let (location, location_source) = if let Some(s) = &inputs.flag_store {
         (
@@ -521,7 +522,11 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         }
     } else {
         (
-            Location::Store(root.join(PROJECT_DIR).join(DEFAULT_STORE_FILE)),
+            Location::Store(if canonical_id.is_some() {
+                root.join(".quipu/local.db")
+            } else {
+                root.join(PROJECT_DIR).join(DEFAULT_STORE_FILE)
+            }),
             "default".into(),
         )
     };
@@ -594,7 +599,12 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
                     .map(|v| expand(v, &user_base, home))
             })
     };
-    let pendant = path_setting(&inputs.env_pendant, |c| &c.pendant.dir);
+    let pendant = path_setting(&inputs.env_pendant, |c| &c.pendant.dir).or_else(|| {
+        // An explicit destination/graph keeps its existing meaning. Only an
+        // unambiguous repository-local project adopts the committed artifact.
+        (canonical_id.is_some() && graph.is_none() && matches!(location, Location::Store(_)))
+            .then(|| quipu::project_graph::graph_dir(&root))
+    });
     let token_file = inputs
         .env_token_file
         .as_ref()
@@ -711,7 +721,11 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         location_source,
         prefix,
         graph,
-        project_id_file: root.join(PROJECT_DIR).join(PROJECT_ID_FILE),
+        project_id_file: if canonical_id.is_some() {
+            root.join(".quipu/project")
+        } else {
+            root.join(PROJECT_DIR).join(PROJECT_ID_FILE)
+        },
         location_from_project,
         sync_remote_from_project,
         trusted_hosts,
@@ -801,11 +815,23 @@ pub fn project_graph(cfg: &Resolved, create: bool) -> Result<(Option<String>, Op
     if let Some(g) = &cfg.graph {
         return Ok((Some(g.clone()), None));
     }
-    let derive = |id: &str| vocab::project_graph_iri(&format!("{}-{id}", cfg.prefix));
+    let canonical = cfg
+        .project_id_file
+        .file_name()
+        .is_some_and(|n| n == "project");
+    let derive = |id: &str| {
+        if canonical {
+            quipu::project_graph::project_iri(id)
+        } else {
+            vocab::project_graph_iri(&format!("{}-{id}", cfg.prefix))
+        }
+    };
     match std::fs::read_to_string(&cfg.project_id_file) {
         Ok(id) => {
             let id = id.trim();
-            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            if (canonical && quipu::project_graph::validate_project_id(id).is_err())
+                || (!canonical && (id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric())))
+            {
                 return Err(config_error(format!(
                     "{} does not hold a project id (letters and digits)",
                     cfg.project_id_file.display()
@@ -1018,6 +1044,35 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn quipu_identity_discovers_from_subdirectory_and_keeps_explicit_destinations() {
+        let s = Sandbox::new("quipu-project");
+        quipu::project_graph::scaffold(&s.root.join("proj"), Some("demo-project_1")).unwrap();
+        let r = resolve(&s.inputs()).unwrap();
+        assert_eq!(r.project_id_file, s.root.join("proj/.quipu/project"));
+        assert_eq!(r.pendant, Some(s.root.join("proj/.quipu/graph")));
+        assert_eq!(
+            r.location,
+            Location::Store(s.root.join("proj/.quipu/local.db"))
+        );
+        assert_eq!(
+            project_graph(&r, false).unwrap().0.as_deref(),
+            Some("urn:quipu:project:demo-project_1")
+        );
+        let mut inputs = s.inputs();
+        inputs.flag_graph = Some("urn:test:explicit".into());
+        let r = resolve(&inputs).unwrap();
+        assert!(r.pendant.is_none());
+        assert_eq!(
+            project_graph(&r, false).unwrap().0.as_deref(),
+            Some("urn:test:explicit")
+        );
+        inputs.flag_url = Some("https://example.com".into());
+        let r = resolve(&inputs).unwrap();
+        assert!(matches!(r.location, Location::Url(_)));
+        assert!(r.pendant.is_none());
     }
 
     #[test]

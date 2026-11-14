@@ -68,11 +68,17 @@ fn run_legacy(cli: &Cli) -> Outcome {
     let _command_context = command_context::Scope::new(&cli.command);
     // This must precede even init/merge-driver and the other early exits.
     // A launcher may ask about a mutating command, but admission never runs it.
-    if cli.credential_admission {
+    if cli.credential_admission || cli.authentication_admission {
         let result =
             config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
                 .and_then(|i| config::resolve(&i))
-                .and_then(|cfg| credential_admission(&cfg));
+                .and_then(|cfg| {
+                    if cli.authentication_admission {
+                        authentication_admission(&cfg)
+                    } else {
+                        credential_admission(&cfg)
+                    }
+                });
         return match result {
             Ok(value) => ok(true, value.clone(), value.to_string(), vec![]),
             Err(e) => error_outcome(true, &e, vec![]),
@@ -1313,16 +1319,7 @@ fn admit_selected_destination(cfg: &Resolved, url: &str, from_project: bool) -> 
             "selected bearer cannot be combined with a signing identity",
         ));
     }
-    let valid_url = url::Url::parse(url).is_ok_and(|u| {
-        matches!(u.scheme(), "http" | "https")
-            && u.has_host()
-            && u.username().is_empty()
-            && u.password().is_none()
-            && u.query().is_none()
-            && u.fragment().is_none()
-            && !url.chars().any(char::is_whitespace)
-    });
-    if !valid_url
+    if !admission_url_ok(url)
         || !cfg.token_allowed(url, from_project)
         || (!remote::secure_enough(url)
             && !remote::plain_http_allowed(url, &cfg.allow_plain_http_hosts))
@@ -1333,6 +1330,63 @@ fn admit_selected_destination(cfg: &Resolved, url: &str, from_project: bool) -> 
         ));
     }
     Ok(())
+}
+
+/// Admission does not authenticate the key: it reports which existing native
+/// path a launcher must use. The signed path must not fetch/select a bearer.
+fn authentication_admission(cfg: &Resolved) -> Result<Json> {
+    let Location::Url(url) = &cfg.location else {
+        return Err(SdError::new(
+            ErrorKind::Config,
+            "authentication admission requires a remote destination",
+        ));
+    };
+    if let Some(signing) = &cfg.signing {
+        if cfg.selected_credential.is_some() {
+            return Err(SdError::new(
+                ErrorKind::Config,
+                "selected bearer cannot be combined with a signing identity",
+            ));
+        }
+        // Signed-only native connections permit HTTP without a bearer. Project
+        // URLs still need the user's trust before any key could sign for them.
+        if !admission_url_ok(url) || !cfg.token_allowed(url, cfg.location_from_project) {
+            return Err(SdError::new(
+                ErrorKind::Config,
+                "signing destination is not admitted",
+            ));
+        }
+        return Ok(json!({
+            "contract": "seeds-authentication-admission/v1", "admitted": true,
+            "destination": url, "authentication": "attested_session",
+            "provider_required": false, "authenticated": false,
+            "signing_session": signing.session,
+        }));
+    }
+    // A bearer-only path cannot satisfy a locally required signing identity.
+    if cfg.require_identity || cfg.actor_principal_mode == config::ActorPrincipalMode::Enforce {
+        return Err(SdError::refused(
+            "identity-required writes need an enrolled remote session key",
+        ));
+    }
+    admit_selected_destination(cfg, url, cfg.location_from_project)?;
+    Ok(json!({
+        "contract": "seeds-authentication-admission/v1", "admitted": true,
+        "destination": url, "authentication": "bearer",
+        "provider_required": true, "authenticated": false,
+    }))
+}
+
+fn admission_url_ok(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https")
+            && u.has_host()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && !url.chars().any(char::is_whitespace)
+    })
 }
 
 fn credential_admission(cfg: &Resolved) -> Result<Json> {

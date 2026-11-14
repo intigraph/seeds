@@ -26,6 +26,9 @@ pub struct Cli {
     /// Check named-credential destination policy without executing the command or reading a token.
     #[arg(long, global = true)]
     pub credential_admission: bool,
+    /// Report configured remote authentication without executing the command or reading credentials.
+    #[arg(long, global = true, conflicts_with = "credential_admission")]
+    pub authentication_admission: bool,
 
     /// Output as JSON, in bd's output shape (--robot is br's alias for it)
     #[arg(long, global = true, visible_alias = "robot")]

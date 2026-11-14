@@ -278,6 +278,45 @@ receipt. Providers and launchers remain outside the native CLI; their delivery,
 private descriptor lifetime, sanitation and authenticated attribution require
 separate controls.
 
+#### Admission for an existing signing identity
+
+A launcher that supports signed writes uses `--authentication-admission` on the
+intended command **before choosing a credential provider**. This is separate
+from the bearer-only `--credential-admission` contract. Both flags are local
+configuration checks: neither executes the command, reads a key or token,
+contacts a server, or proves enrollment or write authority. They cannot be
+combined.
+
+For a configured signing identity, the result is:
+
+```json
+{"contract":"seeds-authentication-admission/v1","admitted":true,"destination":"https://example.org","authentication":"attested_session","provider_required":false,"authenticated":false,"signing_session":"example-session"}
+```
+
+The launcher keeps the original configuration, actor, signing identity and
+command. It must not fetch or select a bearer for this branch. It invokes the
+normal native command, which loads the configured key, validates the receiving
+store, and authenticates the existing session. The ordinary create transaction
+and its preconditions are unchanged. Any authentication refusal stays terminal;
+there is no fallback to another credential or an unsigned write. Admission of
+configuration is not permission to retry an earlier refused operation.
+
+The signed branch checks URL syntax and user-level project-host trust. As with
+normal signed-only connections, HTTP does not require a bearer transport
+exception, because no bearer is sent. A selected descriptor alongside signing
+still refuses, without reading the descriptor. An untrusted project URL, local
+store, or URL containing credentials, query or fragment also refuses.
+
+Without signing, the same contract returns `authentication: "bearer"`,
+`provider_required: true` and `authenticated: false`; the bearer destination and
+transport restrictions still apply. This branch refuses when local identity
+policy requires a signing key. A provider launcher must then use the existing
+bearer admission and exact-destination binding contract before provider access.
+Neither result permits it to remove signing or identity requirements to change
+branches. `--result-json` reports either admission as `NOT_APPLICABLE` for
+mutation, even when the intended command is `create`.
+
+
 ## Mode 3: sync
 
 ```toml

@@ -71,7 +71,7 @@
       "source": "docs/book/src/storage.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage.md",
       "summary": "One project is one named graph. A work item is a schema.org Action; public vocabulary and Quechua governance terms are preferred over tracker-specific terms.",
-      "source_sha256": "9156f7c953daca5d4c954c262d3cd022c3641e13ada6d064cc6a5b006218da13",
+      "source_sha256": "b3d86cbe60f8f9535cb7063f2187f3bc612bf4b33170b1116e02d92b1473e29e",
       "type": "DecisionRecord",
       "properties": {
         "status": "active",

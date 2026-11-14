@@ -54,6 +54,21 @@ complete. The pinned Git dependency includes the shared-applier repairs;
 a registry release with the same required behavior is a separate release
 prerequisite.
 
+## Remote status aggregates
+
+On servers with projection certificates, remote status counts and the status
+totals in `sd stats` can use the maintained project projection without reading
+all work-item subjects. Seeds requires matching transaction watermarks, one plain
+status and identifier per typed work item, and unique identifiers. It declines
+this path when ephemeral facts are present or the certificate cannot establish
+those conditions. Certificates are checked on each call, not cached locally.
+
+Older servers retain the existing count compatibility checks and normalized
+SPARQL fallback. Stats falls back directly to its normalized status aggregate,
+without adding a subject-discovery scan. Other stats, including lead time and
+ready counts, continue to use their existing queries; this optimization alone
+does not make every stats field a maintained counter.
+
 ## The vocabulary
 
 A seed is a `schema:Action`. The terms follow one order of preference: W3C

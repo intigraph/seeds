@@ -801,7 +801,10 @@ impl RemoteBackend {
     }
 
     pub(super) fn stats_summary(&self, ctx: &Ctx, req: StatsReq) -> Result<Stats> {
-        let statuses = self.grouped(&self.effective_normalized(&self.status_fields()), "status")?;
+        let statuses = match self.projection_status_totals()? {
+            Some(statuses) => statuses,
+            None => self.grouped(&self.effective_normalized(&self.status_fields()), "status")?,
+        };
         let count = |status: &str| {
             statuses
                 .iter()

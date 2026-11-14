@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.3] - 2026-11-14
+
+### Fixed
+
+- *(ci)* Deduplicate PR runs and supersede older checks (#278) ([853184c](https://github.com/scbrown/seeds/commit/853184c092fb0c9cce7acbca2a9dbb73450dd64f))
+- *(messages)* Explicitly flag incomplete listings (#273) ([5abd078](https://github.com/scbrown/seeds/commit/5abd0787a08ec66093cfc6eebd3183c9b1e945cc))
+- *(messages)* Restore explicit incomplete-listing status (#282) ([d521aca](https://github.com/scbrown/seeds/commit/d521acafa95788b9d4a2ec9eb8d7b151e9447bbd))
+
+### Reverted
+
+- Restore message listing behavior pending CI diagnosis (#281) ([5dcccb8](https://github.com/scbrown/seeds/commit/5dcccb8f05c73bd792983ee540db7d14d0daa9a0))
+
 ## [0.22.2] - 2026-11-14
 
 ### Fixed

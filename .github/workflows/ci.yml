@@ -1,5 +1,7 @@
 name: ci
 
+# Feature branches use pull_request once. Main and all existing tag pushes
+# retain CI coverage for exact-commit integration and release validation.
 on:
   push:
     branches: [main]

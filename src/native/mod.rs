@@ -4442,12 +4442,16 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                     .collect::<Vec<_>>()
                     .join("\n")
             };
-            Ok(ok(
+            let incomplete = !listing.warnings.is_empty();
+            let mut outcome = ok(
                 json,
                 serde_json::json!(ms.iter().map(view).collect::<Vec<_>>()),
                 text,
                 listing.warnings,
-            ))
+            );
+            // Preserve readable messages, but callers must detect omitted records.
+            outcome.code = i32::from(incomplete);
+            Ok(outcome)
         }
         MsgCommand::Count {
             to,

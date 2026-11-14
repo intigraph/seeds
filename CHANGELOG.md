@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.2] - 2026-11-14
+
+### Fixed
+
+- *(messages)* Avoid partial records at remote result caps (#270) ([c95eb1d](https://github.com/scbrown/seeds/commit/c95eb1ded3d22d0b8ed8cd22a730ecb08cfd6d33))
+- *(release)* Retain intentional book demo recordings (#272) ([4aeb38a](https://github.com/scbrown/seeds/commit/4aeb38af6187728cea338db277917cee875a1441))
+- *(messages)* Isolate exact target lookup from partition neighbours (#276) ([e04fad1](https://github.com/scbrown/seeds/commit/e04fad1117f9c7bfbbaf9631ccf6936230d9dd40))
+- *(release)* Admit retained exact-message demo recordings (#277) ([6dc0a43](https://github.com/scbrown/seeds/commit/6dc0a4372eb7f99e0df61ea4e194c10a675632bb))
+
 ## [0.22.1] - 2026-11-12
 
 ### Perf

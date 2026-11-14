@@ -36,6 +36,8 @@ jobs:
         run: |
           cargo build --locked --bin sd
           python3 tests/history_wire.py
+      - name: Exact message lookups isolate malformed neighbours
+        run: MESSAGE_SD="$PWD/target/debug/sd" python3 tests/message_show_wire.py
       # The core without the CLI or SHACL (the feature set the wasm build uses),
       # natively: exercises the non-SHACL validation path.
       - run: cargo test --no-default-features

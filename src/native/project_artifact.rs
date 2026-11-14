@@ -136,6 +136,17 @@ fn load_request(
     Ok(())
 }
 
+fn allow_config(root: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".quipu/.gitignore"))
+        .map_err(|e| SdError::failed(e.to_string()))?;
+    file.write_all(b"\n!config.toml\n")
+        .and_then(|()| file.sync_all())
+        .map_err(|e| SdError::failed(e.to_string()))
+}
+
 pub(super) fn export(b: &QuipuBackend, path: &Path, dir: &Path) -> Result<bool> {
     check_target(b, dir)?;
     let p = pendant::export(b)?;
@@ -151,6 +162,9 @@ pub(super) fn export(b: &QuipuBackend, path: &Path, dir: &Path) -> Result<bool> 
     let root = root(dir)?;
     // Quipu's allow-list and atomic bundle swap; partial exports stay ignored.
     project::scaffold(root, None)?;
+    if root.join(".quipu/config.toml").is_file() {
+        allow_config(root)?;
+    }
     let next = project::clear_next_bundle(root)?;
     let opts = quipu::share::ShareOptions {
         scope: quipu::share::ShareScope::Graph(b.graph_iri().to_owned()),
@@ -313,36 +327,75 @@ pub(super) fn migrate(cli: &Cli) -> Result<Outcome> {
     document["pendant"]["dir"] = toml::Value::String(".quipu/graph".into());
     let config_next =
         toml::to_string_pretty(&document).map_err(|e| SdError::failed(e.to_string()))?;
-    // Reserve the destination atomically: concurrent migrations must not
-    // overwrite each other's identity or partially published bundle.
-    std::fs::create_dir(root.join(".quipu")).map_err(|e| {
-        SdError::refused(format!("cannot reserve project migration destination: {e}"))
-    })?;
-    project::scaffold(&root, Some(id))?;
-    let dir = project::graph_dir(&root);
-    export(&backend, &root.join(".quipu/local.db"), &dir)?;
-    if sealed(&dir)?.export_nt() != original.export_nt() {
-        return Err(SdError::refused(
-            "migration read-back differs; legacy configuration retained",
-        ));
-    }
-    use std::io::Write;
-    let next = config_path.with_extension("toml.project-next");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&next)
-        .map_err(|e| SdError::refused(format!("cannot stage migrated configuration: {e}")))?;
-    file.write_all(config_next.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|e| SdError::failed(e.to_string()))?;
-    std::fs::rename(&next, &config_path).map_err(|e| SdError::failed(e.to_string()))?;
+    publish_migration(&root, id, &backend, &original, &config_next, |_| Ok(()))?;
     Ok(super::ok(
         cli.wants_json(),
         serde_json::json!({"status":"ok", "graph":backend.graph_iri(), "export_hash":original.export_hash(), "legacy_retained":true}),
         "migrated verified ledger to .quipu/graph; legacy bundle retained for rollback".into(),
         Vec::new(),
     ))
+}
+
+// The reserved destination stays empty until the only commit: renaming the
+// complete directory over it. Neither resolver nor plain Quipu can discover
+// the staged identity. Every fallible write happens before that rename.
+fn publish_migration(
+    root: &Path,
+    id: &str,
+    backend: &QuipuBackend,
+    original: &Pendant,
+    config_next: &str,
+    after_scaffold: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    struct Stage {
+        root: std::path::PathBuf,
+        destination: std::path::PathBuf,
+        reserved: bool,
+    }
+    impl Drop for Stage {
+        fn drop(&mut self) {
+            // Only our exclusively created staging tree; never another writer's.
+            let _ = std::fs::remove_dir_all(&self.root);
+            // Removes only an empty reservation, never a committed directory.
+            if self.reserved {
+                let _ = std::fs::remove_dir(&self.destination);
+            }
+        }
+    }
+    let stage_root = root.join(".seeds/project-migration-next");
+    std::fs::create_dir(&stage_root)
+        .map_err(|e| SdError::refused(format!("cannot reserve migration stage: {e}")))?;
+    let mut stage = Stage {
+        root: stage_root,
+        destination: root.join(".quipu"),
+        reserved: false,
+    };
+    std::fs::create_dir(&stage.destination)
+        .map_err(|e| SdError::refused(format!("cannot reserve migration destination: {e}")))?;
+    stage.reserved = true;
+    project::scaffold(&stage.root, Some(id))?;
+    let dir = project::graph_dir(&stage.root);
+    export(backend, &stage.root.join(".quipu/local.db"), &dir)?;
+    if sealed(&dir)?.export_nt() != original.export_nt() {
+        return Err(SdError::refused(
+            "migration read-back differs; legacy configuration retained",
+        ));
+    }
+    after_scaffold(&stage.root)?;
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(stage.root.join(".quipu/config.toml"))
+        .map_err(|e| SdError::refused(format!("cannot stage migrated configuration: {e}")))?;
+    file.write_all(config_next.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| SdError::failed(e.to_string()))?;
+    // Retain Quipu's database/key exclusions, adding only the Seeds config.
+    allow_config(&stage.root)?;
+    std::fs::rename(stage.root.join(".quipu"), &stage.destination)
+        .map_err(|e| SdError::failed(format!("cannot commit migrated project: {e}")))?;
+    Ok(())
 }
 
 /// Verified read-only preview for transfer: no disk/store/marker writes.
@@ -390,6 +443,83 @@ pub(super) fn preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn postscaffold_failure_never_publishes_identity_or_changes_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join(".seeds")).unwrap();
+        let old_config = "[pendant]\ndir = \".seeds/pendant\"\n";
+        std::fs::write(root.join(".seeds/config.toml"), old_config).unwrap();
+        std::fs::write(root.join(".seeds/project-id"), "atomic1\n").unwrap();
+        let inputs = config::Inputs {
+            cwd: root.to_owned(),
+            ..Default::default()
+        };
+        let before = config::resolve(&inputs).unwrap();
+        let before_graph = config::project_graph(&before, false).unwrap().0;
+        let backend = QuipuBackend::in_memory(&project::project_iri("atomic1")).unwrap();
+        let original = pendant::export(&backend).unwrap();
+        let failure = publish_migration(
+            root,
+            "atomic1",
+            &backend,
+            &original,
+            "[pendant]\ndir = \".quipu/graph\"\n",
+            |stage| {
+                assert!(stage.join(".quipu/project").is_file());
+                assert!(stage.join(".quipu/graph/export.nt").is_file());
+                assert!(project::read_project_id(root)?.is_none());
+                let during = config::resolve(&inputs)?;
+                assert_eq!(during.location, before.location);
+                assert_eq!(config::project_graph(&during, false)?.0, before_graph);
+                // A genuine late filesystem failure, after complete scaffolding.
+                std::fs::create_dir(stage.join(".quipu/config.toml")).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(failure
+            .message
+            .contains("cannot stage migrated configuration"));
+        assert!(!root.join(".quipu").exists());
+        assert!(!root.join(".seeds/project-migration-next").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join(".seeds/config.toml")).unwrap(),
+            old_config
+        );
+        let after = config::resolve(&inputs).unwrap();
+        assert_eq!(after.location, before.location);
+        assert_eq!(after.pendant, before.pendant);
+        assert_eq!(
+            config::project_graph(&after, false).unwrap().0,
+            before_graph
+        );
+        // Retry proves the positive arm commits all three together.
+        publish_migration(
+            root,
+            "atomic1",
+            &backend,
+            &original,
+            "[pendant]\ndir = \".quipu/graph\"\n",
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            project::read_project_id(root).unwrap().as_deref(),
+            Some("atomic1")
+        );
+        let after = config::resolve(&inputs).unwrap();
+        assert_eq!(
+            after.location,
+            config::Location::Store(root.join(".quipu/local.db"))
+        );
+        assert_eq!(after.pendant, Some(root.join(".quipu/graph")));
+        assert_eq!(
+            std::fs::read_to_string(root.join(".seeds/config.toml")).unwrap(),
+            old_config
+        );
+    }
 
     #[test]
     fn missing_or_different_recipient_profile_refuses_before_import_and_names_setup() {

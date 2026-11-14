@@ -1,0 +1,32 @@
+Migration publication regression (isolated disposable fixture)
+
+Before: reviewed candidate 7ef8ce3; pre-existing config.toml.project-next.
+$ sd migrate-project
+exit 5: cannot stage migrated configuration: File exists
+Legacy config bytes unchanged: true
+Canonical identity visible despite failure: true
+sd where: .seeds/seeds.db -> .quipu/local.db
+Configured artifact still .seeds/pendant: inconsistent activation.
+
+After: same trigger with the corrected implementation.
+$ sd migrate-project
+exit 0: migrated verified ledger to .quipu/graph; legacy bundle retained for rollback
+Old stage sentinel unchanged: true
+Legacy config and facts unchanged: true
+Canonical config present, canonical fact bytes identical: true
+sd where: .quipu/local.db, artifact .quipu/graph
+
+Late failure control:
+$ cargo test --lib postscaffold_failure_never_publishes_identity_or_changes_resolution
+PASS: after the complete identity and graph are staged, create a directory at
+the staged config-file path. The actual file-create operation fails. During
+staging and after failure, ordinary resolution retains the legacy store,
+graph, config and artifact. Owned staging/reservation are removed; a successful
+retry publishes the complete canonical directory in one rename.
+
+Interrupted-state control:
+$ cargo test --test modes project_migration_interrupted_stage
+Seeds the leftover staged identity/config with and without an empty destination
+reservation. Ordinary routing ignores both; migration refuses without adopting
+or deleting the existing stage. This is a seeded interruption-state check,
+not an executed process-kill or power-loss durability test.

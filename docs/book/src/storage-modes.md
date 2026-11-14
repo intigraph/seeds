@@ -48,13 +48,19 @@ Item and comment IRIs stay unchanged. The legacy bundle and identity remain as
 rollback evidence; the command never deletes them or migrates a remote board.
 Back up the repository and reconcile any divergence before retrying a refusal.
 
-Commit `.quipu/project`, `.quipu/graph`, `.quipu/.gitignore` and the updated
-`.seeds/config.toml`. Quipu's allow-list keeps local databases and signing keys
+The identity, verified graph and migrated Seeds config are prepared in an
+undiscoverable staging directory. One directory rename publishes them together;
+a failure before that commit leaves the legacy identity, config and routing
+active. An abandoned stage is never adopted automatically.
+
+Commit `.quipu/project`, `.quipu/graph`, `.quipu/.gitignore` and
+`.quipu/config.toml`. The canonical config takes precedence over the retained
+`.seeds/config.toml` only when the canonical identity is present. Quipu's allow-list keeps local databases and signing keys
 out of `git add .quipu`. Once the migrated artifact has been independently
 accepted, retire the legacy committed bundle in a separate deliberate cleanup.
-Before new writes, rollback means restoring the prior config and continuing
+Before new writes, rollback means removing the canonical directory and continuing
 with the intact legacy bundle. After new writes, export and reconcile those
-changes first: reverting the config alone would select the older ledger.
+changes first: removing the canonical directory would select the older ledger.
 
 Canonical project bundles are strict: reads refuse a broken seal instead of
 repairing it. Updates use Quipu's share writer and atomic bundle swap. Loads and

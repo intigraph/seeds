@@ -19,3 +19,8 @@ quarantine; naming the setup step before staging is a separate producer gap.
 
 The retained transcript is actual command output. A terminal recorder was not
 available on the authoring host; it is not a video or a simulated result.
+
+The [atomic publication regression](atomic-publication.txt) shows the reviewed
+failure and corrected behavior. Migration prepares the identity, graph and
+Seeds config together, then publishes them with one directory rename. A
+post-scaffold filesystem failure leaves legacy routing active.

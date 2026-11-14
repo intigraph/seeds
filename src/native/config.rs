@@ -431,10 +431,19 @@ fn check_url(url: &str, origin: &str) -> Result<String> {
     }
 }
 
+fn project_config(root: &Path) -> PathBuf {
+    let canonical = root.join(".quipu/config.toml");
+    if root.join(".quipu/project").is_file() && canonical.exists() {
+        canonical
+    } else {
+        root.join(PROJECT_DIR).join(CONFIG_FILE)
+    }
+}
+
 /// The project and user config files resolution would read, whether or not
 /// they exist: (project, user).
 pub fn config_paths(inputs: &Inputs) -> (Option<PathBuf>, Option<PathBuf>) {
-    let project = find_project_root(&inputs.cwd).map(|r| r.join(PROJECT_DIR).join(CONFIG_FILE));
+    let project = find_project_root(&inputs.cwd).map(|r| project_config(&r));
     let user = inputs
         .user_config_dir
         .as_ref()
@@ -445,9 +454,7 @@ pub fn config_paths(inputs: &Inputs) -> (Option<PathBuf>, Option<PathBuf>) {
 /// Resolve the configuration from `inputs`. Reads the two config files.
 pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     let project_root = find_project_root(&inputs.cwd);
-    let project_file = project_root
-        .as_ref()
-        .map(|r| r.join(PROJECT_DIR).join(CONFIG_FILE));
+    let project_file = project_root.as_ref().map(|r| project_config(r));
     let project = match &project_file {
         Some(p) => read_file(p)?,
         None => None,

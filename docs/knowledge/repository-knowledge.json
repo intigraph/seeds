@@ -16,7 +16,7 @@
       "source": "docs/book/src/storage-modes.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage-modes.md",
       "summary": "The same work-item model supports embedded storage, a repository-local pendant, a remote server and synchronization; conflicts are reported rather than silently choosing a side.",
-      "source_sha256": "a4ff7f3c55dd5806e76d5830ed95aa83b6726facb7bea82d7cb6a30ba6c5ac02",
+      "source_sha256": "e9c57d881bc64f112c0d4b57f6e991c72ca1db4dbf9faa7687484e2316deac87",
       "type": "Concept"
     },
     {
@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "0f387e85f623b3e7a03270be5c4da4ea383f6b72f1f2452622133568f67099cb",
+      "source_sha256": "e4ad5a2158bf3feafc1a49be0984f654cc7555f2b7fee2131ea4bdbd1af7ede0",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"

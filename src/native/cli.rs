@@ -299,6 +299,9 @@ pub enum Command {
     /// Make the current directory a seeds project (.seeds/ with config,
     /// project id and .gitignore)
     Init(InitArgs),
+    /// Migrate a sealed local legacy ledger into Quipu's project graph (no remote writes)
+    #[command(name = "migrate-project")]
+    MigrateProject,
     /// Write the ledger as a pendant (quipu's share files) to a directory
     Export(ExportArgs),
 
@@ -1625,9 +1628,11 @@ impl Command {
             ),
             Command::Export(a) if super::transfer::is_target(a.to.as_deref()) => a.transfer.execute,
             Command::Import(a) if a.from.is_some() => a.transfer.execute,
-            Command::Import(_) | Command::Sync(_) | Command::MergeDriver(_) | Command::Init(_) => {
-                true
-            }
+            Command::Import(_)
+            | Command::Sync(_)
+            | Command::MergeDriver(_)
+            | Command::Init(_)
+            | Command::MigrateProject => true,
             Command::Orphans { fix, .. } => *fix,
             Command::SpecEvents
             | Command::SpecChanges
@@ -1769,6 +1774,7 @@ impl Command {
                 ConfigCommand::Edit => "config edit",
             },
             Command::Init(_) => "init",
+            Command::MigrateProject => "migrate-project",
             Command::Export(_) => "export",
             Command::Import(_) => "import",
             Command::Sync(_) => "sync",

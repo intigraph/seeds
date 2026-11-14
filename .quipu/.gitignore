@@ -1,0 +1,11 @@
+# Written by quipu (aegis-w3k75d.11). Commit ONLY the project graph.
+# Everything else here is local: the store (local.db*) and the host signing
+# key (verifier.pk8, a PRIVATE key). An allow-list, so anything quipu writes
+# here later is local by default.
+*
+!.gitignore
+!project
+!graph/
+!graph/**
+
+!config.toml

@@ -16,7 +16,7 @@
       "source": "docs/book/src/storage-modes.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage-modes.md",
       "summary": "The same work-item model supports embedded storage, a repository-local pendant, a remote server and synchronization; conflicts are reported rather than silently choosing a side.",
-      "source_sha256": "08c017df09cfbf57a1ca6e6f0ff0bb428c3e0bac8ea680b469a4a021c6b35aac",
+      "source_sha256": "a4ff7f3c55dd5806e76d5830ed95aa83b6726facb7bea82d7cb6a30ba6c5ac02",
       "type": "Concept"
     },
     {
@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "83d4605eff5e5f044ebba31170c4a7443482534338cdd83ebab1c0607d3e37b4",
+      "source_sha256": "35d235da3d62044da5cb03fc657af2cd2f3509836be68c868629e7e8c43c5941",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -38,7 +38,7 @@
       "source": "src/native/config.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fconfig.rs",
       "summary": "Storage configuration resolves explicit flags before environment, project configuration and user configuration. Conflicting or unreadable routing refuses rather than choosing a different store.",
-      "source_sha256": "7079a3d6ff71cf905bc0d348c19a04e8f133614b63ee30832b29cc25f885817c",
+      "source_sha256": "0f387e85f623b3e7a03270be5c4da4ea383f6b72f1f2452622133568f67099cb",
       "properties": {
         "interfaceKind": "config",
         "publicName": "--store, --quipu, --graph; SEEDS_QUIPU_STORE, SEEDS_QUIPU_URL, SEEDS_GRAPH; .seeds/config.toml"
@@ -111,7 +111,7 @@
       "source": "AGENTS.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/AGENTS.md",
       "summary": "Contributions preserve the wasm-clean core, documented storage semantics, public-safe source and full just check quality gate.",
-      "source_sha256": "cacff5ce9cc4fccf922a57ee2bf652a4db15cb1cd14dcca849eeb807760d9a4e",
+      "source_sha256": "3c978556b7116b0a198513070ac141c0e240a1c82c17dbdce01bc89f01736534",
       "properties": {
         "startHereOrder": 3
       }

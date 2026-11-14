@@ -23,3 +23,7 @@ __pycache__/
 # Deliberate, checked-in book message demo recordings.
 !/docs/book/src/demos/messages/output.log
 !/docs/book/src/demos/messages/timing.log
+
+# Deliberate, checked-in exact-message lookup demo recordings.
+!/docs/probes/pr-demos/exact-message-show/output.log
+!/docs/probes/pr-demos/exact-message-show/timing.log

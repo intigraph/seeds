@@ -102,7 +102,7 @@ pub(super) fn collect(
                             out.messages.push(m)
                         }
                         _ => out.warnings.push(format!(
-                            "message listing incomplete: {subject} in {window} is malformed; omitted from this listing"
+                            "{subject} in {window} is malformed; omitted from this listing"
                         )),
                     }
                 }
@@ -228,7 +228,6 @@ mod tests {
         assert_eq!(listing.messages, vec![good]);
         assert_eq!(listing.warnings.len(), 1);
         assert!(listing.warnings[0].contains(&bad.id));
-        assert!(listing.warnings[0].starts_with("message listing incomplete:"));
     }
 
     #[test]

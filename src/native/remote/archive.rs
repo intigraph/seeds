@@ -6,10 +6,13 @@
 //! - Selection keeps live every seed a reader may still need by id: a
 //!   protect list (ids and labels), every target of a dependency edge from a
 //!   seed that stays live, and every id named in a live `resume_when:` line.
-//! - Each batch is ONE update whose branches name each item as a bound IRI.
-//!   Never `VALUES` (quipu does not push it down: a whole-graph scan) and
-//!   never a `BIND` of an outer variable (unbound inside the group: it matches
-//!   the whole graph). A forward branch also requires the item to still be
+//! - Each batch is ONE update in which every pattern AND template names its
+//!   subject (each item, each comment from the pre-read) as a constant IRI.
+//!   Never `VALUES` (quipu does not push it down: a whole-graph scan), never
+//!   a `BIND` of an outer variable (unbound inside the group: it matches the
+//!   whole graph), and never an open `?s ?p ?o` (quipu cannot slice it, so it
+//!   copies the whole store and refuses on a production-sized one:
+//!   aegis-6vto.1). A forward branch also requires the item to still be
 //!   `closed`, so a seed reopened since selection is not moved.
 //! - Each batch is verified: the facts read from the source graph before the
 //!   move are exactly the facts in the destination after it, and none remain
@@ -113,6 +116,43 @@ pub fn resume_ids(notes: &str) -> BTreeSet<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// The one update that moves `owners` (subject IRI -> the item IRI that owns
+/// it: itself, or the item a comment is on) from `src` to `dst`.
+///
+/// Every pattern and template names its subject as a constant IRI, with its
+/// own `?pN ?oN` variables. quipu plans such an update as a slice of exactly
+/// those subjects' facts. An open `?s ?p ?o` (the shape this replaced) cannot
+/// be sliced: quipu copies the whole store for it and refuses past
+/// `update_full_copy_max_facts` (250k by default), which every production
+/// board exceeds (aegis-6vto.1). In a `UNION`, a template triple whose
+/// variables a solution leaves unbound is skipped, so each branch moves only
+/// its own subject.
+///
+/// `closed_guard` = the status predicate on a forward move: each branch then
+/// also requires its owning item to still be `closed`, so a seed reopened
+/// since selection is not moved (nor its comments).
+pub(super) fn move_update(
+    src: &str,
+    dst: &str,
+    owners: &BTreeMap<String, String>,
+    closed_guard: Option<&str>,
+) -> String {
+    let mut templates = String::new();
+    let mut branches = Vec::with_capacity(owners.len());
+    for (n, (subject, item)) in owners.iter().enumerate() {
+        let triple = format!("<{subject}> ?p{n} ?o{n} . ");
+        templates.push_str(&triple);
+        let guard = closed_guard
+            .map(|status| format!("<{item}> <{status}> \"closed\" . "))
+            .unwrap_or_default();
+        branches.push(format!("{{ GRAPH <{src}> {{ {guard}{triple}}} }}"));
+    }
+    format!(
+        "DELETE {{ GRAPH <{src}> {{ {templates}}} }} INSERT {{ GRAPH <{dst}> {{ {templates}}} }} WHERE {{ {} }}",
+        branches.join(" UNION ")
+    )
 }
 
 impl RemoteBackend {
@@ -295,30 +335,25 @@ impl RemoteBackend {
             .cloned()
             .collect();
         let parent = term::comment_on();
-        let guard = |item: &str| {
-            if forward {
-                format!("<{item}> <{status}> \"closed\" . ")
-            } else {
-                String::new()
-            }
-        };
-        let branches: Vec<String> = found
+        let found_iris: BTreeSet<String> = found.iter().map(|id| vocab::item_iri(id)).collect();
+        // Every subject the batch moves, from the pre-read: each found item,
+        // and each comment whose `comment_on` names one, with the item that
+        // guards it.
+        let owners: BTreeMap<String, String> = before
             .iter()
-            .map(|id| vocab::item_iri(id))
-            .flat_map(|item| {
-                [
-                    format!(
-                        "{{ GRAPH <{src}> {{ {}<{item}> ?p ?o . BIND(<{item}> AS ?s) }} }}",
-                        guard(&item)
-                    ),
-                    format!(
-                        "{{ GRAPH <{src}> {{ {}?s <{parent}> <{item}> . ?s ?p ?o }} }}",
-                        guard(&item)
-                    ),
-                ]
+            .filter_map(|(s, facts)| {
+                if found_iris.contains(s) {
+                    return Some((s.clone(), s.clone()));
+                }
+                facts.iter().find_map(|(p, o)| match o {
+                    Obj::Iri(i) if *p == parent && found_iris.contains(i) => {
+                        Some((s.clone(), i.clone()))
+                    }
+                    _ => None,
+                })
             })
             .collect();
-        if branches.is_empty() {
+        if owners.is_empty() {
             return Ok(Moved {
                 ids: Vec::new(),
                 subjects: 0,
@@ -326,10 +361,7 @@ impl RemoteBackend {
                 tx: 0,
             });
         }
-        let update = format!(
-            "DELETE {{ GRAPH <{src}> {{ ?s ?p ?o }} }} INSERT {{ GRAPH <{dst}> {{ ?s ?p ?o }} }} WHERE {{ {} }}",
-            branches.join(" UNION ")
-        );
+        let update = move_update(src, dst, &owners, forward.then_some(status.as_str()));
         let source = if forward {
             "seeds:archive"
         } else {
@@ -361,7 +393,6 @@ impl RemoteBackend {
         let found_vec: Vec<String> = found.iter().cloned().collect();
         let after_src = self.family_facts(src, &found_vec)?;
         let after_dst = self.family_facts(dst, &found_vec)?;
-        let found_iris: BTreeSet<String> = found.iter().map(|id| vocab::item_iri(id)).collect();
         let expected: Facts = before
             .iter()
             .filter(|(s, facts)| {

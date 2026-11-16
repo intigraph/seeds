@@ -535,3 +535,122 @@ fn a_batch_that_fails_verification_after_commit_is_logged_and_reversible() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// aegis-6vto.1: the move names every subject as a constant IRI with its own
+/// variables, so quipu can slice it. An open `?s` anywhere (pattern or
+/// template) makes quipu copy the whole store.
+#[test]
+fn the_move_update_names_every_subject_as_a_constant() {
+    let item = vocab::item_iri("ar-1");
+    let comment = format!("{item}/comment/1");
+    let owners: std::collections::BTreeMap<String, String> = [
+        (item.clone(), item.clone()),
+        (comment.clone(), item.clone()),
+    ]
+    .into_iter()
+    .collect();
+    let status = term::status();
+    let update = super::archive::move_update("urn:src", "urn:dst", &owners, Some(&status));
+    assert!(!update.contains("?s "), "no open subject: {update}");
+    assert!(
+        !update.contains("VALUES") && !update.contains("BIND"),
+        "{update}"
+    );
+    for (n, subject) in owners.keys().enumerate() {
+        let triple = format!("<{subject}> ?p{n} ?o{n} .");
+        assert_eq!(
+            update.matches(&triple).count(),
+            3,
+            "{subject}: in the DELETE and INSERT templates and its own branch: {update}"
+        );
+    }
+    assert_eq!(
+        update
+            .matches(&format!("<{item}> <{status}> \"closed\" ."))
+            .count(),
+        2,
+        "each branch (the item's and its comment's) is guarded by the item: {update}"
+    );
+    let back = super::archive::move_update("urn:dst", "urn:src", &owners, None);
+    assert!(
+        !back.contains("\"closed\""),
+        "a restore is unguarded: {back}"
+    );
+}
+
+/// aegis-6vto.1: production quipu refuses an update it cannot slice once the
+/// store holds more than `update_full_copy_max_facts` facts (250k by default;
+/// every production board is larger). With the ceiling at 20, a positive
+/// control proves the refusal is active, then a real archive and restore
+/// must still go through and restore every fact byte for byte. The old
+/// open-`?s ?p ?o` move fails here exactly as it failed in production.
+#[test]
+fn archive_moves_on_a_store_too_large_for_an_unsliceable_update() {
+    let Ok(bin) = std::env::var("SEEDS_TEST_QUIPU_SERVER") else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
+        return;
+    };
+    let server = super::tests::quipu_server_config(
+        &bin,
+        Some("[quipu.server]\nupdate_full_copy_max_facts = 20\n"),
+    );
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/archive-sliced",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let mut c = ctx();
+    c.now = "2026-09-01T00:00:00Z".into();
+    let a = create(&mut r, &c, "a", None);
+    let keep = create(&mut r, &c, "keep", None);
+    engine::comment_add(&mut r, &c, &a, "one", None).unwrap();
+    engine::close(&mut r, &c, std::slice::from_ref(&a), Some("done"), false).unwrap();
+
+    // Positive control: an update quipu cannot slice that would change
+    // nothing even if it ran. A server without the ceiling (older releases)
+    // accepts it, and then this test proves nothing: say so and stop.
+    let control = "DELETE { GRAPH <urn:seeds-test:none> { ?s ?p ?o } } \
+                   WHERE { GRAPH <urn:seeds-test:none> { ?s ?p ?o } }";
+    let form = format!(
+        "update={}&actor=tester&source={}",
+        form_encode(control),
+        form_encode("seeds:test-control")
+    );
+    match r.send("/update", "application/x-www-form-urlencoded", &form, true) {
+        Ok(_) => {
+            eprintln!(
+                "SKIPPED: this quipu-server has no update_full_copy_max_facts ceiling, \
+                 so the sliced move cannot be told from the old one here"
+            );
+            return;
+        }
+        Err((_, e)) => assert!(
+            e.message.contains("cannot be sliced"),
+            "the control must be refused for being unsliceable, got: {}",
+            e.message
+        ),
+    }
+
+    let ids = vec![a.clone()];
+    let live = r.graph.clone();
+    let before = r.family_facts_for_test(&live, &ids);
+    let moved = r
+        .archive_move(&c, &ids, true)
+        .expect("a sliced archive move");
+    assert_eq!(moved.ids, ids);
+    assert_eq!(moved.subjects, 2, "the seed and its comment");
+    assert_moved_only(&r, &[&a], &[&keep]);
+    let back = r.archive_move(&c, &ids, false).expect("a sliced restore");
+    assert_eq!(back.subjects, 2);
+    assert_eq!(
+        r.family_facts_for_test(&live, &ids),
+        before,
+        "restore is byte-equal per subject"
+    );
+    assert!(r
+        .family_facts_for_test(&vocab::archive_graph(&live), &ids)
+        .is_empty());
+}

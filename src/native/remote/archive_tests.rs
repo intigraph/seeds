@@ -610,8 +610,10 @@ fn archive_moves_on_a_store_too_large_for_an_unsliceable_update() {
     engine::close(&mut r, &c, std::slice::from_ref(&a), Some("done"), false).unwrap();
 
     // Positive control: an update quipu cannot slice that would change
-    // nothing even if it ran. A server without the ceiling (older releases)
-    // accepts it, and then this test proves nothing: say so and stop.
+    // nothing even if it ran. A server with the ceiling must refuse it; then
+    // the move below proves it is sliceable. An older server without the
+    // ceiling accepts it: the move below still has to round-trip, it just
+    // cannot be told from the old open-subject move there.
     let control = "DELETE { GRAPH <urn:seeds-test:none> { ?s ?p ?o } } \
                    WHERE { GRAPH <urn:seeds-test:none> { ?s ?p ?o } }";
     let form = format!(
@@ -620,13 +622,10 @@ fn archive_moves_on_a_store_too_large_for_an_unsliceable_update() {
         form_encode("seeds:test-control")
     );
     match r.send("/update", "application/x-www-form-urlencoded", &form, true) {
-        Ok(_) => {
-            eprintln!(
-                "SKIPPED: this quipu-server has no update_full_copy_max_facts ceiling, \
-                 so the sliced move cannot be told from the old one here"
-            );
-            return;
-        }
+        Ok(_) => eprintln!(
+            "note: this quipu-server enforces no update_full_copy_max_facts ceiling; \
+             checking the archive round trip only"
+        ),
         Err((_, e)) => assert!(
             e.message.contains("cannot be sliced"),
             "the control must be refused for being unsliceable, got: {}",

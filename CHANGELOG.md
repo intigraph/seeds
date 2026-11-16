@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.4] - 2026-11-16
+
+### Fixed
+
+- *(archive)* Move with constant subjects so quipu can slice the update (#283) ([ba599cf](https://github.com/scbrown/seeds/commit/ba599cf741fbcda5d1b65638e415e54286fed66a))
+
 ## [0.22.3] - 2026-11-14
 
 ### Fixed

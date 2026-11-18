@@ -2437,12 +2437,14 @@ impl Backend for RemoteBackend {
 
     /// Closed seeds at or after `since` (aegis-6vto.1). Three cheap steps
     /// instead of a whole-board snapshot with every comment:
+    ///
     /// 1. per graph, one bound pattern for closed items with an end time at
     ///    or after `since`, returning their identifiers;
     /// 2. per graph, every subject carrying one of those identifiers (bound
-    ///    literal patterns, [`SUBJECTS_PER_READ`] per read), so an alias IRI or
-    ///    an ephemeral shadow that reopened or re-dated an item is read too;
+    ///    literal patterns, [`SUBJECTS_PER_READ`] per read), so an alias IRI
+    ///    or an ephemeral shadow that reopened or re-dated an item is read;
     /// 3. the facts of exactly those subjects, no comments.
+    ///
     /// The engine re-applies status and date, so a superset is harmless. A
     /// discovery answer at the row cap falls back to the whole snapshot.
     fn snapshot_closed_since(&self, since: Option<&str>) -> Result<Snapshot> {

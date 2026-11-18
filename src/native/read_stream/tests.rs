@@ -309,9 +309,35 @@ fn sse_envelope_preserves_payload_and_rejects_truncation_or_extra_fields() {
         Frames::new(&good[..]).next_frame().unwrap(),
         Some(("quipu.replicate.coverage".into(), "{\n}".into()))
     );
+    // Quipu's barrier frames carry a standard SSE cursor id (exact shape of a
+    // real /share/asof commit frame: id line first). It is discarded.
+    let barrier = b"event: quipu.asof.commit\nid: 1311146\ndata: {\"source_tx\":1311146}\n\n";
+    assert_eq!(
+        Frames::new(&barrier[..]).next_frame().unwrap(),
+        Some(("quipu.asof.commit".into(), "{\"source_tx\":1311146}".into()))
+    );
+    let id_first = b"id: 7\r\nevent: quipu.changes.commit\r\ndata: {}\r\n\r\nevent: quipu.replicate.coverage\ndata: {}\n\n";
+    let mut frames = Frames::new(&id_first[..]);
+    assert_eq!(
+        frames.next_frame().unwrap(),
+        Some(("quipu.changes.commit".into(), "{}".into()))
+    );
+    // The id is per envelope: the next frame may omit it.
+    assert_eq!(
+        frames.next_frame().unwrap(),
+        Some(("quipu.replicate.coverage".into(), "{}".into()))
+    );
+    assert_eq!(frames.next_frame().unwrap(), None);
     for bad in [
         "event: x\ndata: {}",
         "event: x\nid: unsigned\ndata: {}\n\n",
+        "event: x\nid: 1\nid: 2\ndata: {}\n\n",
+        "event: x\nid: -1\ndata: {}\n\n",
+        "event: x\nid:\ndata: {}\n\n",
+        "event: x\nid: 99999999999999999999\ndata: {}\n\n",
+        "event: x\nid: 1 \ndata: {}\n\n",
+        "id: 5\n\n",
+        "event: x\nretry: 10\ndata: {}\n\n",
         "data: {}\n\n",
         "event: x\nevent: y\ndata: {}\n\n",
     ] {
@@ -372,6 +398,29 @@ fn private_inputs_refuse_fifo_symlink_and_growth_before_reading() {
     assert!(private_file(&link, 1024).is_err());
     assert!(private_file(&file, 3).is_err());
     assert_eq!(private_file(&file, 4).unwrap(), b"1234");
+}
+
+#[test]
+fn unsigned_bootstrap_refusal_names_the_applier_reason() {
+    // quipu 0.18.1 served pooled cuts with `"manifest_signature": null`
+    // (aegis-xdvg.4). The applier refuses the bootstrap frame; the operator must
+    // see why, not only the later generic "replica bootstrap is incomplete".
+    let fx = Fixture::new();
+    let raw = fs::read_to_string(&fx.config.bootstrap).unwrap();
+    let data = raw
+        .strip_prefix("event: quipu.asof\ndata: ")
+        .and_then(|s| s.strip_suffix("\n\n"))
+        .unwrap();
+    let mut frame: Value = serde_json::from_str(data).unwrap();
+    frame["manifest_signature"] = Value::Null;
+    fs::write(
+        &fx.config.bootstrap,
+        format!("event: quipu.asof\ndata: {frame}\n\n"),
+    )
+    .unwrap();
+    let error = fx.config.bootstrap().err().unwrap().to_string();
+    assert!(error.contains("bootstrap refused"), "{error}");
+    assert!(error.contains("signed admitted descriptor"), "{error}");
 }
 
 #[test]

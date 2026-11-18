@@ -173,7 +173,15 @@ impl Config {
         let (file, len) = private_open(&self.bootstrap, ceiling)?;
         let mut frames = Frames::new(BufReader::new(file.take(len + 1)));
         while let Some((event, data)) = frames.next_frame()? {
-            board.apply_frame(&event, &data, 0)?;
+            // A refused bootstrap frame dooms the cut; name the applier's reason
+            // instead of the later generic "incomplete" (aegis-xdvg.4).
+            if let quipu::applier::Outcome::Refused { reason } =
+                board.apply_frame(&event, &data, 0)?
+            {
+                return Err(SdError::refused(format!(
+                    "push read UNKNOWN: bootstrap refused: {reason}; no primary polling fallback"
+                )));
+            }
         }
         // Exactly the bytes measured at open: a file that grew or shrank while
         // it was read is not the cut the operator pinned.
@@ -423,6 +431,12 @@ fn render(
 
 /// Bounded SSE envelope reader only; all payload/transaction/signature semantics
 /// belong to the shared applier. Partial final events and unknown fields refuse.
+///
+/// Quipu puts a standard SSE `id:` (the Last-Event-ID cursor) on barrier frames,
+/// such as `quipu.asof.commit` and `quipu.changes.commit`. It is unsigned envelope
+/// metadata, so it is checked for shape (at most one, decimal, i64 range) and then
+/// discarded. It never reaches the applier and grants nothing: the signed data
+/// carries every transaction fact.
 struct Frames<R> {
     reader: R,
 }
@@ -432,6 +446,7 @@ impl<R: BufRead> Frames<R> {
     }
     fn next_frame(&mut self) -> Result<Option<(String, String)>> {
         let (mut event, mut data) = (String::new(), String::new());
+        let mut id_seen = false;
         loop {
             let mut raw = Vec::new();
             let count = io(self
@@ -453,7 +468,7 @@ impl<R: BufRead> Frames<R> {
                 .map_err(|_| unknown("SSE is not UTF-8"))?
                 .trim_end_matches(['\n', '\r']);
             if line.is_empty() {
-                if event.is_empty() && data.is_empty() {
+                if event.is_empty() && data.is_empty() && !id_seen {
                     continue;
                 }
                 if event.is_empty() || data.is_empty() {
@@ -474,6 +489,13 @@ impl<R: BufRead> Frames<R> {
                 "data" => {
                     data.push_str(value);
                     data.push('\n');
+                }
+                "id" if !id_seen
+                    && (1..=19).contains(&value.len())
+                    && value.bytes().all(|b| b.is_ascii_digit())
+                    && value.parse::<i64>().is_ok() =>
+                {
+                    id_seen = true;
                 }
                 _ => return Err(unknown("unexpected SSE envelope field")),
             }

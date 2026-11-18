@@ -11,7 +11,7 @@ database. The command is `sd`; the project, repository and prose name are
 storage design before changing its scope.
 
 seeds tracks its own backlog in seeds: the ledger is the committed pendant in
-`.seeds/pendant/` (mode 1). Use `sd ready`, `sd create`, `sd close` in this repo
+`.quipu/graph/` (mode 1, identity in `.quipu/project`). Use `sd ready`, `sd create`, `sd close` in this repo
 and commit the pendant changes with the work that closes them.
 
 Sibling repos: scbrown/quipu (governed store), scbrown/camayoc (shapes and

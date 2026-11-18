@@ -2427,3 +2427,168 @@ fn a_foreign_identical_post_state_cannot_confirm_a_lost_field_write() {
         Some("identical post-state")
     );
 }
+
+#[test]
+fn project_migration_preserves_seeds_and_comments_and_loads_fresh_clone() {
+    let e = Env::new("project-migration");
+    let d = e.pendant_project("original");
+    let alpha = e
+        .ok(&d, &["create", "alpha", "--silent"], &[])
+        .trim()
+        .to_owned();
+    e.ok(&d, &["comments", "add", &alpha, "a retained comment"], &[]);
+    let beta = e
+        .ok(&d, &["create", "beta", "--silent"], &[])
+        .trim()
+        .to_owned();
+    e.ok(&d, &["dep", "add", &beta, &alpha], &[]);
+    let before = e.ok(&d, &["list", "--all", "--json"], &[]);
+    let export = std::fs::read(d.join(".seeds/pendant/export.nt")).unwrap();
+    let legacy_id = std::fs::read_to_string(d.join(".seeds/project-id")).unwrap();
+    let old_config = std::fs::read(d.join(".seeds/config.toml")).unwrap();
+    std::fs::write(
+        d.join(".seeds/config.toml.project-next"),
+        "unrelated retained file",
+    )
+    .unwrap();
+    e.ok(&d, &["migrate-project", "--json"], &[]);
+    assert_eq!(
+        std::fs::read(d.join(".seeds/config.toml")).unwrap(),
+        old_config
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join(".seeds/config.toml.project-next")).unwrap(),
+        "unrelated retained file"
+    );
+    assert!(d.join(".quipu/config.toml").is_file());
+    assert_eq!(
+        std::fs::read(d.join(".quipu/graph/export.nt")).unwrap(),
+        export
+    );
+    assert_eq!(
+        std::fs::read(d.join(".seeds/pendant/export.nt")).unwrap(),
+        export
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join(".quipu/project")).unwrap(),
+        legacy_id
+    );
+    assert_eq!(e.ok(&d, &["list", "--all", "--json"], &[]), before);
+    assert!(!e.sd(&d, &["migrate-project"], &[]).status.success());
+    let clone = e.dir("clone");
+    // Only the shared project artifact, no Seeds config/store: discovery and
+    // hydrate must work directly from Quipu's committed identity.
+    std::fs::create_dir_all(clone.join(".quipu/graph")).unwrap();
+    for entry in std::fs::read_dir(d.join(".quipu/graph")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(
+            entry.path(),
+            clone.join(".quipu/graph").join(entry.file_name()),
+        )
+        .unwrap();
+    }
+    std::fs::copy(d.join(".quipu/project"), clone.join(".quipu/project")).unwrap();
+    assert_eq!(e.ok(&clone, &["list", "--all", "--json"], &[]), before);
+    assert_eq!(
+        std::fs::read(clone.join(".quipu/graph/export.nt")).unwrap(),
+        export
+    );
+    e.ok(&clone, &["close", &alpha], &[]);
+    assert!(e.ready(&clone, &[]).contains(&beta));
+    // A broken hash is refused rather than quietly repaired by a normal read.
+    let manifest = clone.join(".quipu/graph/manifest.json");
+    std::fs::write(&manifest, "{}\n").unwrap();
+    assert!(!e.sd(&clone, &["list", "--json"], &[]).status.success());
+    assert_eq!(std::fs::read_to_string(manifest).unwrap(), "{}\n");
+    e.ok(&d, &["comments", "add", &alpha, "after migration"], &[]);
+    assert!(std::fs::read_to_string(d.join(".quipu/.gitignore"))
+        .unwrap()
+        .contains("!config.toml"));
+}
+
+#[test]
+fn project_migration_refuses_overrides_and_dirty_or_ambiguous_inputs_without_switching_config() {
+    let e = Env::new("project-refusals");
+    for (name, override_args) in [
+        ("store", vec!["--store", "elsewhere.db"]),
+        ("graph", vec!["--graph", "urn:test:override"]),
+        ("url", vec!["--quipu", "https://example.com"]),
+    ] {
+        let d = e.pendant_project(name);
+        e.ok(&d, &["create", "alpha", "--silent"], &[]);
+        let config = std::fs::read(d.join(".seeds/config.toml")).unwrap();
+        let mut args = vec!["migrate-project"];
+        args.extend(override_args);
+        assert!(!e.sd(&d, &args, &[]).status.success());
+        assert!(!d.join(".quipu").exists());
+        assert_eq!(std::fs::read(d.join(".seeds/config.toml")).unwrap(), config);
+    }
+    let d = e.pendant_project("divergent");
+    e.ok(&d, &["create", "alpha", "--silent"], &[]);
+    let before = std::fs::read(d.join(".seeds/pendant/export.nt")).unwrap();
+    e.ok(
+        &d,
+        &["create", "working-only", "--silent"],
+        &[("SEEDS_PENDANT_DIR", "alternative")],
+    );
+    assert!(!e.sd(&d, &["migrate-project"], &[]).status.success());
+    assert!(!d.join(".quipu").exists());
+    assert_eq!(
+        std::fs::read(d.join(".seeds/pendant/export.nt")).unwrap(),
+        before
+    );
+    let d = e.pendant_project("broken");
+    e.ok(&d, &["create", "alpha", "--silent"], &[]);
+    std::fs::write(d.join(".seeds/pendant/manifest.json"), "{}\n").unwrap();
+    assert!(!e.sd(&d, &["migrate-project"], &[]).status.success());
+    assert!(!d.join(".quipu").exists());
+    let d = e.pendant_project("destination");
+    e.ok(&d, &["create", "alpha", "--silent"], &[]);
+    std::fs::create_dir(d.join(".quipu")).unwrap();
+    std::fs::write(d.join(".quipu/keep"), "keep").unwrap();
+    assert!(!e.sd(&d, &["migrate-project"], &[]).status.success());
+    assert_eq!(
+        std::fs::read_to_string(d.join(".quipu/keep")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
+fn project_migration_interrupted_stage_never_changes_live_routing_or_legacy_bytes() {
+    let e = Env::new("project-interrupted");
+    for reserved in [false, true] {
+        let d = e.pendant_project(if reserved { "reserved" } else { "staged" });
+        e.ok(&d, &["create", "retained ledger", "--silent"], &[]);
+        let before = e.ok(&d, &["where", "--json"], &[]);
+        let items = e.ok(&d, &["list", "--all", "--json"], &[]);
+        let config = std::fs::read(d.join(".seeds/config.toml")).unwrap();
+        let legacy = std::fs::read(d.join(".seeds/pendant/export.nt")).unwrap();
+        // Seed the on-disk state an interrupted migration can leave. No
+        // process-kill or crash-durability claim: discovery must ignore it.
+        let stage = d.join(".seeds/project-migration-next/.quipu");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join("project"), "uncommitted1\n").unwrap();
+        std::fs::write(
+            stage.join("config.toml"),
+            "[pendant]\ndir = \".quipu/graph\"\n",
+        )
+        .unwrap();
+        if reserved {
+            std::fs::create_dir(d.join(".quipu")).unwrap();
+        }
+        assert_eq!(e.ok(&d, &["where", "--json"], &[]), before);
+        assert!(!e.sd(&d, &["migrate-project"], &[]).status.success());
+        assert_eq!(e.ok(&d, &["where", "--json"], &[]), before);
+        assert_eq!(e.ok(&d, &["list", "--all", "--json"], &[]), items);
+        assert_eq!(std::fs::read(d.join(".seeds/config.toml")).unwrap(), config);
+        assert_eq!(
+            std::fs::read(d.join(".seeds/pendant/export.nt")).unwrap(),
+            legacy
+        );
+        assert_eq!(
+            std::fs::read_to_string(stage.join("project")).unwrap(),
+            "uncommitted1\n"
+        );
+        assert!(!d.join(".quipu/project").exists());
+    }
+}

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.0] - 2026-11-18
+
+### Added
+
+- Adopt Quipu project graphs with verified local migration (#279) ([c8ce4b2](https://github.com/scbrown/seeds/commit/c8ce4b2fea92e8335998c1902fa4380098cdaa8c))
+- *(cli)* Admit configured signing paths before provider selection (#274) ([23d2c3e](https://github.com/scbrown/seeds/commit/23d2c3e41b5baaae0abb331347b3e7e30cbf79fd))
+
 ## [0.22.4] - 2026-11-16
 
 ### Fixed

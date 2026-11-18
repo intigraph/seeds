@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.2] - 2026-11-18
+
+### Perf
+
+- *(changelog)* Read only closed seeds in the window, without comments (#288) ([c51b2ac](https://github.com/scbrown/seeds/commit/c51b2ac6ab30934c39459452ff9fbeebbe84a7ae))
+
 ## [0.23.1] - 2026-11-18
 
 ### Fixed

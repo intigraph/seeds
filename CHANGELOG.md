@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.1] - 2026-11-18
+
+### Fixed
+
+- *(read-stream)* Accept quipu's SSE id field and name bootstrap refusals (#286) ([67e66d2](https://github.com/scbrown/seeds/commit/67e66d2972d0d8e89896c9c3d833fb2a742a6e71))
+
 ## [0.23.0] - 2026-11-18
 
 ### Added

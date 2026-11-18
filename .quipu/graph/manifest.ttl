@@ -1,0 +1,22 @@
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix spdx: <http://spdx.org/rdf/terms#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix quipu: <https://quipu.dev/ontology/> .
+
+<urn:sha256:2164b2150d09b1b927604fe68ffba32467406803299c631511054bb1414ccfae> a dcat:Dataset, prov:Entity ;
+  dct:identifier "sha256:2164b2150d09b1b927604fe68ffba32467406803299c631511054bb1414ccfae" ;
+  prov:generatedAtTime "2026-11-14T02:57:06Z"^^xsd:dateTime ;
+  prov:wasAttributedTo [ a prov:SoftwareAgent ;
+    dct:title "quipu" ; quipu:version "0.16.6" ] ;
+  quipu:destination "internal" ;
+  dcat:distribution [ a dcat:Distribution ;
+    dcat:mediaType "application/n-triples" ;
+    dcat:downloadURL <payload:export.nt> ;
+    spdx:checksum [ a spdx:Checksum ; spdx:algorithm spdx:checksumAlgorithm_sha256 ;
+      spdx:checksumValue "1c603a7c7b184139dd4225504393ed3a1460e9d641decefd2757fe8d52fbc391" ] ],
+  [ a dcat:Distribution ; dcat:mediaType "text/turtle" ;
+    dcat:downloadURL <payload:shapes.ttl> ;
+    spdx:checksum [ a spdx:Checksum ; spdx:algorithm spdx:checksumAlgorithm_sha256 ;
+      spdx:checksumValue "786c063b58048c6e2c38a9e702851ef421062ba584cbb4478a6304cbba682760" ] ] .

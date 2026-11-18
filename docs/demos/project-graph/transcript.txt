@@ -1,0 +1,8 @@
+BEFORE: legacy .seeds/pendant; two items and one comment
+base migrate-project: usage refusal (exit 2)
+AFTER: {"export_hash": "sha256:1d85ff88b86b374efcc596fdd67b132680b22c2f159817a12941c11f515f60ec", "graph": "urn:quipu:project:jw9jp3p6wx", "legacy_retained": true, "status": "ok"}
+full exported facts and both item projections: identical
+profile-less plain Quipu: exit 1, off_vocabulary quarantine
+LIMIT: plain Quipu does not yet name the setup command in this refusal
+separate recipient, explicit pinned profile setup then one plain load: 34 facts
+git add .quipu: only identity, ignore policy and graph; database/key excluded

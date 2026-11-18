@@ -503,6 +503,13 @@ pub trait Backend {
         self.snapshot(None)
     }
 
+    /// Current closed seeds at or after `since`, without unrelated bodies or
+    /// comments on indexed backends. A superset is allowed: the engine reapplies
+    /// both filters. Historical reads retain the ordinary pinned snapshot.
+    fn snapshot_closed_since(&self, _since: Option<&str>) -> Result<Snapshot> {
+        self.snapshot(None)
+    }
+
     /// The current state of every seed that declares a dependency of any type
     /// (blocks, parent-child, related, discovered-from) on one of `ids`, so
     /// [`Snapshot::dependents`] answers for those ids from the result. A

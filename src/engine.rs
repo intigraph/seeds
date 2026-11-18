@@ -1913,7 +1913,11 @@ pub fn changelog(
         ("docs", "Docs"),
         ("question", "Questions"),
     ];
-    let snap = b.snapshot(at)?;
+    let snap = if scoped(b, at) {
+        b.snapshot_closed_since(since)?
+    } else {
+        b.snapshot(at)?
+    };
     let closed: Vec<&Seed> = snap
         .seeds
         .values()

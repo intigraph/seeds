@@ -1,8 +1,17 @@
 name: ci
 
+# Feature branches use pull_request once. Main and all existing tag pushes
+# retain CI coverage for exact-commit integration and release validation.
 on:
   push:
+    branches: [main]
+    tags: ['**']
   pull_request:
+
+# A PR update replaces only that PR; main and tag runs stay independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -140,6 +140,31 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
         command
     };
     let run = |actor, mode| command(actor, mode).output().unwrap();
+    // A launcher can keep the configured signing identity instead of fetching
+    // a bearer. Admission is local and does not execute even a create command.
+    let mut admission = command("worker-a", None);
+    admission.args(["--authentication-admission", "--result-json"]);
+    let admitted = admission.output().unwrap();
+    assert!(
+        admitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&admitted.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&admitted.stdout).unwrap();
+    assert_eq!(envelope["mutation_outcome"], "NOT_APPLICABLE");
+    assert_eq!(envelope["data"]["authentication"], "attested_session");
+    assert_eq!(envelope["data"]["provider_required"], false);
+    assert_eq!(envelope["data"]["authenticated"], false);
+    assert_eq!(envelope["data"]["signing_session"], "host-session");
+    assert!(requests.lock().unwrap().is_empty());
+    let mut selected = command("worker-a", None);
+    selected
+        .args(["--authentication-admission"])
+        .env("SEEDS_QUIPU_CREDENTIAL_PRINCIPAL", "fixture")
+        .env("SEEDS_QUIPU_TOKEN_FD", "2147483647");
+    let denied = selected.output().unwrap();
+    assert_eq!(denied.status.code(), Some(6));
+    assert!(requests.lock().unwrap().is_empty());
     let first = run("worker-a", None);
     let second = run("worker-b", None);
     let refused = run("worker-c", Some("enforce"));

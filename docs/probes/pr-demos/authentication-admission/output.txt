@@ -1,0 +1,10 @@
+Script started on 2026-11-13 17:04:34-05:00 [COMMAND="python3 docs/probes/pr-demos/authentication-admission/reproduce.py" <not executed on terminal>]
+$ sd create 'Example operation' --actor example-worker --credential-admission
+{"error":{"code":"CONFIG","message":"selected bearer cannot be combined with a signing identity"}}
+exit 6
+$ sd create 'Example operation' --actor example-worker --authentication-admission
+{"admitted":true,"authenticated":false,"authentication":"attested_session","contract":"seeds-authentication-admission/v1","destination":"https://example.org","provider_required":false,"signing_session":"example-session"}
+exit 0
+No operation executed; signing key absent; original identity configuration retained.
+
+Script done on 2026-11-13 17:04:34-05:00 [COMMAND_EXIT_CODE="0"]

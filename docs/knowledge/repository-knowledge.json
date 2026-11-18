@@ -16,7 +16,7 @@
       "source": "docs/book/src/storage-modes.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage-modes.md",
       "summary": "The same work-item model supports embedded storage, a repository-local pendant, a remote server and synchronization; conflicts are reported rather than silently choosing a side.",
-      "source_sha256": "e9c57d881bc64f112c0d4b57f6e991c72ca1db4dbf9faa7687484e2316deac87",
+      "source_sha256": "cb16e318ab9578704c11f46d0882b39a1ddf0b36ef537dae4f7b2d45ac3596b4",
       "type": "Concept"
     },
     {
@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "35d235da3d62044da5cb03fc657af2cd2f3509836be68c868629e7e8c43c5941",
+      "source_sha256": "a50dcb983c630a99902ee7db7822817f2ade4d0fcaf97cc35e83fc187215fd08",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"

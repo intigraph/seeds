@@ -389,6 +389,29 @@ impl Backend for QuipuBackend {
         Ok(Some((window, message)))
     }
 
+    fn message_in_window(&self, window: &str, id: &str) -> Result<Option<crate::message::Message>> {
+        let suffix = id.strip_prefix("msg-").unwrap_or("");
+        if suffix.len() != 20 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(SdError::usage("invalid message id"));
+        }
+        if !crate::message::is_window_of(&self.graph_iri, window) {
+            return Err(SdError::usage("not a message window of this project"));
+        }
+        let Some(wg) = self.store.lookup(window)? else {
+            return Ok(None);
+        };
+        let facts = self
+            .facts_of(wg, &crate::message::message_iri(id))?
+            .unwrap_or_default();
+        if facts.is_empty() {
+            return Ok(None);
+        }
+        crate::message::Message::from_facts(&facts)
+            .filter(|m| m.id == id)
+            .map(Some)
+            .ok_or_else(|| SdError::failed(format!("message {id} in {window} is malformed")))
+    }
+
     fn message_mark_read(&mut self, ctx: &Ctx, window: &str, id: &str) -> Result<bool> {
         if !self.writable {
             return Err(SdError::failed(

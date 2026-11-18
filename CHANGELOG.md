@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.4] - 2026-11-16
+
+### Fixed
+
+- *(archive)* Move with constant subjects so quipu can slice the update (#283) ([ba599cf](https://github.com/scbrown/seeds/commit/ba599cf741fbcda5d1b65638e415e54286fed66a))
+
+## [0.22.3] - 2026-11-14
+
+### Fixed
+
+- *(ci)* Deduplicate PR runs and supersede older checks (#278) ([853184c](https://github.com/scbrown/seeds/commit/853184c092fb0c9cce7acbca2a9dbb73450dd64f))
+- *(messages)* Explicitly flag incomplete listings (#273) ([5abd078](https://github.com/scbrown/seeds/commit/5abd0787a08ec66093cfc6eebd3183c9b1e945cc))
+- *(messages)* Restore explicit incomplete-listing status (#282) ([d521aca](https://github.com/scbrown/seeds/commit/d521acafa95788b9d4a2ec9eb8d7b151e9447bbd))
+
+### Reverted
+
+- Restore message listing behavior pending CI diagnosis (#281) ([5dcccb8](https://github.com/scbrown/seeds/commit/5dcccb8f05c73bd792983ee540db7d14d0daa9a0))
+
+## [0.22.2] - 2026-11-14
+
+### Fixed
+
+- *(messages)* Avoid partial records at remote result caps (#270) ([c95eb1d](https://github.com/scbrown/seeds/commit/c95eb1ded3d22d0b8ed8cd22a730ecb08cfd6d33))
+- *(release)* Retain intentional book demo recordings (#272) ([4aeb38a](https://github.com/scbrown/seeds/commit/4aeb38af6187728cea338db277917cee875a1441))
+- *(messages)* Isolate exact target lookup from partition neighbours (#276) ([e04fad1](https://github.com/scbrown/seeds/commit/e04fad1117f9c7bfbbaf9631ccf6936230d9dd40))
+- *(release)* Admit retained exact-message demo recordings (#277) ([6dc0a43](https://github.com/scbrown/seeds/commit/6dc0a4372eb7f99e0df61ea4e194c10a675632bb))
+
 ## [0.22.1] - 2026-11-12
 
 ### Perf

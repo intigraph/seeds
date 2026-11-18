@@ -307,6 +307,47 @@ pub trait Backend {
         ))
     }
 
+    /// Fetch only the named subject in one window. Neighbours must not affect
+    /// this read; incomplete target coverage and malformed targets are errors.
+    fn message_in_window(
+        &self,
+        _window: &str,
+        _id: &str,
+    ) -> Result<Option<crate::message::Message>> {
+        Err(crate::error::SdError::usage(
+            "this backend has no exact message lookup",
+        ))
+    }
+
+    /// Bindings are authoritative. Legacy unbound messages are looked up by
+    /// exact subject across the selected windows, refusing duplicate placement.
+    fn message_lookup(
+        &self,
+        windows: &[String],
+        id: &str,
+    ) -> Result<Option<(String, crate::message::Message)>> {
+        let suffix = id.strip_prefix("msg-").unwrap_or("");
+        if suffix.len() != 20 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(crate::error::SdError::usage("invalid message id"));
+        }
+        if let Some((window, message)) = self.message_receipt(id)? {
+            return Ok(windows.contains(&window).then_some((window, message)));
+        }
+        let mut found = None;
+        let unique: std::collections::BTreeSet<_> = windows.iter().collect();
+        for window in unique {
+            if let Some(message) = self.message_in_window(window, id)? {
+                if found.is_some() {
+                    return Err(crate::error::SdError::failed(format!(
+                        "ambiguous message {id} in selected windows"
+                    )));
+                }
+                found = Some((window.clone(), message));
+            }
+        }
+        Ok(found)
+    }
+
     /// Mark one message read (append `schema:dateRead` once; a message already
     /// read keeps its first mark). Returns whether a mark was written.
     fn message_mark_read(&mut self, _ctx: &Ctx, _window: &str, _id: &str) -> Result<bool> {

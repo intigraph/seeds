@@ -64,6 +64,15 @@ replayed automatically.
 exist holds no messages; a malformed message or a truncated answer refuses the
 listing instead of returning part of it.
 
+`show` and `read` resolve the requested message's immutable binding first.
+For legacy messages without a binding, they fetch only that message's exact IRI
+in each selected window; an unrelated malformed record cannot break the lookup.
+They keep the requested window horizon (`--all-windows` uses the complete live
+window registry). Missing targets are not found; malformed targets, duplicate
+placement across windows, incomplete replies and unreadable bindings refuse.
+`read` resolves every requested ID before writing any read mark. This does not
+relax `count` or mailbox coverage checks.
+
 `sd msg read` appends `schema:dateRead` once; a message already read keeps its
 first mark, so repeating it is safe, and nothing is deleted or closed. Reading
 is not acknowledgement: a separate ack, expiry and escalation come with the

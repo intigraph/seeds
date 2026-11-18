@@ -1,0 +1,22 @@
+Script started on 2026-11-13 17:45:39-05:00 [COMMAND="python3 docs/probes/pr-demos/exact-message-show/run.py" <not executed on terminal>]
+Synthetic private mailbox: requested legacy target is valid; neighbour is malformed/capped.
+Released baseline (sd 0.20.1):
+sd msg show <fixture-id> --all-windows --json
+exit: 1
+{"error":{"code":"FAILED","details":{"http_status":400},"message":"quipu /query failed (HTTP 400): {\"error\": \"malformed neighbour at result cap\"}"}}
+sd: quipu /query failed (HTTP 400): {"error": "malformed neighbour at result cap"}
+released baseline: neighbour/cap scan blocks exact target
+Candidate source:
+sd msg show <fixture-id> --all-windows --json
+exit: 0
+{"about":[],"from":null,"id":"msg-0123456789abcdef0123","key":null,"kind":"note","read_at":null,"sent_at":"2026-11-13T00:00:00Z","text":"exact target","to":"reader"}
+
+good-with-bad-neighbour: PASS
+Candidate malformed-target negative control:
+sd msg show <fixture-id> --all-windows --json
+exit: 1
+{"error":{"code":"FAILED","message":"message msg-0123456789abcdef0123 in https://example.org/project/mail/messages/2026-W46 is malformed"}}
+sd: message msg-0123456789abcdef0123 in https://example.org/project/mail/messages/2026-W46 is malformed
+malformed: PASS
+
+Script done on 2026-11-13 17:45:41-05:00 [COMMAND_EXIT_CODE="0"]

@@ -1003,6 +1003,56 @@ impl RemoteBackend {
         Ok(())
     }
 
+    /// The work-item subjects of `graph` whose identifier is one of `ids`:
+    /// one bound literal pattern per id, joined by `UNION`; a truncated or
+    /// timed-out read is halved and asked again.
+    fn subjects_with_ids(
+        &self,
+        graph: &str,
+        ids: &[&String],
+        out: &mut BTreeSet<String>,
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let branches: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                format!(
+                    "{{ GRAPH <{graph}> {{ ?s <{}> \"{}\" ; a <{}> }} }}",
+                    term::identifier(),
+                    escape_literal(id),
+                    term::work_item()
+                )
+            })
+            .collect();
+        let sparql = format!(
+            "SELECT ?s WHERE {{ {} }} LIMIT {ROW_CAP}",
+            branches.join(" UNION ")
+        );
+        let (rows, truncated) = match self.select_marked(&sparql, None) {
+            Err(e) if is_query_timeout(&e) && ids.len() > 1 => (Vec::new(), true),
+            other => other?,
+        };
+        if truncated || rows.len() >= ROW_CAP {
+            if ids.len() == 1 {
+                return Err(SdError::failed(format!(
+                    "quipu truncated the subjects of {} even read alone; refusing \
+                     to act on a partial view",
+                    ids[0]
+                )));
+            }
+            let (a, b) = ids.split_at(ids.len() / 2);
+            self.subjects_with_ids(graph, a, out)?;
+            return self.subjects_with_ids(graph, b, out);
+        }
+        out.extend(rows.into_iter().filter_map(|mut r| match r.remove("s") {
+            Some(Obj::Iri(s)) => Some(s),
+            _ => None,
+        }));
+        Ok(())
+    }
+
     /// The graphs a snapshot reads: the project graph and its ephemeral graph.
     fn both_graphs(&self) -> [String; 2] {
         [
@@ -2381,6 +2431,48 @@ impl Backend for RemoteBackend {
                 .owner_seed_query_pattern(&graph, q)?
                 .expect("constrained seed query retains a pattern");
             subjects.extend(self.subjects_where(&graph, &pattern, None)?);
+        }
+        self.snapshot_of(&subjects)
+    }
+
+    /// Closed seeds at or after `since` (aegis-6vto.1). Three cheap steps
+    /// instead of a whole-board snapshot with every comment:
+    /// 1. per graph, one bound pattern for closed items with an end time at
+    ///    or after `since`, returning their identifiers;
+    /// 2. per graph, every subject carrying one of those identifiers (bound
+    ///    literal patterns, [`SUBJECTS_PER_READ`] per read), so an alias IRI or
+    ///    an ephemeral shadow that reopened or re-dated an item is read too;
+    /// 3. the facts of exactly those subjects, no comments.
+    /// The engine re-applies status and date, so a superset is harmless. A
+    /// discovery answer at the row cap falls back to the whole snapshot.
+    fn snapshot_closed_since(&self, since: Option<&str>) -> Result<Snapshot> {
+        let time = since.map_or_else(String::new, |since| {
+            format!("FILTER(STR(?closed) >= \"{}\") ", escape_literal(since))
+        });
+        let mut ids = BTreeSet::new();
+        for graph in self.both_graphs() {
+            let sparql = format!(
+                "SELECT ?id WHERE {{ GRAPH <{graph}> {{ ?s <{}> \"closed\" ; <{}> ?closed ; <{}> ?id ; a <{}> . {time}}} }} LIMIT {ROW_CAP}",
+                term::status(),
+                term::closed_at(),
+                term::identifier(),
+                term::work_item()
+            );
+            let (rows, truncated) = self.select_marked(&sparql, None)?;
+            if truncated || rows.len() >= ROW_CAP {
+                return self.snapshot(None);
+            }
+            ids.extend(rows.into_iter().filter_map(|mut r| match r.remove("id") {
+                Some(Obj::Str(id)) => Some(id),
+                _ => None,
+            }));
+        }
+        let all: Vec<&String> = ids.iter().collect();
+        let mut subjects = BTreeSet::new();
+        for graph in self.both_graphs() {
+            for chunk in all.chunks(SUBJECTS_PER_READ) {
+                self.subjects_with_ids(&graph, chunk, &mut subjects)?;
+            }
         }
         self.snapshot_of(&subjects)
     }

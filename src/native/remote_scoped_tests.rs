@@ -379,6 +379,12 @@ fn load(base: &str, graph: &str, snap: &Snapshot) -> RemoteBackend {
 /// Everything a read command prints, both ways.
 fn reads(b: &dyn Backend, c: &Ctx, n: &[String], all_ids: &[String], indexed: bool) -> Vec<String> {
     let mut out = Vec::new();
+    for since in [None, Some("2026-01-01T00:00:00Z")] {
+        out.push(format!(
+            "changelog {since:?} {:?}",
+            engine::changelog(b, since, None)
+        ));
+    }
     out.push(format!("ledger counts {:?}", b.ledger_counts()));
     for req in [
         engine::StatsReq::default(),
@@ -1433,4 +1439,43 @@ fn label_aggregate_matches_whole_snapshot_with_ephemeral_shadowing() {
         engine::labels(&remote, None, None).unwrap(),
         expected.into_iter().map(|(l, _)| l).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn changelog_reads_aliases_and_reopened_ephemeral_shadows() {
+    let Some(server) = quipu_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for changelog shadow control");
+        return;
+    };
+    let (snapshot, _) = corpus();
+    let graph = "urn:changelog-shadow-control";
+    let mut remote = load(&server.base, graph, &snapshot);
+    remote.register_graph(true).unwrap();
+    let seed = snapshot
+        .seeds
+        .values()
+        .find(|s| s.status == "closed")
+        .unwrap();
+    let eph = vocab::ephemeral_graph(graph);
+    let query = format!(
+        "INSERT DATA {{ GRAPH <{eph}> {{ <urn:reopened-alias> a <{}> ; <{}> \"{}\" ; <{}> \"open\" . }} }}",
+        term::work_item(), term::identifier(), seed.id, term::status()
+    );
+    remote
+        .post(
+            "/update",
+            "application/x-www-form-urlencoded",
+            &format!("update={}", super::form_encode(&query)),
+            true,
+        )
+        .unwrap();
+    for since in [None, Some("2026-01-01T00:00:00Z")] {
+        let expected = engine::changelog(&Whole(&mut remote), since, None).unwrap();
+        assert!(!expected.is_empty(), "positive closed control must survive");
+        assert!(expected
+            .iter()
+            .flat_map(|g| &g.issues)
+            .all(|s| s.id != seed.id));
+        assert_eq!(engine::changelog(&remote, since, None).unwrap(), expected);
+    }
 }

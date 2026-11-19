@@ -633,53 +633,94 @@ fn fresh_projection_preserves_not_found_exit_and_json_contract() {
     assert!(render(&mut f.board, &f.config, &f.cfg, request, 5).is_err());
 }
 
-// aegis-xdvg.4 ruling A: 30 s challenges, capped exponential reconnect.
+// aegis-xdvg.4 ruling A' (4 s) and the #292 review findings.
 #[test]
-fn liveness_challenges_every_thirty_seconds_while_connected() {
-    assert_eq!(super::CHALLENGE_INTERVAL_MS, 30_000);
+fn challenge_cadence_stays_inside_the_freshness_cap() {
+    assert_eq!(super::CHALLENGE_INTERVAL_MS, 4_000);
     let mut live = super::Liveness::new();
-    assert!(live.challenge_due(0));
-    assert!(!live.challenge_due(29_999));
-    assert!(live.challenge_due(30_000));
-    // an hour of a healthy connection: 120 challenges, not 1800
-    let mut live = super::Liveness::new();
-    let count = (0..3_600_000u64)
-        .step_by(10)
-        .filter(|t| live.challenge_due(*t))
-        .count();
-    assert_eq!(count, 120);
-    // disconnected: no challenges at all
-    live.disconnected(3_600_000);
-    assert!(!live.challenge_due(3_700_000));
+    let mut count = 0;
+    for t in (0..3_600_000u64).step_by(10) {
+        if live.challenge_due(t) {
+            live.challenge_sent(t);
+            count += 1;
+        }
+    }
+    assert_eq!(count, 900); // ~900/h per healthy reader, not 1800
 }
 
 #[test]
-fn reconnect_backs_off_exponentially_capped_and_resets_only_after_a_healthy_run() {
+fn a_failed_issue_does_not_burn_the_slot_and_reconnect_or_clock_jump_challenge_at_once() {
     let mut live = super::Liveness::new();
-    live.reconnected(0);
-    let mut now = 1_000;
-    let mut waits = Vec::new();
-    for _ in 0..9 {
-        live.disconnected(now); // accepted, then dropped at once
-        assert!(!live.reconnect_due(now));
-        let at = live.next_reconnect;
-        waits.push(at - now);
-        assert!(live.reconnect_due(at));
-        live.reconnected(at);
-        now = at + 10; // dropped again 10 ms later: not healthy
+    assert!(live.challenge_due(0));
+    // board had no session yet: nothing sent, still due next tick
+    assert!(live.challenge_due(10));
+    live.challenge_sent(10);
+    assert!(!live.challenge_due(3_000));
+    live.clock_jump();
+    assert!(live.challenge_due(3_000)); // re-prove at once after a clock jump
+    live.challenge_sent(3_000);
+    live.disconnected(3_500, 0);
+    assert!(!live.challenge_due(3_600)); // never while disconnected
+    live.reconnected();
+    assert!(live.challenge_due(3_700)); // first challenge immediately on reconnect
+}
+
+#[test]
+fn reconnect_backoff_is_jittered_capped_and_resets_only_after_a_live_minute() {
+    // jitter 0 gives backoff/2, jitter 999 just under backoff
+    for (jitter, expect) in [
+        (
+            0u64,
+            [500u64, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000],
+        ),
+        (
+            999,
+            [999, 1_999, 3_998, 7_996, 15_992, 31_984, 59_970, 59_970],
+        ),
+    ] {
+        let mut live = super::Liveness::new();
+        let mut now = 1_000;
+        for want in expect {
+            live.frame_applied(now); // live, but dropped quickly
+            live.disconnected(now + 10, jitter);
+            assert_eq!(live.next_reconnect - (now + 10), want);
+            assert!(live.reconnect_due(live.next_reconnect));
+            now = live.next_reconnect;
+            live.reconnected();
+        }
+        assert_eq!(live.backoff, super::RECONNECT_MAX_MS);
     }
-    assert_eq!(
-        waits,
-        vec![1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]
-    );
-    // a connection that stayed up a minute resets the backoff
-    live.disconnected(now + super::RECONNECT_HEALTHY_MS);
-    assert_eq!(
-        live.next_reconnect - (now + super::RECONNECT_HEALTHY_MS),
-        super::RECONNECT_INITIAL_MS
-    );
-    // a refused reconnect attempt also backs off
+    // a connect that hangs > 60 s and fails without ever applying a frame
+    let mut live = super::Liveness::new();
+    live.disconnected(10, 0);
+    live.reconnected();
     let before = live.backoff;
-    live.disconnected_without_session(live.next_reconnect);
-    assert!(live.backoff >= before && live.backoff <= super::RECONNECT_MAX_MS);
+    live.disconnected(200_000, 0);
+    assert_eq!(
+        live.backoff,
+        (before * 2).min(super::RECONNECT_MAX_MS),
+        "no reset without a live frame"
+    );
+    // a session live for a minute resets
+    live.reconnected();
+    live.frame_applied(300_000);
+    live.disconnected(300_000 + super::RECONNECT_HEALTHY_MS, 0);
+    assert_eq!(
+        live.next_reconnect - (300_000 + super::RECONNECT_HEALTHY_MS),
+        super::RECONNECT_INITIAL_MS / 2
+    );
+    // a refused reconnect backs off too, never past the cap
+    for _ in 0..20 {
+        live.reconnect_failed(0, 999);
+    }
+    assert_eq!(live.backoff, super::RECONNECT_MAX_MS);
+}
+
+#[test]
+fn every_stream_gets_a_new_generation_for_its_challenge_replies() {
+    let mut live = super::Liveness::new();
+    let first = live.generation();
+    live.disconnected(5, 500);
+    live.reconnected();
+    assert_ne!(live.generation(), first); // a late reply tagged `first` is ignored
 }

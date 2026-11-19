@@ -544,69 +544,117 @@ impl Clock {
     }
 }
 
-/// Liveness challenge cadence while connected (aegis-xdvg.4 ruling A: 30 s,
-/// ~120 requests/h per reader). The stream's own heartbeat stays liveness;
-/// board reads tolerate a ~30 s freshness bound.
-const CHALLENGE_INTERVAL_MS: u64 = 30_000;
-/// Reconnect backoff after the stream drops: exponential, capped.
+/// Liveness challenge cadence while connected. Freshness comes only from an
+/// answered challenge (quipu applier: bound = now - t_send of the latest
+/// answered one), so the interval plus a round trip must stay inside the
+/// reader's freshness cap, or reads refuse between challenges (aegis-xdvg.4).
+const CHALLENGE_INTERVAL_MS: u64 = 4_000;
+/// Round-trip headroom the interval must leave inside MAX_FRESH_MS.
+const CHALLENGE_RTT_HEADROOM_MS: u64 = 1_000;
+const _: () = assert!(CHALLENGE_INTERVAL_MS + CHALLENGE_RTT_HEADROOM_MS <= MAX_FRESH_MS);
+/// Reconnect backoff after the stream drops: exponential, capped, jittered.
 const RECONNECT_INITIAL_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 60_000;
-/// A connection must stay up this long before the backoff resets, so a
-/// server that accepts and then drops does not pull a 1 s reconnect loop.
+/// A session must have applied a frame and then stayed up this long before
+/// the backoff resets; a connect that hangs and fails never counts.
 const RECONNECT_HEALTHY_MS: u64 = 60_000;
 
-/// When to challenge and when to reconnect; pure so the cadence is tested.
+/// When to challenge and when to reconnect; pure so the policy is tested.
 #[derive(Debug)]
 struct Liveness {
+    /// A stream is open (connecting or live).
+    open: bool,
+    /// Bumped on every new stream so late challenge replies of an older one
+    /// cannot disconnect it.
+    generation: u64,
+    /// 0 = challenge as soon as the session can take one.
     next_challenge: u64,
     next_reconnect: u64,
     backoff: u64,
-    connected_at: Option<u64>,
+    /// When this stream first applied a frame; None until it proves live.
+    live_since: Option<u64>,
 }
 
 impl Liveness {
+    /// The first stream has just been opened by `run`.
     fn new() -> Self {
         Self {
+            open: true,
+            generation: 1,
             next_challenge: 0,
             next_reconnect: 0,
             backoff: RECONNECT_INITIAL_MS,
-            connected_at: Some(0),
+            live_since: None,
         }
-    }
-    /// A challenge is due now; schedule the next one.
-    fn challenge_due(&mut self, now: u64) -> bool {
-        if self.connected_at.is_none() || now < self.next_challenge {
-            return false;
-        }
-        self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
-        true
-    }
-    /// The stream dropped: wait the current backoff, then double it (capped).
-    /// The backoff resets only if the connection had stayed up long enough.
-    fn disconnected(&mut self, now: u64) {
-        if let Some(at) = self.connected_at.take() {
-            if now.saturating_sub(at) >= RECONNECT_HEALTHY_MS {
-                self.backoff = RECONNECT_INITIAL_MS;
-            }
-            self.next_reconnect = now.saturating_add(self.backoff);
-            self.backoff = self.backoff.saturating_mul(2).min(RECONNECT_MAX_MS);
-        }
-    }
-    /// A reconnect attempt failed before any session: back off again.
-    fn disconnected_without_session(&mut self, now: u64) {
-        self.next_reconnect = now.saturating_add(self.backoff);
-        self.backoff = self.backoff.saturating_mul(2).min(RECONNECT_MAX_MS);
-    }
-    fn reconnect_due(&self, now: u64) -> bool {
-        self.connected_at.is_none() && now >= self.next_reconnect
-    }
-    fn reconnected(&mut self, now: u64) {
-        self.connected_at = Some(now);
-        self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
     }
     fn connected(&self) -> bool {
-        self.connected_at.is_some()
+        self.open
     }
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// A challenge may be issued now. Does not consume the slot: only a
+    /// challenge actually sent does (`challenge_sent`).
+    fn challenge_due(&self, now: u64) -> bool {
+        self.open && now >= self.next_challenge
+    }
+    fn challenge_sent(&mut self, now: u64) {
+        self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
+    }
+    /// A clock discontinuity discarded every proof: re-prove at once.
+    fn clock_jump(&mut self) {
+        self.next_challenge = 0;
+    }
+    /// The stream applied a frame: it is live from the first one.
+    fn frame_applied(&mut self, now: u64) {
+        if self.open && self.live_since.is_none() {
+            self.live_since = Some(now);
+        }
+    }
+    /// Wait `[backoff/2, backoff)` (jitter_permille in 0..1000), then double
+    /// the backoff up to the cap.
+    fn schedule_reconnect(&mut self, now: u64, jitter_permille: u64) {
+        let half = self.backoff / 2;
+        let wait = half + (self.backoff - half) * jitter_permille.min(999) / 1000;
+        self.next_reconnect = now.saturating_add(wait);
+        self.backoff = self.backoff.saturating_mul(2).min(RECONNECT_MAX_MS);
+    }
+    /// The stream dropped. The backoff resets only if it had been live long
+    /// enough; a connect that never applied a frame never resets it.
+    fn disconnected(&mut self, now: u64, jitter_permille: u64) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        if self
+            .live_since
+            .take()
+            .is_some_and(|t| now.saturating_sub(t) >= RECONNECT_HEALTHY_MS)
+        {
+            self.backoff = RECONNECT_INITIAL_MS;
+        }
+        self.schedule_reconnect(now, jitter_permille);
+    }
+    /// A reconnect attempt failed before any stream existed.
+    fn reconnect_failed(&mut self, now: u64, jitter_permille: u64) {
+        self.schedule_reconnect(now, jitter_permille);
+    }
+    fn reconnect_due(&self, now: u64) -> bool {
+        !self.open && now >= self.next_reconnect
+    }
+    /// A new stream is open: new generation, challenge as soon as possible.
+    fn reconnected(&mut self) {
+        self.open = true;
+        self.generation = self.generation.wrapping_add(1);
+        self.next_challenge = 0;
+        self.live_since = None;
+    }
+}
+
+/// Jitter in permille from the OS RNG; 500 (the midpoint) if unavailable.
+fn jitter_permille() -> u64 {
+    let mut b = [0u8; 2];
+    getrandom::getrandom(&mut b).map_or(500, |()| u64::from(u16::from_le_bytes(b)) % 1000)
 }
 
 /// Open the replication stream from the projection's committed cursor; the
@@ -670,13 +718,13 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
     io(listener.set_nonblocking(true))?;
     // The socket is deliberately retained on failure, requiring explicit normal
     // service recovery rather than silently replacing another consumer.
-    let mut incoming = open_stream(&remote, &board)?;
-    let (challenges, challenge_requests) = mpsc::sync_channel::<(ureq::Request, Vec<u8>)>(1);
-    let (replies, challenge_replies) = mpsc::sync_channel(1);
+    let mut incoming = Some(open_stream(&remote, &board)?);
+    let (challenges, challenge_requests) = mpsc::sync_channel::<(u64, ureq::Request, Vec<u8>)>(1);
+    let (replies, challenge_replies) = mpsc::sync_channel::<(u64, bool)>(1);
     thread::spawn(move || {
-        while let Ok((request, body)) = challenge_requests.recv() {
+        while let Ok((generation, request, body)) = challenge_requests.recv() {
             let ok = request.send_bytes(&body).is_ok_and(|r| r.status() == 202);
-            if replies.send(ok).is_err() {
+            if replies.send((generation, ok)).is_err() {
                 break;
             }
         }
@@ -687,53 +735,65 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         let (now, changed) = clock.sample();
         if changed {
             board.clock_discontinuity();
+            live.clock_jump();
         }
         if live.reconnect_due(now) {
             // Resume from the retained committed cursor; a refusal backs off again.
             match open_stream(&remote, &board) {
                 Ok(stream) => {
-                    incoming = stream;
-                    live.reconnected(now);
+                    incoming = Some(stream);
+                    live.reconnected();
                 }
-                Err(_) => live.disconnected_without_session(now),
+                Err(_) => live.reconnect_failed(now, jitter_permille()),
             }
         }
-        for _ in 0..64 {
-            match incoming.try_recv() {
-                Ok(Ok((event, data))) if live.connected() => {
-                    if board.apply_frame(&event, &data, now).is_err() {
-                        board.disconnect();
-                        live.disconnected(now);
+        let mut dropped = false;
+        if let Some(stream) = incoming.as_ref() {
+            for _ in 0..64 {
+                match stream.try_recv() {
+                    Ok(Ok((event, data))) => {
+                        if board.apply_frame(&event, &data, now).is_ok() {
+                            live.frame_applied(now);
+                        } else {
+                            dropped = true;
+                            break;
+                        }
                     }
-                }
-                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
-                    if live.connected() {
-                        board.disconnect();
-                        live.disconnected(now);
+                    Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                        dropped = true;
+                        break;
                     }
-                    break;
+                    Err(mpsc::TryRecvError::Empty) => break,
                 }
-                Ok(_) => {}
-                Err(mpsc::TryRecvError::Empty) => break,
             }
         }
-        if challenge_replies.try_recv().is_ok_and(|ok| !ok) && live.connected() {
-            board.disconnect();
-            live.disconnected(now);
+        // Replies are tagged with the stream generation that sent them; a late
+        // failure of an older stream never disconnects the current one.
+        if let Ok((generation, ok)) = challenge_replies.try_recv() {
+            if !ok && generation == live.generation() {
+                dropped = true;
+            }
         }
-        if live.challenge_due(now) {
+        if !dropped && live.challenge_due(now) {
             let mut nonce = [0; 16];
             getrandom::getrandom(&mut nonce)
                 .map_err(|_| unknown("challenge entropy unavailable"))?;
+            // No session yet (connecting): retry next tick, slot not consumed.
             if let Ok(session) = board.challenge(nonce, now) {
                 let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
                 let body = encode(&json!({"session":session,"nonce":nonce}))?;
                 let request = remote.request("/replicate/challenge")?;
-                if challenges.try_send((request, body)).is_err() {
-                    board.disconnect();
-                    live.disconnected(now);
+                match challenges.try_send((live.generation(), request, body)) {
+                    Ok(()) => live.challenge_sent(now),
+                    Err(mpsc::TrySendError::Full(_)) => {} // one in flight; retry next tick
+                    Err(mpsc::TrySendError::Disconnected(_)) => dropped = true,
                 }
             }
+        }
+        if dropped && live.connected() {
+            board.disconnect();
+            incoming = None; // close the dead stream now, not at the next reconnect
+            live.disconnected(now, jitter_permille());
         }
         match listener.accept() {
             Ok((mut stream, _)) => {

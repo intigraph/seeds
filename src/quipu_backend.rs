@@ -31,6 +31,11 @@ pub struct QuipuBackend {
     writable: bool,
 }
 
+/// Bound `UNION` branches per local dependents read (ids x edge predicates).
+/// Kept small: the SPARQL parser recurses per branch, and 128 overflowed a
+/// 2 MiB test-thread stack in a debug build.
+const DEPENDENT_BRANCHES_PER_READ: usize = 32;
+
 impl QuipuBackend {
     /// Wrap a store opened for writing: registers the project graph and the
     /// seeds shapes (once; a store that already holds these exact shapes is
@@ -249,6 +254,99 @@ impl QuipuBackend {
             by_subject.entry(s).or_default().push((p, o));
         }
         Ok(by_subject)
+    }
+
+    /// The subjects of `graph` matching a bound seed pattern on `?s`, current
+    /// state. A local store has no row cap or HTTP budget, so one query.
+    fn subjects_matching(&self, graph: &str, pattern: &str) -> Result<BTreeSet<String>> {
+        let q = format!("SELECT DISTINCT ?s WHERE {{ GRAPH <{graph}> {{ {pattern} }} }}");
+        let result = query_temporal(&self.store, &q, &Self::ctx(None)?)?;
+        let mut out = BTreeSet::new();
+        for row in result.rows() {
+            if let Some(Value::Ref(s)) = row.get("s") {
+                out.insert(self.store.resolve(*s)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`vocab::ready_query`]'s answer for the current state, as two flat
+    /// reads joined here: open Actions with their ids, and the blocked-on
+    /// edges of open Actions with each blocker's status, both in the project
+    /// graph. Same set: an open Action is ready unless one of its blockers
+    /// holds a status other than closed or tombstone. The correlated FILTER
+    /// NOT EXISTS took 17 s on a ~733k-record replica (aegis-xdvg.4); these
+    /// take well under one, and the edge read is bounded by open items, not
+    /// by closed history.
+    ///
+    /// Like the definition (and every backend's `ready_ids`), only the
+    /// project graph is read: an ephemeral seed is never ready, and a shared
+    /// seed cannot be blocked by an ephemeral one (the engine refuses that
+    /// edge), so no blocker status is missed. The parity tests pin both.
+    fn ready_ids_current(&self) -> Result<Vec<String>> {
+        let g = &self.graph_iri;
+        let ctx = Self::ctx(None)?;
+        let open = format!(
+            "SELECT ?item ?id WHERE {{ GRAPH <{g}> {{ ?item <{}> \"open\" . ?item a <{}> ; <{}> ?id }} }}",
+            term::status(),
+            term::work_item(),
+            term::identifier()
+        );
+        let edges = format!(
+            "SELECT ?item ?bs WHERE {{ GRAPH <{g}> {{ ?item <{}> \"open\" . ?item <{}> ?blocker . ?blocker <{}> ?bs . ?item a <{}> }} }}",
+            term::status(),
+            term::blocked_on(),
+            term::status(),
+            term::work_item()
+        );
+        let mut blocked = BTreeSet::new();
+        for row in query_temporal(&self.store, &edges, &ctx)?.rows() {
+            let (Some(Value::Ref(item)), Some(bs)) = (row.get("item"), row.get("bs")) else {
+                continue;
+            };
+            let done = matches!(bs, Value::Str(s) if s == "closed" || s == "tombstone");
+            if !done {
+                blocked.insert(*item);
+            }
+        }
+        let mut ids: Vec<String> = query_temporal(&self.store, &open, &ctx)?
+            .rows()
+            .iter()
+            .filter_map(|r| match (r.get("item"), r.get("id")) {
+                (Some(Value::Ref(item)), Some(Value::Str(id))) if !blocked.contains(item) => {
+                    Some(id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// A current-state [`Snapshot`] of exactly `subjects`, read from the
+    /// project graph and its ephemeral graph like a whole snapshot is
+    /// (aegis-xdvg.4: a push-fed replica must not hydrate the whole board
+    /// for one read).
+    fn snapshot_of(&self, subjects: &BTreeSet<String>) -> Result<Snapshot> {
+        let mut graphs = Vec::new();
+        for graph in [
+            self.graph_iri.clone(),
+            vocab::ephemeral_graph(&self.graph_iri),
+        ] {
+            let mut facts = BTreeMap::new();
+            if let Some(g) = self.store.lookup(&graph)? {
+                for iri in subjects {
+                    if let Some(found) = self.facts_of(g, iri)? {
+                        facts.insert(iri.clone(), found);
+                    }
+                }
+            }
+            graphs.push(facts);
+        }
+        let mut snapshot = Snapshot::from_graphs(&graphs[0], &graphs[1]);
+        snapshot.tx = u64::try_from(self.store.transaction_head()?).unwrap_or(0);
+        Ok(snapshot)
     }
 }
 
@@ -600,6 +698,80 @@ impl Backend for QuipuBackend {
         Ok(snap)
     }
 
+    /// Current-state reads touch only the seeds a command answers from
+    /// (aegis-xdvg.4). Every scoped method below returns exactly the seeds
+    /// its [`Backend`] contract promises on a local store (comments only
+    /// where that contract promises them: `snapshot_items`, not
+    /// `snapshot_seeds`, `snapshot_where` or `snapshot_dependents`); the
+    /// remaining defaults fall back to a whole snapshot, never to less.
+    fn scoped_reads(&self) -> bool {
+        true
+    }
+
+    /// The named seeds WITHOUT their comments, as the trait allows (a
+    /// listing never prints them; `show` reads through `snapshot_items`,
+    /// which keeps them): one bound subject read each instead of a comment
+    /// query per seed. Ids are percent-encoded into their IRI
+    /// ([`vocab::item_iri`]), so no id can break out of the `<...>` term.
+    fn snapshot_seeds(&self, ids: &[String]) -> Result<Snapshot> {
+        let subjects: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
+        self.snapshot_of(&subjects)
+    }
+
+    fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {
+        let Some(pattern) = vocab::seed_query_pattern(q) else {
+            return self.snapshot(None);
+        };
+        let mut subjects = BTreeSet::new();
+        for graph in [
+            self.graph_iri.clone(),
+            vocab::ephemeral_graph(&self.graph_iri),
+        ] {
+            subjects.extend(self.subjects_matching(&graph, &pattern)?);
+        }
+        self.snapshot_of(&subjects)
+    }
+
+    /// Ids are deduplicated and read in chunks: one `UNION` of bound
+    /// patterns (an index lookup each) per chunk and graph, never a query
+    /// per id, and never `VALUES` (quipu does not push a `VALUES` block into
+    /// the pattern, so it scans; see the remote backend's `read_subjects`).
+    /// Every id is percent-encoded into its IRI ([`vocab::item_iri`]): a
+    /// malformed id reads as a seed with no dependents, never as SPARQL.
+    fn snapshot_dependents(&self, ids: &[String]) -> Result<Snapshot> {
+        let edges = [
+            term::blocked_on(),
+            term::child_of(),
+            term::related_to(),
+            term::discovered_from(),
+        ];
+        let items: Vec<String> = ids
+            .iter()
+            .map(|id| vocab::item_iri(id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let per = (DEPENDENT_BRANCHES_PER_READ / edges.len()).max(1);
+        let mut subjects = BTreeSet::new();
+        for graph in [
+            self.graph_iri.clone(),
+            vocab::ephemeral_graph(&self.graph_iri),
+        ] {
+            for chunk in items.chunks(per) {
+                let branches: Vec<String> = chunk
+                    .iter()
+                    .flat_map(|item| {
+                        edges
+                            .iter()
+                            .map(move |p| format!("{{ ?s <{p}> <{item}> }}"))
+                    })
+                    .collect();
+                subjects.extend(self.subjects_matching(&graph, &branches.join(" UNION "))?);
+            }
+        }
+        self.snapshot_of(&subjects)
+    }
+
     fn claims_of(&self, id: &str) -> Result<Vec<(u64, crate::backend::Claims)>> {
         let result = query_temporal(
             &self.store,
@@ -670,6 +842,9 @@ impl Backend for QuipuBackend {
     }
 
     fn ready_ids(&self, at: Option<u64>) -> Result<Vec<String>> {
+        if at.is_none() {
+            return self.ready_ids_current();
+        }
         let result = query_temporal(
             &self.store,
             &vocab::ready_query(&self.graph_iri),

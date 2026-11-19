@@ -31,6 +31,11 @@ pub struct QuipuBackend {
     writable: bool,
 }
 
+/// Bound `UNION` branches per local dependents read (ids x edge predicates).
+/// Kept small: the SPARQL parser recurses per branch, and 128 overflowed a
+/// 2 MiB test-thread stack in a debug build.
+const DEPENDENT_BRANCHES_PER_READ: usize = 32;
+
 impl QuipuBackend {
     /// Wrap a store opened for writing: registers the project graph and the
     /// seeds shapes (once; a store that already holds these exact shapes is
@@ -266,11 +271,18 @@ impl QuipuBackend {
     }
 
     /// [`vocab::ready_query`]'s answer for the current state, as two flat
-    /// reads joined here: open Actions with their ids, and blocked-on edges
-    /// with each blocker's status, both in the project graph. Same set: an
-    /// open Action is ready unless one of its blockers holds a status other
-    /// than closed or tombstone. The correlated FILTER NOT EXISTS took 17 s on
-    /// a ~733k-record replica (aegis-xdvg.4); these take well under one.
+    /// reads joined here: open Actions with their ids, and the blocked-on
+    /// edges of open Actions with each blocker's status, both in the project
+    /// graph. Same set: an open Action is ready unless one of its blockers
+    /// holds a status other than closed or tombstone. The correlated FILTER
+    /// NOT EXISTS took 17 s on a ~733k-record replica (aegis-xdvg.4); these
+    /// take well under one, and the edge read is bounded by open items, not
+    /// by closed history.
+    ///
+    /// Like the definition (and every backend's `ready_ids`), only the
+    /// project graph is read: an ephemeral seed is never ready, and a shared
+    /// seed cannot be blocked by an ephemeral one (the engine refuses that
+    /// edge), so no blocker status is missed. The parity tests pin both.
     fn ready_ids_current(&self) -> Result<Vec<String>> {
         let g = &self.graph_iri;
         let ctx = Self::ctx(None)?;
@@ -281,7 +293,8 @@ impl QuipuBackend {
             term::identifier()
         );
         let edges = format!(
-            "SELECT ?item ?bs WHERE {{ GRAPH <{g}> {{ ?item <{}> ?blocker . ?blocker <{}> ?bs . ?item a <{}> }} }}",
+            "SELECT ?item ?bs WHERE {{ GRAPH <{g}> {{ ?item <{}> \"open\" . ?item <{}> ?blocker . ?blocker <{}> ?bs . ?item a <{}> }} }}",
+            term::status(),
             term::blocked_on(),
             term::status(),
             term::work_item()
@@ -686,14 +699,20 @@ impl Backend for QuipuBackend {
     }
 
     /// Current-state reads touch only the seeds a command answers from
-    /// (aegis-xdvg.4). Every scoped method below is exact on a local store;
-    /// the remaining defaults fall back to a whole snapshot, never to less.
+    /// (aegis-xdvg.4). Every scoped method below returns exactly the seeds
+    /// its [`Backend`] contract promises on a local store (comments only
+    /// where that contract promises them: `snapshot_items`, not
+    /// `snapshot_seeds`, `snapshot_where` or `snapshot_dependents`); the
+    /// remaining defaults fall back to a whole snapshot, never to less.
     fn scoped_reads(&self) -> bool {
         true
     }
 
-    /// The named seeds without their comments (a listing never prints them),
-    /// one bound subject read each instead of a comment query per seed.
+    /// The named seeds WITHOUT their comments, as the trait allows (a
+    /// listing never prints them; `show` reads through `snapshot_items`,
+    /// which keeps them): one bound subject read each instead of a comment
+    /// query per seed. Ids are percent-encoded into their IRI
+    /// ([`vocab::item_iri`]), so no id can break out of the `<...>` term.
     fn snapshot_seeds(&self, ids: &[String]) -> Result<Snapshot> {
         let subjects: BTreeSet<String> = ids.iter().map(|id| vocab::item_iri(id)).collect();
         self.snapshot_of(&subjects)
@@ -713,6 +732,12 @@ impl Backend for QuipuBackend {
         self.snapshot_of(&subjects)
     }
 
+    /// Ids are deduplicated and read in chunks: one `UNION` of bound
+    /// patterns (an index lookup each) per chunk and graph, never a query
+    /// per id, and never `VALUES` (quipu does not push a `VALUES` block into
+    /// the pattern, so it scans; see the remote backend's `read_subjects`).
+    /// Every id is percent-encoded into its IRI ([`vocab::item_iri`]): a
+    /// malformed id reads as a seed with no dependents, never as SPARQL.
     fn snapshot_dependents(&self, ids: &[String]) -> Result<Snapshot> {
         let edges = [
             term::blocked_on(),
@@ -720,16 +745,26 @@ impl Backend for QuipuBackend {
             term::related_to(),
             term::discovered_from(),
         ];
+        let items: Vec<String> = ids
+            .iter()
+            .map(|id| vocab::item_iri(id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let per = (DEPENDENT_BRANCHES_PER_READ / edges.len()).max(1);
         let mut subjects = BTreeSet::new();
         for graph in [
             self.graph_iri.clone(),
             vocab::ephemeral_graph(&self.graph_iri),
         ] {
-            for id in ids {
-                let item = vocab::item_iri(id);
-                let branches: Vec<String> = edges
+            for chunk in items.chunks(per) {
+                let branches: Vec<String> = chunk
                     .iter()
-                    .map(|p| format!("{{ ?s <{p}> <{item}> }}"))
+                    .flat_map(|item| {
+                        edges
+                            .iter()
+                            .map(move |p| format!("{{ ?s <{p}> <{item}> }}"))
+                    })
                     .collect();
                 subjects.extend(self.subjects_matching(&graph, &branches.join(" UNION "))?);
             }

@@ -396,7 +396,17 @@ fn render(
         claims: Claims::default(),
     };
     let (result, p, bound) = board.read(now, request.max_ms, |backend, local_tx| {
-        cli.at = Some(local_tx);
+        // The applier writes this store only on this thread, so the cut
+        // progress() just read IS the head: a current-state read answers the
+        // same as one pinned at local_tx, and only a current-state read takes
+        // the scoped path instead of hydrating the whole board (aegis-xdvg.4).
+        // Pin only if the head moved.
+        let head = backend
+            .store()
+            .transaction_head()
+            .ok()
+            .and_then(|h| u64::try_from(h).ok());
+        cli.at = (head != Some(local_tx)).then_some(local_tx);
         match super::dispatch(&cli, cfg, &ctx, backend) {
             Ok(outcome) => Ok(outcome),
             // Fresh, complete coverage can prove a caller's missing ID or bad

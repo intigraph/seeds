@@ -632,3 +632,54 @@ fn fresh_projection_preserves_not_found_exit_and_json_contract() {
     let request = f.request(&["sd", "--json", "show", "sd-missing"]);
     assert!(render(&mut f.board, &f.config, &f.cfg, request, 5).is_err());
 }
+
+// aegis-xdvg.4 ruling A: 30 s challenges, capped exponential reconnect.
+#[test]
+fn liveness_challenges_every_thirty_seconds_while_connected() {
+    assert_eq!(super::CHALLENGE_INTERVAL_MS, 30_000);
+    let mut live = super::Liveness::new();
+    assert!(live.challenge_due(0));
+    assert!(!live.challenge_due(29_999));
+    assert!(live.challenge_due(30_000));
+    // an hour of a healthy connection: 120 challenges, not 1800
+    let mut live = super::Liveness::new();
+    let count = (0..3_600_000u64)
+        .step_by(10)
+        .filter(|t| live.challenge_due(*t))
+        .count();
+    assert_eq!(count, 120);
+    // disconnected: no challenges at all
+    live.disconnected(3_600_000);
+    assert!(!live.challenge_due(3_700_000));
+}
+
+#[test]
+fn reconnect_backs_off_exponentially_capped_and_resets_only_after_a_healthy_run() {
+    let mut live = super::Liveness::new();
+    live.reconnected(0);
+    let mut now = 1_000;
+    let mut waits = Vec::new();
+    for _ in 0..9 {
+        live.disconnected(now); // accepted, then dropped at once
+        assert!(!live.reconnect_due(now));
+        let at = live.next_reconnect;
+        waits.push(at - now);
+        assert!(live.reconnect_due(at));
+        live.reconnected(at);
+        now = at + 10; // dropped again 10 ms later: not healthy
+    }
+    assert_eq!(
+        waits,
+        vec![1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]
+    );
+    // a connection that stayed up a minute resets the backoff
+    live.disconnected(now + super::RECONNECT_HEALTHY_MS);
+    assert_eq!(
+        live.next_reconnect - (now + super::RECONNECT_HEALTHY_MS),
+        super::RECONNECT_INITIAL_MS
+    );
+    // a refused reconnect attempt also backs off
+    let before = live.backoff;
+    live.disconnected_without_session(live.next_reconnect);
+    assert!(live.backoff >= before && live.backoff <= super::RECONNECT_MAX_MS);
+}

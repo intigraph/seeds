@@ -544,34 +544,82 @@ impl Clock {
     }
 }
 
-pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
-    let c = Config::load(path, cfg)?;
-    let mut board = c.bootstrap()?;
-    if check {
-        return Ok(super::ok(
-            true,
-            json!({"checked":true,"network":false,"socket":false,"readiness":"not activated"}),
-            "pinned bootstrap packet valid".into(),
-            vec![],
-        ));
+/// Liveness challenge cadence while connected (aegis-xdvg.4 ruling A: 30 s,
+/// ~120 requests/h per reader). The stream's own heartbeat stays liveness;
+/// board reads tolerate a ~30 s freshness bound.
+const CHALLENGE_INTERVAL_MS: u64 = 30_000;
+/// Reconnect backoff after the stream drops: exponential, capped.
+const RECONNECT_INITIAL_MS: u64 = 1_000;
+const RECONNECT_MAX_MS: u64 = 60_000;
+/// A connection must stay up this long before the backoff resets, so a
+/// server that accepts and then drops does not pull a 1 s reconnect loop.
+const RECONNECT_HEALTHY_MS: u64 = 60_000;
+
+/// When to challenge and when to reconnect; pure so the cadence is tested.
+#[derive(Debug)]
+struct Liveness {
+    next_challenge: u64,
+    next_reconnect: u64,
+    backoff: u64,
+    connected_at: Option<u64>,
+}
+
+impl Liveness {
+    fn new() -> Self {
+        Self {
+            next_challenge: 0,
+            next_reconnect: 0,
+            backoff: RECONNECT_INITIAL_MS,
+            connected_at: Some(0),
+        }
     }
-    // Dedicated replication credential only; no writer key, ordinary bearer,
-    // /identity request, enrollment or fallback. Principal/source admission is
-    // supplied by the reviewed pinned operator packet, not inferred here.
-    let remote = transport::Transport::new(cfg, &c)?;
+    /// A challenge is due now; schedule the next one.
+    fn challenge_due(&mut self, now: u64) -> bool {
+        if self.connected_at.is_none() || now < self.next_challenge {
+            return false;
+        }
+        self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
+        true
+    }
+    /// The stream dropped: wait the current backoff, then double it (capped).
+    /// The backoff resets only if the connection had stayed up long enough.
+    fn disconnected(&mut self, now: u64) {
+        if let Some(at) = self.connected_at.take() {
+            if now.saturating_sub(at) >= RECONNECT_HEALTHY_MS {
+                self.backoff = RECONNECT_INITIAL_MS;
+            }
+            self.next_reconnect = now.saturating_add(self.backoff);
+            self.backoff = self.backoff.saturating_mul(2).min(RECONNECT_MAX_MS);
+        }
+    }
+    /// A reconnect attempt failed before any session: back off again.
+    fn disconnected_without_session(&mut self, now: u64) {
+        self.next_reconnect = now.saturating_add(self.backoff);
+        self.backoff = self.backoff.saturating_mul(2).min(RECONNECT_MAX_MS);
+    }
+    fn reconnect_due(&self, now: u64) -> bool {
+        self.connected_at.is_none() && now >= self.next_reconnect
+    }
+    fn reconnected(&mut self, now: u64) {
+        self.connected_at = Some(now);
+        self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
+    }
+    fn connected(&self) -> bool {
+        self.connected_at.is_some()
+    }
+}
+
+/// Open the replication stream from the projection's committed cursor; the
+/// returned channel carries envelope frames or the one error that ended it.
+fn open_stream(
+    remote: &transport::Transport,
+    board: &StreamBoard,
+) -> Result<mpsc::Receiver<Result<(String, String)>>> {
     let tail = board.stream_request()?;
     let body = encode(
         &json!({"graphs":tail.graphs,"context_graphs":tail.context_graphs,"since":tail.since,"expected_store_id":tail.expected_store_id}),
     )?;
     let request = remote.request("/replicate/stream")?;
-    let listener = io(UnixListener::bind(&c.socket))?; // never unlink/adopt an existing socket
-    io(fs::set_permissions(
-        &c.socket,
-        fs::Permissions::from_mode(0o600),
-    ))?;
-    io(listener.set_nonblocking(true))?;
-    // The socket is deliberately retained on failure, requiring explicit normal
-    // service recovery rather than silently replacing another consumer.
     let (frames, incoming) = mpsc::sync_channel(64);
     thread::spawn(move || {
         let result = (|| -> Result<()> {
@@ -596,6 +644,33 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
             let _ = frames.send(Err(error));
         }
     });
+    Ok(incoming)
+}
+
+pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
+    let c = Config::load(path, cfg)?;
+    let mut board = c.bootstrap()?;
+    if check {
+        return Ok(super::ok(
+            true,
+            json!({"checked":true,"network":false,"socket":false,"readiness":"not activated"}),
+            "pinned bootstrap packet valid".into(),
+            vec![],
+        ));
+    }
+    // Dedicated replication credential only; no writer key, ordinary bearer,
+    // /identity request, enrollment or fallback. Principal/source admission is
+    // supplied by the reviewed pinned operator packet, not inferred here.
+    let remote = transport::Transport::new(cfg, &c)?;
+    let listener = io(UnixListener::bind(&c.socket))?; // never unlink/adopt an existing socket
+    io(fs::set_permissions(
+        &c.socket,
+        fs::Permissions::from_mode(0o600),
+    ))?;
+    io(listener.set_nonblocking(true))?;
+    // The socket is deliberately retained on failure, requiring explicit normal
+    // service recovery rather than silently replacing another consumer.
+    let mut incoming = open_stream(&remote, &board)?;
     let (challenges, challenge_requests) = mpsc::sync_channel::<(ureq::Request, Vec<u8>)>(1);
     let (replies, challenge_replies) = mpsc::sync_channel(1);
     thread::spawn(move || {
@@ -607,35 +682,46 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         }
     });
     let mut clock = Clock::new();
-    let mut next_challenge = 0;
-    let mut connected = true;
+    let mut live = Liveness::new();
     loop {
         let (now, changed) = clock.sample();
         if changed {
             board.clock_discontinuity();
         }
+        if live.reconnect_due(now) {
+            // Resume from the retained committed cursor; a refusal backs off again.
+            match open_stream(&remote, &board) {
+                Ok(stream) => {
+                    incoming = stream;
+                    live.reconnected(now);
+                }
+                Err(_) => live.disconnected_without_session(now),
+            }
+        }
         for _ in 0..64 {
             match incoming.try_recv() {
-                Ok(Ok((event, data))) if connected => {
+                Ok(Ok((event, data))) if live.connected() => {
                     if board.apply_frame(&event, &data, now).is_err() {
                         board.disconnect();
-                        connected = false;
+                        live.disconnected(now);
                     }
                 }
                 Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
-                    board.disconnect();
-                    connected = false;
+                    if live.connected() {
+                        board.disconnect();
+                        live.disconnected(now);
+                    }
                     break;
                 }
                 Ok(_) => {}
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
-        if challenge_replies.try_recv().is_ok_and(|ok| !ok) {
+        if challenge_replies.try_recv().is_ok_and(|ok| !ok) && live.connected() {
             board.disconnect();
-            connected = false;
+            live.disconnected(now);
         }
-        if connected && now >= next_challenge {
+        if live.challenge_due(now) {
             let mut nonce = [0; 16];
             getrandom::getrandom(&mut nonce)
                 .map_err(|_| unknown("challenge entropy unavailable"))?;
@@ -645,10 +731,9 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                 let request = remote.request("/replicate/challenge")?;
                 if challenges.try_send((request, body)).is_err() {
                     board.disconnect();
-                    connected = false;
+                    live.disconnected(now);
                 }
             }
-            next_challenge = now.saturating_add(2000);
         }
         match listener.accept() {
             Ok((mut stream, _)) => {

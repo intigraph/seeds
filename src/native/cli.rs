@@ -1474,6 +1474,13 @@ pub enum MsgCommand {
         /// Include every registered local, unfrozen message window
         #[arg(long, conflicts_with = "weeks")]
         all_windows: bool,
+        /// Hide messages older than this (7d, 36h, 90m; 0 = never expire).
+        /// Default: SEEDS_MSG_TTL, then [msg] ttl, then 7d. Nothing is deleted.
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Also list or count expired messages (audit)
+        #[arg(long, conflicts_with = "ttl")]
+        include_expired: bool,
     },
     /// Count messages
     Count {
@@ -1489,6 +1496,13 @@ pub enum MsgCommand {
         /// Include every registered local, unfrozen message window
         #[arg(long, conflicts_with = "weeks")]
         all_windows: bool,
+        /// Hide messages older than this (7d, 36h, 90m; 0 = never expire).
+        /// Default: SEEDS_MSG_TTL, then [msg] ttl, then 7d. Nothing is deleted.
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Also list or count expired messages (audit)
+        #[arg(long, conflicts_with = "ttl")]
+        include_expired: bool,
     },
     /// Mark messages read (the first mark is kept; nothing is deleted)
     Read {

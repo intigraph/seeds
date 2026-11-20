@@ -3770,7 +3770,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             "export, import, sync, merge-driver, completions, init, version, where and the mapped verbs are handled before dispatch",
         )),
         Command::Label { command } => label(json, at, ctx, b, command),
-        Command::Msg { command } => msg(json, ctx, b, command),
+        Command::Msg { command } => msg(json, cfg, ctx, b, command),
         Command::Comments { command } => match command {
             CommentsCommand::Add {
                 id,
@@ -4400,7 +4400,13 @@ mod selected_credential_tests {
 }
 
 /// `sd msg ...`: crew mail in per-week window graphs.
-fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Result<Outcome> {
+fn msg(
+    json: bool,
+    cfg: &Resolved,
+    ctx: &Ctx,
+    b: &mut dyn Backend,
+    command: &MsgCommand,
+) -> Result<Outcome> {
     use crate::message::{message_id, recent_windows, window_graph, Message};
     let graph = b
         .project_graph()
@@ -4418,6 +4424,37 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             "read_at": m.read_at,
         })
     };
+    // aegis-9qx: the effective TTL for list/count. `--include-expired` turns
+    // expiry off for this read; `--ttl` overrides config; `0` never expires.
+    let ttl_of = |flag: &Option<String>, include_expired: bool| -> Result<Option<u64>> {
+        if include_expired {
+            return Ok(None);
+        }
+        match flag {
+            Some(v) => crate::message::parse_ttl(v).ok_or_else(|| {
+                SdError::usage(format!(
+                    "--ttl must be a duration like 7d, 36h, 90m or 0 (never expire), not {v:?}"
+                ))
+            }),
+            None => Ok(cfg.msg_ttl_secs),
+        }
+    };
+    // The windows to read and the expiry cutoff. With a TTL only the ISO weeks
+    // overlapping [now - ttl, now] are read, whatever --weeks/--all-windows
+    // would otherwise select.
+    let live =
+        |mut selected: Vec<String>, ttl: Option<u64>| -> Result<(Vec<String>, Option<String>)> {
+            let Some(ttl) = ttl else {
+                return Ok((selected, None));
+            };
+            let bad_clock =
+                || SdError::failed(format!("the clock {:?} is not a valid instant", ctx.now));
+            let cutoff = crate::message::ttl_cutoff(&ctx.now, ttl).ok_or_else(bad_clock)?;
+            let keep =
+                crate::message::windows_since(&graph, &ctx.now, &cutoff).ok_or_else(bad_clock)?;
+            selected.retain(|w| keep.contains(w));
+            Ok((selected, Some(cutoff)))
+        };
     match command {
         MsgCommand::Send {
             to,
@@ -4484,13 +4521,17 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             unread,
             weeks,
             all_windows,
+            ttl,
+            include_expired,
         } => {
-            let selected = if *all_windows {
+            let ttl = ttl_of(ttl, *include_expired)?;
+            let base = if *all_windows {
                 b.message_windows()?
             } else {
                 windows(*weeks)?
             };
-            let listing = b.message_listing(&selected, to.as_deref())?;
+            let (selected, cutoff) = live(base, ttl)?;
+            let listing = b.message_listing_since(&selected, to.as_deref(), cutoff.as_deref())?;
             let mut ms = listing.messages;
             if *unread {
                 ms.retain(|m| m.read_at.is_none());
@@ -4513,12 +4554,18 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
                     .join("\n")
             };
             let incomplete = !listing.warnings.is_empty();
-            let mut outcome = ok(
-                json,
-                serde_json::json!(ms.iter().map(view).collect::<Vec<_>>()),
-                text,
-                listing.warnings,
-            );
+            let ttl_for_view = ttl.or(cfg.msg_ttl_secs);
+            let rows = ms
+                .iter()
+                .map(|m| {
+                    let mut v = view(m);
+                    v["expires_at"] = serde_json::json!(
+                        ttl_for_view.and_then(|t| crate::message::expires_at(&m.sent_at, t))
+                    );
+                    v
+                })
+                .collect::<Vec<_>>();
+            let mut outcome = ok(json, serde_json::json!(rows), text, listing.warnings);
             // Preserve readable messages, but callers must detect omitted records.
             outcome.code = i32::from(incomplete);
             Ok(outcome)
@@ -4528,14 +4575,23 @@ fn msg(json: bool, ctx: &Ctx, b: &mut dyn Backend, command: &MsgCommand) -> Resu
             unread,
             weeks,
             all_windows,
+            ttl,
+            include_expired,
         } => {
-            let selected = if *all_windows {
+            let ttl = ttl_of(ttl, *include_expired)?;
+            let base = if *all_windows {
                 b.message_windows()?
             } else {
                 windows(*weeks)?
             };
-            let n = b
-                .messages(&selected, to.as_deref())?
+            let (selected, cutoff) = live(base, ttl)?;
+            let listing = b.message_listing_since(&selected, to.as_deref(), cutoff.as_deref())?;
+            // Like `messages`: a count never silently skips a malformed record.
+            if !listing.warnings.is_empty() {
+                return Err(SdError::failed(listing.warnings.join("; ")));
+            }
+            let n = listing
+                .messages
                 .iter()
                 .filter(|m| !*unread || m.read_at.is_none())
                 .count();

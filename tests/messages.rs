@@ -339,3 +339,41 @@ fn exact_lookup_retains_binding_scope_and_dangling_binding_errors() {
     retract_fixture_facts(&mut b, &w, &seeds::message::message_iri(&m.id), None);
     assert!(b.message_lookup(&[w], &m.id).is_err());
 }
+
+#[test]
+fn messages_older_than_the_ttl_drop_out_of_live_reads_but_stay_stored() {
+    // aegis-9qx: expiry is derived from the send time at read time. Nothing is
+    // written or deleted; an audit read still sees the old message.
+    use seeds::message::{ttl_cutoff, windows_since, DEFAULT_TTL_SECS};
+    let mut b = QuipuBackend::in_memory(GRAPH).unwrap();
+    let old_at = "2026-11-12T09:00:00Z";
+    let new_at = "2026-11-19T09:00:00Z";
+    let old = msg("ttl-old", "wu", old_at, "old news");
+    let new = msg("ttl-new", "wu", new_at, "fresh");
+    let old_w = window_graph(GRAPH, old_at).unwrap();
+    let new_w = window_graph(GRAPH, new_at).unwrap();
+    b.message_send(&ctx(old_at), &old_w, &old, "st inbox")
+        .unwrap();
+    b.message_send(&ctx(new_at), &new_w, &new, "st inbox")
+        .unwrap();
+
+    let now = "2026-11-20T06:00:00Z";
+    let cutoff = ttl_cutoff(now, DEFAULT_TTL_SECS).unwrap();
+    let live = windows_since(GRAPH, now, &cutoff).unwrap();
+    assert_eq!(live, vec![new_w.clone(), old_w.clone()]);
+
+    let ids = |l: seeds::message::Listing| l.messages.into_iter().map(|m| m.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(b
+            .message_listing_since(&live, Some("wu"), Some(&cutoff))
+            .unwrap()),
+        vec![new.id.clone()]
+    );
+    // No cutoff: the same windows still hold both, unchanged.
+    assert_eq!(
+        ids(b.message_listing_since(&live, Some("wu"), None).unwrap()),
+        vec![old.id.clone(), new.id.clone()]
+    );
+    // The expired message is still reachable by exact id.
+    assert!(b.message_lookup(&[old_w], &old.id).unwrap().is_some());
+}

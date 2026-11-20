@@ -6,8 +6,8 @@ or sync ever sees it.
 
 ```text
 sd msg send --to <name> [--from <name>] [--kind note|alert] [--key <key>] [--about <seed>]... <text>|-m <text>|-f <file>
-sd msg list  [--to <name>] [--unread] [--weeks <n>]
-sd msg count [--to <name>] [--unread] [--weeks <n>]
+sd msg list  [--to <name>] [--unread] [--weeks <n>|--all-windows] [--ttl <dur>|--include-expired]
+sd msg count [--to <name>] [--unread] [--weeks <n>|--all-windows] [--ttl <dur>|--include-expired]
 sd msg show <msg-id> [--weeks <n>]
 sd msg read <msg-id>... [--weeks <n>]
 ```
@@ -73,9 +73,32 @@ placement across windows, incomplete replies and unreadable bindings refuse.
 `read` resolves every requested ID before writing any read mark. This does not
 relax `count` or mailbox coverage checks.
 
+## Expiry
+
+A message expires when its time-to-live has passed since `schema:dateSent`.
+The default TTL is seven days. Set it with `[msg] ttl` in the user or project
+config file (`7d`, `36h`, `90m`, `2w`; `0` means never expire), or with
+`SEEDS_MSG_TTL`, which takes precedence. `--ttl` overrides both for one
+command. A change takes effect on the next command; nothing needs a restart.
+
+Expiry is derived when a mailbox is read. Nothing writes an expiry mark,
+nothing sweeps, and nothing is deleted:
+
+- `list` and `count` leave out expired messages. An expired message no longer
+  counts as unread.
+- They read only the windows of the ISO weeks that overlap the last TTL, which
+  is at most two windows for seven days, even with `--all-windows`. A remote
+  read asks the server only for messages sent at or after the cutoff, so
+  expired messages are never transferred.
+- `--include-expired` reads them again, for audit.
+- `show` and `read` by exact id still find an expired message. Delivery
+  bindings never expire, so an old key can never be resent as new mail.
+
+`list --json` adds `expires_at` to each message.
+
 `sd msg read` appends `schema:dateRead` once; a message already read keeps its
 first mark, so repeating it is safe, and nothing is deleted or closed. Reading
-is not acknowledgement: a separate ack, expiry and escalation come with the
+is not acknowledgement: a separate ack and escalation come with the
 next phase of the design (shantytown `docs/message-graph.md`). `--unread`
 lists or counts only messages without a read mark.
 

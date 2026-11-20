@@ -76,6 +76,18 @@ pub struct FileConfig {
     /// Consolidated specification replacement limits.
     #[serde(default)]
     pub specs: SpecsSection,
+    /// `[msg]`: crew mail settings (message expiry).
+    #[serde(default)]
+    pub msg: MsgSection,
+}
+
+/// `[msg]`: `ttl` is how long a message stays live (`7d`, `36h`, `0` = never
+/// expire). Expired messages are hidden from default listings and unread
+/// counts, never deleted (aegis-9qx).
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MsgSection {
+    pub ttl: Option<String>,
 }
 
 /// `[specs]`: byte cap including the generated version heading.
@@ -194,6 +206,10 @@ pub struct Resolved {
     pub read_stream_config: Option<PathBuf>,
     pub spec_byte_cap: usize,
     pub due_priority_days: Option<[u32; 5]>,
+    /// Message time-to-live in seconds; `None` means messages never expire.
+    /// `SEEDS_MSG_TTL`, then user `[msg] ttl`, then project `[msg] ttl`,
+    /// default [`crate::message::DEFAULT_TTL_SECS`].
+    pub msg_ttl_secs: Option<u64>,
     /// Where the graph lives.
     pub location: Location,
     /// Which layer decided the location, for messages and `--json` errors.
@@ -311,6 +327,8 @@ pub struct Inputs {
     pub env_max_write_bytes: Option<String>,
     /// `SEEDS_MAX_WRITE_CLAUSES`.
     pub env_max_write_clauses: Option<String>,
+    /// `SEEDS_MSG_TTL`.
+    pub env_msg_ttl: Option<String>,
     /// `--store`.
     pub flag_store: Option<String>,
     /// `--quipu`.
@@ -369,6 +387,7 @@ impl Inputs {
             env_credential_destination: destination,
             env_max_write_bytes: var("SEEDS_MAX_WRITE_BYTES"),
             env_max_write_clauses: var("SEEDS_MAX_WRITE_CLAUSES"),
+            env_msg_ttl: var("SEEDS_MSG_TTL"),
             flag_store,
             flag_url,
             flag_graph,
@@ -682,6 +701,28 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         "SEEDS_MAX_WRITE_CLAUSES",
         DEFAULT_MAX_WRITE_CLAUSES,
     )?;
+    let msg_ttl_secs = match inputs
+        .env_msg_ttl
+        .clone()
+        .map(|v| ("SEEDS_MSG_TTL", v))
+        .or_else(|| {
+            user.as_ref()
+                .and_then(|c| c.msg.ttl.clone())
+                .map(|v| ("user [msg] ttl", v))
+        })
+        .or_else(|| {
+            project
+                .as_ref()
+                .and_then(|c| c.msg.ttl.clone())
+                .map(|v| ("project [msg] ttl", v))
+        }) {
+        None => Some(crate::message::DEFAULT_TTL_SECS),
+        Some((origin, v)) => crate::message::parse_ttl(&v).ok_or_else(|| {
+            config_error(format!(
+                "{origin} must be a duration like 7d, 36h, 90m or 0 (never expire), not {v:?}"
+            ))
+        })?,
+    };
     let due_priority_days = project
         .as_ref()
         .and_then(|c| c.due_dates.priority_days)
@@ -724,6 +765,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             .map(|p| expand(p, &user_base, home)),
         spec_byte_cap,
         due_priority_days,
+        msg_ttl_secs,
         location,
         location_source,
         prefix,
@@ -1398,5 +1440,27 @@ mod tests {
         let mut i = sb.inputs();
         i.env_url = Some("https://evil.example.org".into());
         assert!(!resolve(&i).unwrap().location_from_project);
+    }
+
+    #[test]
+    fn message_ttl_defaults_to_seven_days_and_env_beats_user_beats_project() {
+        let s = Sandbox::new("msg-ttl");
+        assert_eq!(
+            resolve(&s.inputs()).unwrap().msg_ttl_secs,
+            Some(crate::message::DEFAULT_TTL_SECS)
+        );
+        s.project_toml("[msg]\nttl = \"3d\"\n");
+        assert_eq!(resolve(&s.inputs()).unwrap().msg_ttl_secs, Some(3 * 86_400));
+        s.user_toml("[msg]\nttl = \"36h\"\n");
+        assert_eq!(resolve(&s.inputs()).unwrap().msg_ttl_secs, Some(36 * 3_600));
+        let mut i = s.inputs();
+        i.env_msg_ttl = Some("0".into());
+        assert_eq!(resolve(&i).unwrap().msg_ttl_secs, None, "0 = never expire");
+        i.env_msg_ttl = Some("soon".into());
+        let err = resolve(&i).unwrap_err().to_string();
+        assert!(err.contains("SEEDS_MSG_TTL"), "{err}");
+        s.user_toml("[msg]\nttl = \"7 days\"\n");
+        let err = resolve(&s.inputs()).unwrap_err().to_string();
+        assert!(err.contains("user [msg] ttl"), "{err}");
     }
 }

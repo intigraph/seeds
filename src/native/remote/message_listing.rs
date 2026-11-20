@@ -37,9 +37,23 @@ fn facts(
 pub(super) fn collect(
     windows: &[String],
     recipient: Option<&str>,
+    since: Option<&str>,
     mut select: impl FnMut(&str) -> Result<(Rows, bool)>,
 ) -> Result<crate::message::Listing> {
     let mut out = crate::message::Listing::default();
+    // aegis-9qx: the TTL cutoff runs in the subject query, so an expired
+    // message is never paged out of the server. Only the cutoff instant (an
+    // xsd:dateTime the client computed) enters the query.
+    let sent_filter = since
+        .map(|cutoff| {
+            format!(
+                " ; <{}dateSent> ?sent . FILTER(?sent >= \"{}\"^^<{}>)",
+                vocab::SCHEMA,
+                escape_literal(cutoff),
+                vocab::XSD_DATE_TIME
+            )
+        })
+        .unwrap_or_default();
     for window in windows {
         let mut after = String::new();
         let mut complete = false;
@@ -58,7 +72,7 @@ pub(super) fn collect(
             } else {
                 format!("FILTER(STR(?m) > \"{}\")", escape_literal(&after))
             };
-            let query = format!("SELECT DISTINCT ?m WHERE {{ GRAPH <{window}> {{ ?m a <{}Message>{recipient} . {cursor} }} }} ORDER BY STR(?m) LIMIT {SUBJECT_PAGE}", vocab::SCHEMA);
+            let query = format!("SELECT DISTINCT ?m WHERE {{ GRAPH <{window}> {{ ?m a <{}Message>{recipient}{sent_filter} . {cursor} }} }} ORDER BY STR(?m) LIMIT {SUBJECT_PAGE}", vocab::SCHEMA);
             let (rows, truncated) = select(&query)?;
             if truncated || rows.len() > SUBJECT_PAGE {
                 return Err(SdError::failed(format!(
@@ -99,7 +113,9 @@ pub(super) fn collect(
                 for (subject, facts) in by {
                     match crate::message::Message::from_facts(&facts) {
                         Some(m) if crate::message::message_iri(&m.id) == subject => {
-                            out.messages.push(m)
+                            if !since.is_some_and(|c| crate::message::is_expired(&m, c)) {
+                                out.messages.push(m)
+                            }
                         }
                         _ => out.warnings.push(format!(
                             "message listing incomplete: {subject} in {window} is malformed; omitted from this listing"
@@ -151,7 +167,7 @@ mod tests {
             .collect();
         let mut page = 0;
         let mut fact_splits = 0;
-        let listing = collect(&[window], None, |query| {
+        let listing = collect(&[window], None, None, |query| {
             if query.starts_with("SELECT DISTINCT") {
                 if page > 0 {
                     assert!(query.contains(&subjects[page - 1]));
@@ -199,6 +215,7 @@ mod tests {
         let listing = collect(
             &["https://example.org/project/mail/messages/2026-W45".into()],
             None,
+            None,
             |query| {
                 if query.starts_with("SELECT DISTINCT") {
                     return Ok((
@@ -232,14 +249,85 @@ mod tests {
     }
 
     #[test]
+    fn a_ttl_cutoff_filters_in_the_subject_query_and_again_on_the_client() {
+        // aegis-9qx: the server is asked only for messages sent at or after the
+        // cutoff. A server that ignored the filter still cannot leak an expired
+        // message into the listing.
+        let mut fresh = message(1);
+        fresh.sent_at = "2026-11-19T00:00:00Z".into();
+        let mut old = message(2);
+        old.sent_at = "2026-11-12T00:00:00Z".into();
+        let ids = [
+            crate::message::message_iri(&fresh.id),
+            crate::message::message_iri(&old.id),
+        ];
+        let mut subject_queries = Vec::new();
+        let listing = collect(
+            &["https://example.org/project/mail/messages/2026-W47".into()],
+            Some("reader"),
+            Some("2026-11-13T06:00:00Z"),
+            |query| {
+                if query.starts_with("SELECT DISTINCT") {
+                    subject_queries.push(query.to_string());
+                    return Ok((
+                        ids.iter()
+                            .map(|s| BTreeMap::from([("m".into(), Obj::Iri(s.clone()))]))
+                            .collect(),
+                        false,
+                    ));
+                }
+                let mut rows = Vec::new();
+                for (n, m) in [&fresh, &old].iter().enumerate() {
+                    for (p, o) in m.facts() {
+                        rows.push(BTreeMap::from([
+                            ("m".into(), Obj::Iri(ids[n].clone())),
+                            ("p".into(), Obj::Iri(p)),
+                            ("o".into(), o),
+                        ]));
+                    }
+                }
+                Ok((rows, false))
+            },
+        )
+        .unwrap();
+        assert_eq!(listing.messages, vec![fresh]);
+        assert!(listing.warnings.is_empty());
+        let q = &subject_queries[0];
+        assert!(
+            q.contains(&format!("<{}dateSent> ?sent", vocab::SCHEMA)),
+            "{q}"
+        );
+        assert!(
+            q.contains(&format!(
+                "FILTER(?sent >= \"2026-11-13T06:00:00Z\"^^<{}>)",
+                vocab::XSD_DATE_TIME
+            )),
+            "{q}"
+        );
+        // Without a cutoff the subject query is unchanged.
+        let mut plain = Vec::new();
+        collect(
+            &["https://example.org/project/mail/messages/2026-W47".into()],
+            None,
+            None,
+            |query| {
+                plain.push(query.to_string());
+                Ok((Vec::new(), false))
+            },
+        )
+        .unwrap();
+        assert!(!plain[0].contains("dateSent"), "{}", plain[0]);
+    }
+
+    #[test]
     fn truncated_subjects_and_nonprogressing_pages_are_errors() {
         let window = ["https://example.org/project/mail/messages/2026-W45".into()];
-        assert!(collect(&window, None, |_| Ok((Vec::new(), true))).is_err());
+        assert!(collect(&window, None, None, |_| Ok((Vec::new(), true))).is_err());
         let row = BTreeMap::from([(
             "m".into(),
             Obj::Iri(crate::message::message_iri("msg-repeat")),
         )]);
-        assert!(collect(&window, None, |_| Ok((
+        assert!(collect(&window, None, None, |_| Ok((
             vec![row.clone(), row.clone()],
             false
         )))

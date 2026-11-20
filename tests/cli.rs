@@ -3838,9 +3838,14 @@ fn all_window_cli_lists_counts_shows_and_marks_an_old_live_message() {
         .as_array()
         .unwrap()
         .is_empty());
-    let listed = invoke(&["msg", "list", "--to", "reader", "--all-windows", "--unread"]);
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["id"], message.id);
+    // aegis-9qx: a message older than the TTL (default 7 days) is expired.
+    // --all-windows alone no longer shows or counts it; nothing was deleted.
+    assert!(
+        invoke(&["msg", "list", "--to", "reader", "--all-windows", "--unread"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         invoke(&[
             "msg",
@@ -3849,6 +3854,44 @@ fn all_window_cli_lists_counts_shows_and_marks_an_old_live_message() {
             "reader",
             "--all-windows",
             "--unread"
+        ])["count"],
+        0
+    );
+    let listed = invoke(&[
+        "msg",
+        "list",
+        "--to",
+        "reader",
+        "--all-windows",
+        "--unread",
+        "--include-expired",
+    ]);
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], message.id);
+    assert_eq!(listed[0]["expires_at"], "2000-01-10T10:00:00Z");
+    assert_eq!(
+        invoke(&[
+            "msg",
+            "count",
+            "--to",
+            "reader",
+            "--all-windows",
+            "--unread",
+            "--include-expired"
+        ])["count"],
+        1
+    );
+    // --ttl 0 means never expire.
+    assert_eq!(
+        invoke(&[
+            "msg",
+            "count",
+            "--to",
+            "reader",
+            "--all-windows",
+            "--unread",
+            "--ttl",
+            "0"
         ])["count"],
         1
     );
@@ -3867,7 +3910,8 @@ fn all_window_cli_lists_counts_shows_and_marks_an_old_live_message() {
             "--to",
             "reader",
             "--all-windows",
-            "--unread"
+            "--unread",
+            "--include-expired"
         ])["count"],
         0
     );

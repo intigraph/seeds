@@ -388,6 +388,25 @@ pub trait Backend {
         })
     }
 
+    /// A mailbox listing without messages sent before `since` (the TTL
+    /// cutoff). The default lists, then drops expired messages; a remote
+    /// backend pushes the cutoff into its query so expired rows never leave
+    /// the server. `since: None` is exactly [`Backend::message_listing`].
+    fn message_listing_since(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<crate::message::Listing> {
+        let mut listing = self.message_listing(windows, recipient)?;
+        if let Some(cutoff) = since {
+            listing
+                .messages
+                .retain(|m| !crate::message::is_expired(m, cutoff));
+        }
+        Ok(listing)
+    }
+
     /// An indexed search page. The backend selects and counts matches before
     /// retrieving the full facts of just the requested page.
     fn search_page(

@@ -194,6 +194,111 @@ pub fn recent_windows(project_graph: &str, now: &str, weeks: u32) -> Option<Vec<
         .collect()
 }
 
+/// Default message time-to-live: seven days. After it a message is expired:
+/// it stops counting as unread and leaves default listings, but it is never
+/// changed or deleted (`--include-expired` and exact `show`/`read` still reach
+/// it). Expiry is derived from `schema:dateSent` at read time; nothing writes
+/// an expiry mark and nothing sweeps.
+pub const DEFAULT_TTL_SECS: u64 = 7 * 86_400;
+
+/// Longest accepted TTL: ten years.
+const MAX_TTL_SECS: u64 = 3650 * 86_400;
+
+/// Parse a TTL such as `7d`, `36h`, `90m`, `600s` or a bare number of seconds.
+/// `0` means "never expire" and returns `Some(None)`. An empty, negative,
+/// fractional, unknown-unit or over-long value returns `None` (refuse).
+pub fn parse_ttl(value: &str) -> Option<Option<u64>> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let (digits, unit) = match v.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((at, _)) => v.split_at(at),
+        None => (v, "s"),
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u64 = digits.parse().ok()?;
+    let scale = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 7 * 86_400,
+        _ => return None,
+    };
+    let secs = n.checked_mul(scale)?;
+    if secs > MAX_TTL_SECS {
+        return None;
+    }
+    Some((secs != 0).then_some(secs))
+}
+
+/// Seconds since 1970-01-01T00:00:00Z of a valid `YYYY-MM-DDTHH:MM:SS…`
+/// instant. A date without a time is midnight. Anything else is `None`.
+pub fn seconds_of(instant: &str) -> Option<i64> {
+    let days = days_of(instant)?;
+    let clock = instant.get(11..19).unwrap_or("00:00:00");
+    if instant.len() > 10 && instant.as_bytes().get(10) != Some(&b'T') {
+        return None;
+    }
+    let mut parts = clock.split(':');
+    let h: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let s: i64 = parts.next()?.parse().ok()?;
+    if !(0..24).contains(&h) || !(0..60).contains(&m) || !(0..61).contains(&s) {
+        return None;
+    }
+    Some(days * 86_400 + h * 3_600 + m * 60 + s)
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` of seconds since 1970-01-01T00:00:00Z.
+pub fn instant_of(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        date_of(days),
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60
+    )
+}
+
+/// The expiry cutoff for `now` and a TTL: messages sent before it are expired.
+pub fn ttl_cutoff(now: &str, ttl_secs: u64) -> Option<String> {
+    let ttl = i64::try_from(ttl_secs).ok()?;
+    Some(instant_of(seconds_of(now)?.checked_sub(ttl)?))
+}
+
+/// When a message sent at `sent_at` expires under a TTL.
+pub fn expires_at(sent_at: &str, ttl_secs: u64) -> Option<String> {
+    let ttl = i64::try_from(ttl_secs).ok()?;
+    Some(instant_of(seconds_of(sent_at)?.checked_add(ttl)?))
+}
+
+/// Whether a message is expired at `cutoff` (sent strictly before it). A send
+/// time that cannot be read is NOT expired: unknown never hides mail.
+pub fn is_expired(m: &Message, cutoff: &str) -> bool {
+    match (seconds_of(&m.sent_at), seconds_of(cutoff)) {
+        (Some(sent), Some(cut)) => sent < cut,
+        _ => false,
+    }
+}
+
+/// The windows of every ISO week that overlaps `[cutoff, now]`, newest first.
+/// A seven-day TTL always needs at most two windows, whatever the weekday.
+pub fn windows_since(project_graph: &str, now: &str, cutoff: &str) -> Option<Vec<String>> {
+    let monday = |d: i64| d - (d + 3).rem_euclid(7); // 1970-01-01 was a Thursday
+    let (today, first) = (days_of(now)?, days_of(cutoff)?);
+    if first > today {
+        return recent_windows(project_graph, now, 1);
+    }
+    let weeks = (monday(today) - monday(first)) / 7 + 1;
+    recent_windows(project_graph, now, u32::try_from(weeks).ok()?)
+}
+
 /// Whether `graph` is a message window of `project_graph`.
 pub fn is_window_of(project_graph: &str, graph: &str) -> bool {
     let prefix = format!("{}/messages/", project_graph.trim_end_matches('/'));
@@ -495,5 +600,106 @@ mod tests {
             read_at: None,
         };
         assert_eq!(m.problems().len(), 4);
+    }
+
+    #[test]
+    fn ttl_values_parse_with_units_and_zero_means_never() {
+        assert_eq!(parse_ttl("7d"), Some(Some(7 * 86_400)));
+        assert_eq!(parse_ttl(" 36h "), Some(Some(36 * 3_600)));
+        assert_eq!(parse_ttl("90m"), Some(Some(5_400)));
+        assert_eq!(parse_ttl("2w"), Some(Some(14 * 86_400)));
+        assert_eq!(parse_ttl("600"), Some(Some(600)));
+        assert_eq!(parse_ttl("0"), Some(None));
+        assert_eq!(parse_ttl("0d"), Some(None));
+        for bad in [
+            "",
+            "d",
+            "-1d",
+            "1.5d",
+            "7x",
+            "7 d",
+            "99999d",
+            "18446744073709551615d",
+        ] {
+            assert_eq!(parse_ttl(bad), None, "{bad:?} must refuse");
+        }
+    }
+
+    #[test]
+    fn instants_round_trip_through_seconds() {
+        for at in [
+            "2026-11-20T05:58:37Z",
+            "1970-01-01T00:00:00Z",
+            "2027-01-05T23:59:59Z",
+        ] {
+            assert_eq!(instant_of(seconds_of(at).unwrap()), at);
+        }
+        assert_eq!(
+            seconds_of("2026-11-20T05:58:37.123Z"),
+            seconds_of("2026-11-20T05:58:37Z")
+        );
+        assert_eq!(seconds_of("2026-11-20"), seconds_of("2026-11-20T00:00:00Z"));
+        assert!(seconds_of("bad").is_none());
+        assert!(seconds_of("2026-11-20X05:00:00Z").is_none());
+        assert!(seconds_of("2026-11-20T25:00:00Z").is_none());
+    }
+
+    #[test]
+    fn a_message_older_than_the_ttl_is_expired_and_unknown_is_not() {
+        let cutoff = ttl_cutoff("2026-11-20T06:00:00Z", DEFAULT_TTL_SECS).unwrap();
+        assert_eq!(cutoff, "2026-11-13T06:00:00Z");
+        assert_eq!(
+            expires_at("2026-11-13T06:00:00Z", DEFAULT_TTL_SECS).as_deref(),
+            Some("2026-11-20T06:00:00Z")
+        );
+        let at = |sent: &str| Message {
+            id: "msg-x".into(),
+            recipient: "wu".into(),
+            sender: None,
+            sent_at: sent.into(),
+            text: "t".into(),
+            kind: "note".into(),
+            delivery_key: None,
+            about: vec![],
+            read_at: None,
+        };
+        assert!(is_expired(&at("2026-11-13T05:59:59Z"), &cutoff));
+        assert!(!is_expired(&at("2026-11-13T06:00:00Z"), &cutoff));
+        assert!(!is_expired(&at("2026-11-19T00:00:00Z"), &cutoff));
+        assert!(!is_expired(&at("not a time"), &cutoff));
+    }
+
+    #[test]
+    fn a_seven_day_ttl_reads_at_most_two_windows_on_any_weekday_and_year_edge() {
+        let g = "https://seeds.local/project/aegis";
+        let w = |now: &str| {
+            let cutoff = ttl_cutoff(now, DEFAULT_TTL_SECS).unwrap();
+            windows_since(g, now, &cutoff).unwrap()
+        };
+        // Friday of 2026-W47: back to Friday of W46.
+        assert_eq!(
+            w("2026-11-20T06:00:00Z"),
+            vec![
+                format!("{g}/messages/2026-W47"),
+                format!("{g}/messages/2026-W46")
+            ]
+        );
+        // Monday and Sunday of W47 still span exactly two weeks.
+        assert_eq!(w("2026-11-16T00:00:00Z").len(), 2);
+        assert_eq!(w("2026-11-22T23:59:59Z").len(), 2);
+        // Across the 53-week year edge.
+        assert_eq!(
+            w("2027-01-05T10:00:00Z"),
+            vec![
+                format!("{g}/messages/2027-W01"),
+                format!("{g}/messages/2026-W53")
+            ]
+        );
+        // A cutoff in the future still reads the current week, never none.
+        assert_eq!(
+            windows_since(g, "2026-11-20T06:00:00Z", "2026-12-01T00:00:00Z").unwrap(),
+            vec![format!("{g}/messages/2026-W47")]
+        );
+        assert!(windows_since(g, "bad", "2026-11-13T06:00:00Z").is_none());
     }
 }

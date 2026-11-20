@@ -127,8 +127,13 @@ fn cli_retry_reports_original_window_and_time() {
     };
     let (first, _) = candidate("2026-11-01T23:59:59Z", "cli-key");
     let (retry, _) = candidate("2027-01-04T00:00:01Z", "cli-key");
-    let original = msg(true, &first, &mut b, &command).unwrap();
-    let receipt = msg(true, &retry, &mut b, &command).unwrap();
+    let cfg = crate::native::config::resolve(&crate::native::config::Inputs {
+        cwd: std::env::temp_dir(),
+        ..Default::default()
+    })
+    .unwrap();
+    let original = msg(true, &cfg, &first, &mut b, &command).unwrap();
+    let receipt = msg(true, &cfg, &retry, &mut b, &command).unwrap();
     assert!(original.stdout.contains("2026-W44"));
     assert!(receipt.stdout.contains("2026-W44"));
     assert!(receipt.stdout.contains("2026-11-01T23:59:59Z"));

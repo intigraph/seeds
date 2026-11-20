@@ -146,16 +146,43 @@ pub fn read_headers_from(
     hostname: impl FnOnce() -> Option<String>,
     operation: &str,
 ) -> Vec<(&'static str, String)> {
-    let in_session = env("CLAUDECODE").as_deref() == Some("1")
-        || env("CODEX_HOME").is_some_and(|v| !v.is_empty());
-    let declared = env("QUIPU_AGENT")
-        .filter(|v| !v.is_empty())
-        .or_else(|| in_session.then(|| env("SHANTY_AGENT")).flatten());
+    let declared = declared_agent_from(&env);
     let mut result = headers_from(&env, hostname);
-    if declared.as_deref().and_then(clean).is_none() {
+    if declared.is_none() {
         result.retain(|(name, _)| *name != "X-Quipu-Agent");
     }
     result.extend(read_declarations_from(&env, operation));
+    result
+}
+
+/// The agent a caller DECLARED: `QUIPU_AGENT`, else `SHANTY_AGENT` inside an
+/// agent session. Never the [`PRODUCER`] fallback, never an inherited
+/// `SHANTY_AGENT` outside a session. Cleaned like every header value.
+pub fn declared_agent_from(env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let in_session = env("CLAUDECODE").as_deref() == Some("1")
+        || env("CODEX_HOME").is_some_and(|v| !v.is_empty());
+    env("QUIPU_AGENT")
+        .filter(|v| !v.is_empty())
+        .or_else(|| in_session.then(|| env("SHANTY_AGENT")).flatten())
+        .as_deref()
+        .and_then(clean)
+}
+
+/// Headers added to an already signed READ: the two read declarations plus the
+/// declared agent, when there is one (aegis-3a99.3). On a signed request the
+/// verified key, never this header, is the actor; quipu logs the header only as
+/// declared attribution, so reads from a shared host key can still be told
+/// apart by crew member. Session stays withheld; writes keep [`apply_signed`].
+pub fn signed_read_headers_from(
+    env: impl Fn(&str) -> Option<String>,
+    operation: &str,
+) -> Vec<(&'static str, String)> {
+    let mut result: Vec<(&'static str, String)> = read_declarations_from(&env, operation)
+        .into_iter()
+        .collect();
+    if let Some(agent) = declared_agent_from(&env) {
+        result.push(("X-Quipu-Agent", agent));
+    }
     result
 }
 
@@ -198,11 +225,12 @@ pub fn apply_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
     req
 }
 
-/// Add only the read declarations to an already signed read. Agent and
-/// session stay withheld (see [`apply_signed`]); the signature covers method,
-/// path, content type and body, so these diagnostic headers do not alter it.
+/// Add the read declarations and the declared agent to an already signed read
+/// ([`signed_read_headers_from`]). Session stays withheld (see
+/// [`apply_signed`]); the signature covers method, path, content type and
+/// body, so these diagnostic headers do not alter it.
 pub fn apply_signed_read(mut req: ureq::Request, operation: &str) -> ureq::Request {
-    for (name, value) in read_declarations_from(
+    for (name, value) in signed_read_headers_from(
         |k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()),
         operation,
     ) {
@@ -255,6 +283,78 @@ mod tests {
 
     fn expect(pairs: &[(&'static str, &str)]) -> BTreeMap<&'static str, String> {
         pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
+    }
+
+    fn signed_read(vars: &[(&str, &str)]) -> BTreeMap<&'static str, String> {
+        let env: BTreeMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        signed_read_headers_from(|k| env.get(k).cloned(), "query")
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn signed_read_carries_the_declared_agent_from_an_agent_session() {
+        // aegis-3a99.3: crew reads on a shared host key were logged agent=None.
+        let h = signed_read(&[("CLAUDECODE", "1"), ("SHANTY_AGENT", "ian")]);
+        assert_eq!(h.get("X-Quipu-Agent").map(String::as_str), Some("ian"));
+        assert_eq!(
+            h.get("X-Quipu-Operation").map(String::as_str),
+            Some("query")
+        );
+        let h = signed_read(&[("CODEX_HOME", "/c"), ("SHANTY_AGENT", "wu")]);
+        assert_eq!(h.get("X-Quipu-Agent").map(String::as_str), Some("wu"));
+    }
+
+    #[test]
+    fn signed_read_explicit_quipu_agent_wins() {
+        let h = signed_read(&[
+            ("QUIPU_AGENT", "cron-nightly"),
+            ("CLAUDECODE", "1"),
+            ("SHANTY_AGENT", "ian"),
+        ]);
+        assert_eq!(
+            h.get("X-Quipu-Agent").map(String::as_str),
+            Some("cron-nightly")
+        );
+    }
+
+    #[test]
+    fn signed_read_never_invents_or_inherits_an_agent() {
+        // No declaration: omitted, never the "seeds" producer fallback.
+        assert!(!signed_read(&[]).contains_key("X-Quipu-Agent"));
+        // An inherited SHANTY_AGENT outside a session is not a declaration.
+        assert!(!signed_read(&[("SHANTY_AGENT", "ian")]).contains_key("X-Quipu-Agent"));
+        // Empty and unprintable-only values are omitted.
+        assert!(!signed_read(&[("QUIPU_AGENT", "")]).contains_key("X-Quipu-Agent"));
+        assert!(!signed_read(&[("QUIPU_AGENT", "\r\n")]).contains_key("X-Quipu-Agent"));
+    }
+
+    #[test]
+    fn signed_read_withholds_session_and_signed_writes_withhold_agent() {
+        let h = signed_read(&[
+            ("CLAUDECODE", "1"),
+            ("SHANTY_AGENT", "ian"),
+            ("CLAUDE_CODE_SESSION_ID", "s-1"),
+            ("QUIPU_SESSION", "s-2"),
+        ]);
+        assert!(!h.contains_key("X-Quipu-Session"), "{h:?}");
+        let keys: Vec<_> = h.keys().copied().collect();
+        assert_eq!(
+            keys,
+            vec!["X-Quipu-Agent", "X-Quipu-Operation", "X-Quipu-Source"]
+        );
+    }
+
+    #[test]
+    fn signed_read_agent_value_is_cleaned_and_bounded() {
+        let long = "a".repeat(300);
+        let h = signed_read(&[("QUIPU_AGENT", &long)]);
+        assert_eq!(h["X-Quipu-Agent"].len(), MAX_LEN);
+        let h = signed_read(&[("QUIPU_AGENT", "  ian\u{7f}  ")]);
+        assert_eq!(h["X-Quipu-Agent"], "ian");
     }
 
     #[test]

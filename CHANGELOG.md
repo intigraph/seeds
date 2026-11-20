@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.3] - 2026-11-19
+
+### Fixed
+
+- *(read-stream)* 4s challenges and jittered capped reconnect (#292) ([85e8570](https://github.com/scbrown/seeds/commit/85e85702f703556711450037b5c138db6f886fdf))
+
+### Perf
+
+- *(read-stream)* Scoped local reads so a push-fed replica answers inside its freshness bound (#290) ([71b1020](https://github.com/scbrown/seeds/commit/71b10207a20689d1f1a3b20dd1f4424694cab5c4))
+
 ## [0.23.2] - 2026-11-18
 
 ### Perf

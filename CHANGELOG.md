@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.0] - 2026-11-20
+
+### Added
+
+- *(msg)* Messages expire after a configurable TTL, default 7 days (#293) ([b8feabf](https://github.com/scbrown/seeds/commit/b8feabf051b36545400c0b2d27cc2d8ebed76d2b))
+
+### Fixed
+
+- *(provenance)* Send the declared agent on signed reads, diagnostic only (#295) ([7bee62f](https://github.com/scbrown/seeds/commit/7bee62f30610137443791b0574d60308ec704f58))
+
 ## [0.23.3] - 2026-11-19
 
 ### Fixed

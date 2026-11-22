@@ -1,0 +1,12 @@
+Script started on 2026-11-22 16:56:07-05:00 [COMMAND=".work/overseer/ask_settlement_demo" <not executed on terminal>]
+Local in-memory store; synthetic native admission port (not crypto)
+Before: Ask=open, linked work=open, linked comments=0
+Without admitted port: Ask settlement has no admitted native answer reader; disabled
+After one atomic batch: Ask=closed revision=2, linked work=open revision=2, linked comments=1
+Operator ruling: Blue
+Verified actor: fixture-operator
+Recorded at: 2026-11-22T11:59:00Z
+Answer receipt: urn:quipu:attest:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Read-only recovery: same receipt, still one ruling, transaction unchanged
+
+Script done on 2026-11-22 16:56:08-05:00 [COMMAND_EXIT_CODE="0"]

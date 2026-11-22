@@ -431,6 +431,33 @@ fn merge_seed(base: Option<&Seed>, l: &Seed, r: &Seed, sides: Sides) -> (Seed, V
     );
     let m = Seed {
         id: l.id.clone(),
+        unblocks: pick(
+            "unblocks",
+            base.map(|b| &b.unblocks),
+            &l.unblocks,
+            &r.unblocks,
+            &mut c,
+            sides,
+            dbg,
+        ),
+        default: pick(
+            "default",
+            base.map(|b| &b.default),
+            &l.default,
+            &r.default,
+            &mut c,
+            sides,
+            dbg,
+        ),
+        expires_at: pick(
+            "expires_at",
+            base.map(|b| &b.expires_at),
+            &l.expires_at,
+            &r.expires_at,
+            &mut c,
+            sides,
+            dbg,
+        ),
         title: pick(
             "title",
             base.map(|b| &b.title),

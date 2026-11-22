@@ -2561,8 +2561,8 @@ impl Backend for RemoteBackend {
             let mut ids = BTreeSet::new();
             for chunk in subjects.chunks(10) {
                 let branches = chunk.iter().map(|s| format!(
-                    "{{ GRAPH <{}> {{ <{s}> <{}> \"open\" ; a <{}> ; <{}> ?id . FILTER NOT EXISTS {{ <{s}> <{}> \"ops\" }} FILTER NOT EXISTS {{ <{s}> <{}> ?blocker . ?blocker <{}> ?bs . <{s}> a <{}> . FILTER(?bs != \"closed\" && ?bs != \"tombstone\") }} }} }}",
-                    self.graph, term::status(), term::work_item(), term::identifier(), term::issue_type(),
+                    "{{ GRAPH <{}> {{ <{s}> <{}> \"open\" ; a <{}> ; <{}> ?id . FILTER NOT EXISTS {{ <{s}> <{}> \"ops\" }} FILTER NOT EXISTS {{ <{s}> <{}> \"ask\" }} FILTER NOT EXISTS {{ <{s}> <{}> ?blocker . ?blocker <{}> ?bs . <{s}> a <{}> . FILTER(?bs != \"closed\" && ?bs != \"tombstone\") }} }} }}",
+                    self.graph, term::status(), term::work_item(), term::identifier(), term::issue_type(), term::issue_type(),
                     term::blocked_on(), term::status(), term::work_item()
                 )).collect::<Vec<_>>().join(" UNION ");
                 let (rows, truncated) = self.select_marked(

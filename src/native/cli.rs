@@ -589,7 +589,7 @@ pub struct CreateArgs {
         "title", "title_flag", "issue_type", "priority", "description", "status", "defer",
         "description_file", "assignee", "owner", "labels", "parent", "deps", "workflow_run",
         "step", "visit", "acceptance_criteria", "external_ref", "due", "estimate", "slug",
-        "agent_context", "ephemeral",
+        "agent_context", "ephemeral", "unblocks", "default", "expires_at",
     ])]
     pub file: Option<String>,
     /// Title (positional form)
@@ -597,9 +597,18 @@ pub struct CreateArgs {
     /// Title (flag form)
     #[arg(long = "title", value_name = "TITLE")]
     pub title_flag: Option<String>,
-    /// task, bug, feature, epic, chore, docs, question or ops (default task)
+    /// task, bug, feature, epic, chore, docs, question, ask or ops (default task)
     #[arg(short = 't', long = "type")]
     pub issue_type: Option<String>,
+    /// Item or epic this Ask unblocks
+    #[arg(long)]
+    pub unblocks: Option<String>,
+    /// Declared fallback if the Ask is unanswered
+    #[arg(long)]
+    pub default: Option<String>,
+    /// Ask expiry: RFC 3339 instant (or relative time)
+    #[arg(long)]
+    pub expires_at: Option<String>,
     /// 0-4 or P0-P4 (default 2)
     #[arg(short, long)]
     pub priority: Option<String>,
@@ -975,7 +984,7 @@ pub struct QArgs {
     /// 0-4 or P0-P4 (default 2)
     #[arg(short, long)]
     pub priority: Option<String>,
-    /// task, bug, feature, epic, chore, docs, question or ops (default task)
+    /// task, bug, feature, epic, chore, docs, question, ask or ops (default task)
     #[arg(short = 't', long = "type")]
     pub issue_type: Option<String>,
     /// Labels (repeatable; comma-separated allowed)
@@ -1115,6 +1124,15 @@ pub struct UpdateArgs {
     /// New type
     #[arg(short = 't', long = "type")]
     pub issue_type: Option<String>,
+    /// Item or epic this Ask unblocks
+    #[arg(long)]
+    pub unblocks: Option<String>,
+    /// Declared fallback if the Ask is unanswered
+    #[arg(long)]
+    pub default: Option<String>,
+    /// Ask expiry: RFC 3339 instant (or relative time)
+    #[arg(long)]
+    pub expires_at: Option<String>,
     /// Replace ALL labels (repeatable; comma-separated allowed)
     #[arg(long, visible_alias = "labels")]
     pub set_labels: Vec<String>,

@@ -39,6 +39,12 @@ pub struct CreateReq {
     pub description: Option<String>,
     /// Type; `task` when absent.
     pub issue_type: Option<String>,
+    /// Linked work item for an Ask.
+    pub unblocks: Option<String>,
+    /// Fallback text for an unanswered Ask.
+    pub default: Option<String>,
+    /// Ask expiry (RFC 3339).
+    pub expires_at: Option<String>,
     /// Priority; 2 when absent.
     pub priority: Option<String>,
     /// Assignee.
@@ -136,6 +142,13 @@ fn new_seed(
             Some(d) => Some(parse_when(&d, &ctx.now, "--due")?),
             None => None,
         },
+        unblocks: non_empty(req.unblocks.as_deref()),
+        default: non_empty(req.default.as_deref()),
+        expires_at: req
+            .expires_at
+            .as_deref()
+            .map(|v| parse_when(v, &ctx.now, "--expires-at"))
+            .transpose()?,
         estimated_minutes: req.estimate.as_deref().map(parse_estimate).transpose()?,
         labels: clean_labels(&req.labels),
         created_at: ctx.now.clone(),
@@ -147,6 +160,9 @@ fn new_seed(
         ephemeral: req.ephemeral,
         ..Seed::default()
     };
+    if let Some(id) = &seed.unblocks {
+        snap.get(id)?;
+    }
     if seed.due_at.is_none() && !deadline_message(&seed) {
         if let Some(days) = req.due_priority_days {
             seed.due_at = Some(parse_when(
@@ -230,6 +246,7 @@ pub fn create_many(
     };
     let mut referenced = Vec::new();
     for item in items {
+        referenced.extend(item.req.unblocks.iter().cloned());
         if let Some(parent) = &item.req.parent {
             if local(parent)?.is_none() {
                 referenced.push(parent.clone());
@@ -492,6 +509,7 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
     };
     let mut referenced: Vec<String> = req.parent.iter().cloned().collect();
     referenced.extend(keyed.iter().cloned());
+    referenced.extend(req.unblocks.iter().cloned());
     for dependency in &req.deps {
         referenced.push(parse_dep_spec(dependency)?.1);
     }
@@ -1080,7 +1098,7 @@ pub fn list(b: &dyn Backend, req: &ListReq, at: Option<u64>) -> Result<Page> {
                     && (req.all || s.status != "closed")
                     && (req.all || req.deferred || s.status != "deferred"))
         })
-        .filter(|s| f.issue_type.is_some() || s.issue_type != "ops")
+        .filter(|s| f.issue_type.is_some() || s.is_board_work())
         .filter(|s| f.matches(s) && (!req.defer_until_present || s.defer_until.is_some()))
         .cloned()
         .collect();
@@ -1129,7 +1147,7 @@ pub(crate) fn list_matches_page(req: &ListReq, snap: &Snapshot) -> Result<Page> 
                     && (req.all || s.status != "closed")
                     && (req.all || req.deferred || s.status != "deferred"))
         })
-        .filter(|s| f.issue_type.is_some() || s.issue_type != "ops")
+        .filter(|s| f.issue_type.is_some() || s.is_board_work())
         .filter(|s| f.matches(s) && (!req.defer_until_present || s.defer_until.is_some()))
         .cloned()
         .collect::<Vec<_>>();
@@ -1437,7 +1455,7 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
     let seeds: Vec<&Seed> = snap
         .seeds
         .values()
-        .filter(|s| !s.is_tombstone() && s.issue_type != "ops")
+        .filter(|s| !s.is_tombstone() && s.is_board_work())
         .collect();
     let count = |st: &str| seeds.iter().filter(|s| s.status == st).count();
     let lead: Vec<f64> = seeds
@@ -2280,7 +2298,7 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
     let mut seeds: Vec<Seed> = ids
         .iter()
         .filter_map(|id| snap.seeds.get(id))
-        .filter(|s| s.issue_type != "ops")
+        .filter(|s| s.is_board_work())
         .filter(|s| req.include_deferred || !is_deferred(s, &ctx.now))
         .filter(|s| under.as_ref().is_none_or(|u| u.contains(&s.id)))
         .filter(|s| f.matches(s))
@@ -2367,7 +2385,7 @@ pub fn ready_by_model(snap: &Snapshot, now: &str) -> Vec<String> {
         .filter(|s| !is_deferred(s, now))
         // Ephemeral seeds are never ready (br); the SPARQL definition gets
         // this by reading only the project graph.
-        .filter(|s| !s.ephemeral && s.issue_type != "ops")
+        .filter(|s| !s.ephemeral && s.is_board_work())
         .map(|s| s.id.clone())
         .collect()
 }
@@ -2430,6 +2448,7 @@ pub fn count(b: &dyn Backend, req: &CountReq, at: Option<u64>) -> Result<Count> 
             f.status.is_some()
                 || (!s.is_tombstone() && (req.include_closed || s.status != "closed"))
         })
+        .filter(|s| f.issue_type.is_some() || s.is_board_work())
         .filter(|s| f.matches(s))
         .collect();
     let groups = match req.by.as_deref() {
@@ -2530,6 +2549,12 @@ pub struct UpdateReq {
     pub transition_comment: Option<String>,
     /// New type.
     pub issue_type: Option<String>,
+    /// Replace Ask metadata; empty clears the field.
+    pub unblocks: Option<String>,
+    /// Declared fallback text.
+    pub default: Option<String>,
+    /// Decision deadline.
+    pub expires_at: Option<String>,
     /// Replace all labels with these (comma-separated allowed).
     pub set_labels: Option<Vec<String>>,
     /// New parent; empty detaches the seed.
@@ -2562,6 +2587,9 @@ fn revision_conflict(current: &Seed, expected: u64, req: &UpdateReq) -> SdError 
         ("lane", &req.lane),
         ("estimated_minutes", &req.estimate),
         ("parent", &req.parent),
+        ("unblocks", &req.unblocks),
+        ("default", &req.default),
+        ("expires_at", &req.expires_at),
     ] {
         let Some(proposed) = proposed else { continue };
         let value = &current_json[name];
@@ -2879,6 +2907,20 @@ pub fn update(
         if let Some(t) = &issue_type {
             s.issue_type = t.clone();
         }
+        if let Some(id) = &req.unblocks {
+            s.unblocks = non_empty(Some(id.trim()));
+            if let Some(id) = &s.unblocks {
+                b.snapshot_seeds(std::slice::from_ref(id))?.get(id)?;
+            }
+        }
+        if let Some(value) = &req.default {
+            s.default = non_empty(Some(value));
+        }
+        if let Some(value) = &req.expires_at {
+            s.expires_at = non_empty(Some(value))
+                .map(|v| parse_when(&v, &ctx.now, "--expires-at"))
+                .transpose()?;
+        }
         if let Some(set) = &req.set_labels {
             s.labels = clean_labels(set);
         }
@@ -2979,7 +3021,7 @@ pub fn update(
 
 /// Whether a seed occupies a lane slot: live (not closed, not a tombstone).
 fn occupies_lane(s: &Seed) -> bool {
-    s.status != "closed" && !s.is_tombstone()
+    s.status != "closed" && !s.is_tombstone() && s.is_board_work()
 }
 
 /// Refuse writes that would put more live items into a capped lane than its

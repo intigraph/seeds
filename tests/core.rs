@@ -5781,3 +5781,120 @@ fn ops_records_are_visible_explicitly_but_never_backlog_or_ready_work() {
     .unwrap();
     assert_eq!(explicit.issues[0].status, "closed");
 }
+
+#[test]
+fn overseer_ask_roundtrips_but_never_enters_the_board() {
+    let mut b = backend();
+    let work = mk(&mut b, "Implement the selected option", 1);
+    let (ask, _) = engine::create(
+        &mut b,
+        &ctx(2),
+        &CreateReq {
+            title: "Which option?".into(),
+            issue_type: Some("ask".into()),
+            assignee: Some("worker".into()),
+            unblocks: Some(work.clone()),
+            default: Some("Keep the current option".into()),
+            expires_at: Some("2026-10-01T12:00:00Z".into()),
+            ..CreateReq::default()
+        },
+    )
+    .unwrap();
+    let read = b.snapshot(None).unwrap().get(&ask.id).unwrap().clone();
+    assert_eq!(read.unblocks.as_deref(), Some(work.as_str()));
+    assert_eq!(read.default, ask.default);
+    assert_eq!(read.expires_at, ask.expires_at);
+    assert_eq!(
+        engine::list(&b, &ListReq::default(), None)
+            .unwrap()
+            .issues
+            .len(),
+        1
+    );
+    assert_eq!(
+        engine::count(&b, &CountReq::default(), None).unwrap().total,
+        1
+    );
+    assert!(!engine::ready(&b, &ctx(3), &ReadyReq::default(), None)
+        .unwrap()
+        .issues
+        .iter()
+        .any(|s| s.id == ask.id));
+    assert_eq!(
+        engine::count(
+            &b,
+            &CountReq {
+                filter: Filter {
+                    issue_type: Some("ask".into()),
+                    ..Filter::default()
+                },
+                ..CountReq::default()
+            },
+            None
+        )
+        .unwrap()
+        .total,
+        1
+    );
+    assert_eq!(
+        engine::stats(&b, &ctx(3), engine::StatsReq::default(), None)
+            .unwrap()
+            .total,
+        1
+    );
+    let asks = engine::list(
+        &b,
+        &ListReq {
+            filter: Filter {
+                issue_type: Some("ask".into()),
+                ..Filter::default()
+            },
+            ..ListReq::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(asks.issues, vec![read]);
+    let changed = engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&ask.id),
+        &UpdateReq {
+            default: Some("Wait for the next cycle".into()),
+            expires_at: Some("2026-10-02T12:00:00Z".into()),
+            ..UpdateReq::default()
+        },
+    )
+    .unwrap()
+    .0;
+    assert_eq!(
+        changed[0].default.as_deref(),
+        Some("Wait for the next cycle")
+    );
+    assert!(engine::update(
+        &mut b,
+        &ctx(5),
+        &[ask.id],
+        &UpdateReq {
+            unblocks: Some("missing-1".into()),
+            ..UpdateReq::default()
+        }
+    )
+    .is_err());
+}
+
+#[test]
+fn overseer_ask_requires_complete_valid_metadata() {
+    let mut b = backend();
+    assert!(engine::create(
+        &mut b,
+        &ctx(1),
+        &CreateReq {
+            title: "Which option?".into(),
+            issue_type: Some("ask".into()),
+            ..CreateReq::default()
+        }
+    )
+    .is_err());
+    assert!(b.snapshot(None).unwrap().seeds.is_empty());
+}

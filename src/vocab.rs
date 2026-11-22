@@ -161,6 +161,18 @@ pub mod term {
     pub fn lane() -> String {
         seeds("lane")
     }
+    /// The work item an Ask unblocks.
+    pub fn unblocks() -> String {
+        seeds("unblocks")
+    }
+    /// The Ask's declared fallback text.
+    pub fn ask_default() -> String {
+        seeds("askDefault")
+    }
+    /// Ask expiry (xsd:dateTime).
+    pub fn expires_at() -> String {
+        seeds("expiresAt")
+    }
     /// `ical:due`: when the work is due (br's `due_at`), an `xsd:date` or an
     /// `xsd:dateTime`.
     pub fn due_at() -> String {
@@ -312,6 +324,7 @@ pub fn ready_query(graph_iri: &str) -> String {
          \x20 ?item seeds:status \"open\" .\n\
          \x20 ?item a schema:Action ; schema:identifier ?id .\n\
          \x20 FILTER NOT EXISTS {{ ?item seeds:issueType \"ops\" }}\n\
+         \x20 FILTER NOT EXISTS {{ ?item seeds:issueType \"ask\" }}\n\
          \x20 FILTER NOT EXISTS {{ ?item quechua:blockedOn ?blocker . ?blocker seeds:status ?bs . ?item a schema:Action . FILTER(?bs != \"closed\" && ?bs != \"tombstone\") }}\n\
          }} }}"
     )

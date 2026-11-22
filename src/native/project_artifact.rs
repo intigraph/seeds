@@ -9,11 +9,11 @@ use quipu::project_graph as project;
 
 use super::{cli::Cli, config, store, Outcome};
 
-// Explicit recipient policy pin: this profile is unchanged from the published
-// Seeds release, not a policy selected by the incoming share.
+// Explicit recipient policy pin, including Ask metadata constraints. This is
+// selected by the local executable, never by an incoming share.
 const PROFILE_SHA256: &str =
-    "sha256:b1b3bf0846298e437da15f89d3fc599ee41663f9258c3d40b03f033804d6a04f";
-const PROFILE_REF: &str = "seeds-ai-v0.22.1@30e17964c5a9f82b25e61614ed3fa71ada321901";
+    "sha256:7a76ec6a35ca9bb630c9940e2b2fed7e27546662b11e31643950d9373ecb01bc";
+const PROFILE_REF: &str = "seeds-overseer-asks-v1 (shapes/seeds.shapes.ttl)";
 
 fn require_profile(b: &QuipuBackend) -> Result<()> {
     if b.store()

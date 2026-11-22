@@ -93,3 +93,26 @@ transaction lookup) retry at 1, 2, 4 and 8 seconds (five attempts maximum).
 Experimental acquisition keeps its separate whole-operation deadline.
 Writes are never automatically replayed: an uncertain write is reconciled
 by exact read-back, preserving the existing UNKNOWN/conflict contract.
+
+## Overseer Asks
+
+An `ask` is a decision requested from the operator, separate from executable
+board work. It must name the existing item or epic it unblocks, its declared
+fallback and an expiry instant:
+
+```sh
+sd create "Which option should we use?" --type ask --unblocks sd-abc \
+  --default "Keep the current option" --expires-at 2026-12-01T12:00:00Z
+sd list --type ask
+```
+
+`unblocks`, `default` and `expires_at` round-trip in JSON and the ledger. The
+first is a link to an existing item; the expiry is an `xsd:dateTime`. Update
+these with `sd update` using the same flags. Missing metadata or an unknown
+linked item refuses the write. An expiry is a deadline, not authority to run
+the fallback automatically.
+
+Asks are absent from default lists, counts, statistics, lane capacity and
+`ready`, including lapsed deferred Asks. `list --type ask` and `count --type ask`
+select them explicitly; exact `show` still reads them. The older `question`
+type remains ordinary work and is not silently migrated.

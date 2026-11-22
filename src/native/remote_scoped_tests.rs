@@ -82,7 +82,7 @@ fn corpus() -> (Snapshot, Vec<String>) {
         let (s, _) = engine::create(b, &c, &req).unwrap();
         s.id
     };
-    let types = ["task", "bug", "feature", "chore", "docs"];
+    let types = ["task", "bug", "feature", "chore", "docs", "ops"];
     let people = ["ian", "ellie", "alan"];
     let mut all = Vec::new();
     for n in 0..60 {
@@ -1163,6 +1163,7 @@ fn owner_ready_requests_do_not_grow_with_closed_history() {
             format!("<{}>", vocab::principal_iri(owner)),
         ),
         ("open-literal", "open", format!("\"{owner}\"")),
+        ("open-ops", "open", format!("\"{owner}\"")),
         ("deferred", "deferred", format!("\"{owner}\"")),
         ("blocked", "blocked", format!("\"{owner}\"")),
         ("unknown", "unexpected", format!("\"{owner}\"")),
@@ -1184,6 +1185,11 @@ fn owner_ready_requests_do_not_grow_with_closed_history() {
         vocab::item_iri("open-blocked"),
         term::blocked_on(),
         vocab::item_iri("blocked")
+    );
+    triples += &format!(
+        "<{}> <{}> \"ops\" .",
+        vocab::item_iri("open-ops"),
+        term::issue_type()
     );
     // Missing status is not open; an unrelated graph cannot turn a local
     // blocker into a closed one or donate another owner's ready seed.

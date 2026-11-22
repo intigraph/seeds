@@ -1080,6 +1080,7 @@ pub fn list(b: &dyn Backend, req: &ListReq, at: Option<u64>) -> Result<Page> {
                     && (req.all || s.status != "closed")
                     && (req.all || req.deferred || s.status != "deferred"))
         })
+        .filter(|s| f.issue_type.is_some() || s.issue_type != "ops")
         .filter(|s| f.matches(s) && (!req.defer_until_present || s.defer_until.is_some()))
         .cloned()
         .collect();
@@ -1128,6 +1129,7 @@ pub(crate) fn list_matches_page(req: &ListReq, snap: &Snapshot) -> Result<Page> 
                     && (req.all || s.status != "closed")
                     && (req.all || req.deferred || s.status != "deferred"))
         })
+        .filter(|s| f.issue_type.is_some() || s.issue_type != "ops")
         .filter(|s| f.matches(s) && (!req.defer_until_present || s.defer_until.is_some()))
         .cloned()
         .collect::<Vec<_>>();
@@ -1377,8 +1379,10 @@ pub struct Activity {
 /// `sd stats`: br's summary counts and optional breakdowns.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stats {
-    /// Every seed.
+    /// Work seeds (operations records are counted separately).
     pub total: usize,
+    /// Non-tombstoned operations records, in any status.
+    pub ops: usize,
     /// Seeds by status.
     pub open: usize,
     /// In progress.
@@ -1425,7 +1429,16 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
     }
     let snap = b.snapshot(at)?;
     let tombstones = snap.seeds.values().filter(|s| s.is_tombstone()).count();
-    let seeds: Vec<&Seed> = snap.seeds.values().filter(|s| !s.is_tombstone()).collect();
+    let ops = snap
+        .seeds
+        .values()
+        .filter(|s| !s.is_tombstone() && s.issue_type == "ops")
+        .count();
+    let seeds: Vec<&Seed> = snap
+        .seeds
+        .values()
+        .filter(|s| !s.is_tombstone() && s.issue_type != "ops")
+        .collect();
     let count = |st: &str| seeds.iter().filter(|s| s.status == st).count();
     let lead: Vec<f64> = seeds
         .iter()
@@ -1482,6 +1495,7 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
     }
     Ok(Stats {
         total: seeds.len(),
+        ops,
         open: count("open"),
         in_progress: count("in_progress"),
         closed: count("closed"),
@@ -2266,6 +2280,7 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
     let mut seeds: Vec<Seed> = ids
         .iter()
         .filter_map(|id| snap.seeds.get(id))
+        .filter(|s| s.issue_type != "ops")
         .filter(|s| req.include_deferred || !is_deferred(s, &ctx.now))
         .filter(|s| under.as_ref().is_none_or(|u| u.contains(&s.id)))
         .filter(|s| f.matches(s))
@@ -2352,7 +2367,7 @@ pub fn ready_by_model(snap: &Snapshot, now: &str) -> Vec<String> {
         .filter(|s| !is_deferred(s, now))
         // Ephemeral seeds are never ready (br); the SPARQL definition gets
         // this by reading only the project graph.
-        .filter(|s| !s.ephemeral)
+        .filter(|s| !s.ephemeral && s.issue_type != "ops")
         .map(|s| s.id.clone())
         .collect()
 }

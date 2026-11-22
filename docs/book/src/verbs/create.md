@@ -11,7 +11,7 @@ sd create "Blocked work" --deps sd-a3f,related:sd-b7c
 | flag | meaning |
 |---|---|
 | `TITLE` / `--title` | the title (one of the two, not both) |
-| `-t, --type` | `task` (default), `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
+| `-t, --type` | `task` (default), `bug`, `feature`, `epic`, `chore`, `docs`, `question`, `ops` |
 | `-p, --priority` | `0`-`4` or `P0`-`P4` (default 2) |
 | `-d, --description` / `--description-file PATH` | the description |
 | `-a, --assignee` | assignee |

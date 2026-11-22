@@ -1,6 +1,9 @@
 # sd stats
 
-Summary counts for the whole ledger, with optional breakdowns.
+Work counts for the live ledger, with optional breakdowns. Operations records
+(`ops`) are counted separately as `summary.ops_issues` (all non-tombstoned
+statuses). They do not contribute to work totals, status counts, ready work,
+breakdowns, activity or mean lead time.
 
 ```bash
 sd stats
@@ -11,7 +14,7 @@ sd stats --by-type --by-priority --by-assignee --by-label --json
   as br does, not the dependency graph), what `ready` would list now, open
   epics whose children are all closed, and the mean hours from creation to
   close over closed seeds.
-- **Breakdowns** count every seed, closed included, as br does: by type,
+- **Breakdowns** count every work seed, closed included, as br does: by type,
   priority (`P0`..`P4`), assignee (`(unassigned)`) and label (`(no labels)`).
 - seeds has no drafts, tombstones or pins, so those counts are always 0.
   br's activity flags are not implemented: br's `--json` does not report

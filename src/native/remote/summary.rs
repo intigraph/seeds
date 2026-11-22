@@ -132,7 +132,12 @@ impl RemoteBackend {
         sort: Option<&str>,
         defer_until_present: bool,
     ) -> Vec<String> {
-        let mut predicates = vec![vocab::RDF_TYPE.into(), term::identifier(), term::status()];
+        let mut predicates = vec![
+            vocab::RDF_TYPE.into(),
+            term::identifier(),
+            term::status(),
+            term::issue_type(),
+        ];
         if defer_until_present {
             predicates.push(term::defer_until());
         }
@@ -161,9 +166,6 @@ impl RemoteBackend {
         }
         if !filter.labels.is_empty() || !filter.labels_any.is_empty() {
             predicates.push(term::label());
-        }
-        if filter.issue_type.is_some() {
-            predicates.push(term::issue_type());
         }
         if filter.parent.is_some() {
             predicates.push(term::child_of());
@@ -801,7 +803,14 @@ impl RemoteBackend {
     }
 
     pub(super) fn stats_summary(&self, ctx: &Ctx, req: StatsReq) -> Result<Stats> {
-        let statuses = self.grouped(&self.effective_normalized(&self.status_fields()), "status")?;
+        let work = format!(
+            " FILTER NOT EXISTS {{ ?s <{}> \"ops\" }}",
+            term::issue_type()
+        );
+        let statuses = self.grouped(
+            &self.effective_normalized(&(self.status_fields() + &work)),
+            "status",
+        )?;
         let count = |status: &str| {
             statuses
                 .iter()
@@ -819,10 +828,22 @@ impl RemoteBackend {
             closed: count("closed"),
             blocked: count("blocked"),
             deferred: count("deferred"),
-            tombstones: count(crate::model::TOMBSTONE),
+            tombstones: self.aggregate_number(&format!(
+                "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
+                self.effective_normalized(
+                    &(self.status_fields() + " FILTER(?status = \"tombstone\")")
+                )
+            ))?,
             ..Stats::default()
         };
-        let active = self.status_fields() + " FILTER(?status != \"tombstone\")";
+        let live = self.status_fields() + " FILTER(?status != \"tombstone\")";
+        stats.ops = self.aggregate_number(&format!(
+            "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
+            self.effective_normalized(
+                &(live.clone() + &format!(" ?s <{}> \"ops\" .", term::issue_type()))
+            )
+        ))?;
+        let active = live + &work;
         for (wanted, by) in [
             (req.by_type, "type"),
             (req.by_priority, "priority"),
@@ -847,7 +868,7 @@ impl RemoteBackend {
             epoch_expression("?created")
         );
         let pattern = format!(
-            "?s <{}> \"closed\" ; a <{}> ; <{}> ?id ; <{}> ?created ; <{}> ?closed .",
+            "?s <{}> \"closed\" ; a <{}> ; <{}> ?id ; <{}> ?created ; <{}> ?closed . {work}",
             term::status(),
             term::work_item(),
             term::identifier(),
@@ -904,7 +925,11 @@ impl RemoteBackend {
             return Err(SdError::failed("cannot construct the ready aggregate"));
         }
         stats.ready = self.aggregate_number(&ready)?;
-        let fields = format!("?s <{}> \"epic\" . {active} FILTER(?status != \"closed\") FILTER EXISTS {{ ?child <{}> ?s ; <{}> \"closed\" . ?s a <{}> }} FILTER NOT EXISTS {{ ?child <{}> ?s . FILTER NOT EXISTS {{ ?child <{}> \"closed\" }} FILTER NOT EXISTS {{ ?child <{}> \"tombstone\" }} }}", term::issue_type(), term::child_of(), term::status(), term::work_item(),term::child_of(), term::status(),term::status());
+        let work_child = format!(
+            " FILTER NOT EXISTS {{ ?child <{}> \"ops\" }}",
+            term::issue_type()
+        );
+        let fields = format!("?s <{}> \"epic\" . {active} FILTER(?status != \"closed\") FILTER EXISTS {{ ?child <{}> ?s ; <{}> \"closed\" . ?s a <{}> . {work_child} }} FILTER NOT EXISTS {{ ?child <{}> ?s . {work_child} FILTER NOT EXISTS {{ ?child <{}> \"closed\" }} FILTER NOT EXISTS {{ ?child <{}> \"tombstone\" }} }}", term::issue_type(), term::child_of(), term::status(), term::work_item(),term::child_of(), term::status(),term::status());
         stats.epics_eligible_for_closure = self.aggregate_number(&format!(
             "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
             self.effective_normalized(&fields)

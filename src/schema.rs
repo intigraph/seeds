@@ -214,6 +214,7 @@ pub fn target(name: &str) -> Option<Json> {
         "statistics" => {
             let ints = [
                 "total_issues",
+                "ops_issues",
                 "open_issues",
                 "in_progress_issues",
                 "closed_issues",

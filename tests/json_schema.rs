@@ -362,10 +362,9 @@ fn real_output_conforms_to_the_published_schemas() {
     for row in st.json(&["ready"]).as_array().unwrap() {
         check(row, "ready-issue");
     }
-    check(
-        &st.json(&["stats", "--by-type", "--by-label"]),
-        "statistics",
-    );
+    let stats = st.json(&["stats", "--by-type", "--by-label"]);
+    check(&stats, "statistics");
+    assert_eq!(stats["summary"]["ops_issues"], 0);
     check(
         &strip_tx(st.json(&["comments", "add", &a, "again"])),
         "comment",

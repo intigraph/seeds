@@ -1,0 +1,4 @@
+before: create --type ops exit=2
+after: create --type ops exit=0
+after: backlog=1; ready=1; explicit operations=1; work total=1; ops total=1
+after: direct show and normal close succeed

@@ -311,6 +311,7 @@ pub fn ready_query(graph_iri: &str) -> String {
          SELECT ?id WHERE {{ GRAPH <{graph_iri}> {{\n\
          \x20 ?item seeds:status \"open\" .\n\
          \x20 ?item a schema:Action ; schema:identifier ?id .\n\
+         \x20 FILTER NOT EXISTS {{ ?item seeds:issueType \"ops\" }}\n\
          \x20 FILTER NOT EXISTS {{ ?item quechua:blockedOn ?blocker . ?blocker seeds:status ?bs . ?item a schema:Action . FILTER(?bs != \"closed\" && ?bs != \"tombstone\") }}\n\
          }} }}"
     )

@@ -597,7 +597,7 @@ pub struct CreateArgs {
     /// Title (flag form)
     #[arg(long = "title", value_name = "TITLE")]
     pub title_flag: Option<String>,
-    /// task, bug, feature, epic, chore, docs or question (default task)
+    /// task, bug, feature, epic, chore, docs, question or ops (default task)
     #[arg(short = 't', long = "type")]
     pub issue_type: Option<String>,
     /// 0-4 or P0-P4 (default 2)
@@ -975,7 +975,7 @@ pub struct QArgs {
     /// 0-4 or P0-P4 (default 2)
     #[arg(short, long)]
     pub priority: Option<String>,
-    /// task, bug, feature, epic, chore, docs or question (default task)
+    /// task, bug, feature, epic, chore, docs, question or ops (default task)
     #[arg(short = 't', long = "type")]
     pub issue_type: Option<String>,
     /// Labels (repeatable; comma-separated allowed)

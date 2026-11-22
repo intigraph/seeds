@@ -25,7 +25,7 @@ pub const STATUSES: &[&str] = &[
 pub const TOMBSTONE: &str = "tombstone";
 /// Types a seed can have (br's set).
 pub const TYPES: &[&str] = &[
-    "task", "bug", "feature", "epic", "chore", "docs", "question", "ops",
+    "task", "bug", "feature", "epic", "chore", "docs", "question", "ops", "ask",
 ];
 /// Dependency types `dep add --type` accepts. Only `blocks` affects `ready`.
 pub const DEP_TYPES: &[&str] = &["blocks", "related", "parent-child", "discovered-from"];
@@ -148,6 +148,12 @@ pub struct Seed {
     pub rank: Option<String>,
     /// Work lane: `now`, `next` or `later` ([`LANES`]); absent = unassigned.
     pub lane: Option<String>,
+    /// Item or epic awaiting this overseer decision (id).
+    pub unblocks: Option<String>,
+    /// Declared fallback; expiry does not automatically execute it.
+    pub default: Option<String>,
+    /// Decision deadline, an RFC 3339 instant.
+    pub expires_at: Option<String>,
     /// A time estimate in minutes (br's `estimated_minutes`).
     pub estimated_minutes: Option<u32>,
     /// Who owns the work (br's `owner`, usually an email); distinct from the
@@ -293,6 +299,11 @@ impl Obj {
 pub type Fact = (String, Obj);
 
 impl Seed {
+    /// Whether this seed belongs in crew work queues and board totals.
+    pub fn is_board_work(&self) -> bool {
+        !matches!(self.issue_type.as_str(), "ops" | "ask")
+    }
+
     /// Whether `sd delete` tombstoned this seed.
     pub fn is_tombstone(&self) -> bool {
         self.status == TOMBSTONE
@@ -338,6 +349,13 @@ impl Seed {
         opt(&mut f, term::external_ref(), &self.external_ref);
         opt(&mut f, term::rank(), &self.rank);
         opt(&mut f, term::lane(), &self.lane);
+        if let Some(id) = &self.unblocks {
+            f.push((term::unblocks(), Obj::Iri(vocab::item_iri(id))));
+        }
+        opt(&mut f, term::ask_default(), &self.default);
+        if let Some(expiry) = &self.expires_at {
+            f.push((term::expires_at(), date_time(expiry)));
+        }
         if let Some(d) = &self.due_at {
             f.push((term::due_at(), date_or_date_time(d)));
         }
@@ -428,6 +446,9 @@ impl Seed {
                 due_at: some("2026-01-01"),
                 rank: some("1"),
                 lane: some("next"),
+                unblocks: some("y"),
+                default: some("Wait"),
+                expires_at: some("2026-01-01T00:00:00Z"),
                 estimated_minutes: Some(30),
                 owner: some("o"),
                 status: "closed".into(),
@@ -544,6 +565,9 @@ impl Seed {
             due_at: t(term::due_at()),
             rank: s(term::rank()),
             lane: s(term::lane()),
+            unblocks: ids(term::unblocks()).into_iter().next(),
+            default: s(term::ask_default()),
+            expires_at: t(term::expires_at()),
             estimated_minutes: t(term::estimated_minutes())
                 .as_deref()
                 .and_then(parse_minutes_duration),
@@ -590,6 +614,14 @@ impl Seed {
     /// ([`canonical_time`]).
     pub fn time_problems(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if self.issue_type == "ask"
+            && (self.unblocks.is_none() || self.default.is_none() || self.expires_at.is_none())
+        {
+            out.push(format!(
+                "{}: ask requires unblocks, default and expires_at",
+                self.id
+            ));
+        }
         if let Some(rank) = &self.rank {
             if crate::rank::parse(rank).is_err() {
                 out.push(format!("{}: invalid rank", self.id));
@@ -615,6 +647,7 @@ impl Seed {
                 }
             }
         };
+        check("expires_at", self.expires_at.as_deref(), false);
         check("created_at", Some(&self.created_at), false);
         check("updated_at", Some(&self.updated_at), false);
         check("closed_at", self.closed_at.as_deref(), false);
@@ -799,6 +832,9 @@ impl Seed {
             "due_at": self.due_at,
             "rank": self.rank,
             "lane": self.lane,
+            "unblocks": self.unblocks,
+            "default": self.default,
+            "expires_at": self.expires_at,
             "estimated_minutes": self.estimated_minutes,
             "owner": self.owner,
             "status": self.status,

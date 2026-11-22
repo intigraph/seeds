@@ -655,6 +655,15 @@ impl RemoteBackend {
                 literal(&crate::model::parse_type(kind)?)
             );
         }
+        if f.issue_type.is_none() {
+            for kind in ["ops", "ask"] {
+                fields += &format!(
+                    " FILTER NOT EXISTS {{ ?s <{}> {} }}",
+                    term::issue_type(),
+                    literal(kind)
+                );
+            }
+        }
         if (f.assignee.is_some() || f.unassigned) && !driven_assignee {
             fields += &format!(
                 " OPTIONAL {{ ?s <{}> ?assignee . FILTER({}) }}",
@@ -804,7 +813,8 @@ impl RemoteBackend {
 
     pub(super) fn stats_summary(&self, ctx: &Ctx, req: StatsReq) -> Result<Stats> {
         let work = format!(
-            " FILTER NOT EXISTS {{ ?s <{}> \"ops\" }}",
+            " FILTER NOT EXISTS {{ ?s <{}> \"ops\" }} FILTER NOT EXISTS {{ ?s <{}> \"ask\" }}",
+            term::issue_type(),
             term::issue_type()
         );
         let statuses = self.grouped(
@@ -926,8 +936,8 @@ impl RemoteBackend {
         }
         stats.ready = self.aggregate_number(&ready)?;
         let work_child = format!(
-            " FILTER NOT EXISTS {{ ?child <{}> \"ops\" }}",
-            term::issue_type()
+            " FILTER NOT EXISTS {{ ?child <{}> \"ops\" }} FILTER NOT EXISTS {{ ?child <{}> \"ask\" }}",
+            term::issue_type(), term::issue_type()
         );
         let fields = format!("?s <{}> \"epic\" . {active} FILTER(?status != \"closed\") FILTER EXISTS {{ ?child <{}> ?s ; <{}> \"closed\" . ?s a <{}> . {work_child} }} FILTER NOT EXISTS {{ ?child <{}> ?s . {work_child} FILTER NOT EXISTS {{ ?child <{}> \"closed\" }} FILTER NOT EXISTS {{ ?child <{}> \"tombstone\" }} }}", term::issue_type(), term::child_of(), term::status(), term::work_item(),term::child_of(), term::status(),term::status());
         stats.epics_eligible_for_closure = self.aggregate_number(&format!(

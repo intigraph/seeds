@@ -1,0 +1,7 @@
+before: create --type ask with unblocks/default/expires-at: exit 2
+before: Ask input is unsupported
+after: create --type ask with unblocks/default/expires-at: exit 0
+after: board list=1; board count=1; ready=1; explicit Ask list=1
+after: exact Ask read retains linked item, fallback and expiry
+after: Ask closes through the ordinary lifecycle; linked work remains ready
+

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.0] - 2026-11-22
+
+### Added
+
+- Separate operations records from actionable work (#296) ([6495026](https://github.com/scbrown/seeds/commit/6495026d1fec30b067846a4143887e19a4c8b74d))
+
 ## [0.24.0] - 2026-11-20
 
 ### Added

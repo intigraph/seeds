@@ -118,7 +118,9 @@ pub(super) fn evaluate(
     }
     let ctx = quipu::sparql::TemporalContext {
         as_of_tx: Some(i64::try_from(tx).map_err(|_| unknown("local cut out of range"))?),
-        deadline: Some(quipu::time::Deadline::after_millis(1000)),
+        deadline: Some(quipu::time::Deadline::after_millis(
+            super::QUERY_DEADLINE_MS,
+        )),
         row_cap: Some(10_000),
         ..Default::default()
     };

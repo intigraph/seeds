@@ -27,6 +27,7 @@
 //! assert_eq!(ready.issues.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), vec![blocker.id]);
 //! ```
 
+pub mod ask_settlement;
 pub mod backend;
 pub mod beads;
 pub mod blockers;

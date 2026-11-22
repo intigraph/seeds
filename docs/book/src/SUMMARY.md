@@ -17,6 +17,7 @@
   - [Cutover JSONL exchange](verbs/cutover.md)
   - [init](verbs/init.md)
   - [create](verbs/create.md)
+  - [Atomic Ask settlement (library)](ask-settlement.md)
   - [show](verbs/show.md)
   - [list](verbs/list.md)
   - [ready](verbs/ready.md)

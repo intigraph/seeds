@@ -60,7 +60,7 @@
       "source": "src/lib.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Flib.rs",
       "summary": "The Rust library exposes the work-item model and backend abstraction independently of native process, file, clock and network integration.",
-      "source_sha256": "2feb98a528f24a092825a25d1470684a2dbe12365f3eefff6ac2cd7f8cc4386d",
+      "source_sha256": "b7d627e86a9d9ed2b25062177b84916a18c62991528032bc732e751f0c4adecd",
       "properties": {
         "interfaceKind": "library",
         "publicName": "seeds Rust core"

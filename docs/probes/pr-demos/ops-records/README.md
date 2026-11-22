@@ -19,10 +19,10 @@ Candidate: this PR's source head (including the owner-readiness exclusion).
 The binaries are copied into a private verification directory before recording;
 the candidate is a source build, not an installed release.
 
-Download `output.log` and `timing.log` together and replay with:
+Download `output.typescript` and `timing.txt` together and replay with:
 
 ```sh
-scriptreplay --log-out output.log --log-timing timing.log
+scriptreplay --log-out output.typescript --log-timing timing.txt
 ```
 
 These small terminal artifacts are retained alongside the reproducer in Git.

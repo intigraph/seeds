@@ -1,5 +1,5 @@
 {
-  "source_revision": "b6d27c3e945ea55d004a296f65f6479b343e3738",
+  "source_revision": "31df1981c9f84475906c63984786a479732b599a",
   "reviewed_at": "2026-10-21T00:08:22.968352Z",
   "max_age_seconds": 2592000,
   "records": [
@@ -24,7 +24,7 @@
       "source": "src/native/cli.rs",
       "subject": "http://aegis.gastown.local/ontology/code/seeds/src%2Fnative%2Fcli.rs",
       "summary": "The sd CLI provides beads-compatible work-item verbs and JSON contracts; native argument parsing selects storage without changing the wasm-clean core.",
-      "source_sha256": "27dc3dcf3200d10d070dbf70391fa28a1561a8e0b9f97dedf577442a16d7b388",
+      "source_sha256": "4aa0b4fcde1cc92ba942cc818aba9f0254f006f817423f3f9afe383265cbc2f3",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "sd"
@@ -71,7 +71,7 @@
       "source": "docs/book/src/storage.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Fstorage.md",
       "summary": "One project is one named graph. A work item is a schema.org Action; public vocabulary and Quechua governance terms are preferred over tracker-specific terms.",
-      "source_sha256": "9156f7c953daca5d4c954c262d3cd022c3641e13ada6d064cc6a5b006218da13",
+      "source_sha256": "0c67f32a4653d808dc17ade695af19dbb16313201c04d6110e7040cfbef105ce",
       "type": "DecisionRecord",
       "properties": {
         "status": "active",

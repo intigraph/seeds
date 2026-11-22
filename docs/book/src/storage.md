@@ -86,7 +86,7 @@ These are vocabulary names, not hosts anyone contacts.
 | public status | `schema:actionStatus` | DERIVED in the same write: `open`/`hooked`/`blocked`/`deferred` are `schema:PotentialActionStatus`, `in_progress` is `ActiveActionStatus`, `closed` with outcome `done` is `CompletedActionStatus`, `closed` with `abandoned`/`superseded`/`failed` is `FailedActionStatus`, a tombstone has none |
 | compare-and-set token | `schema:version` | integer, 1 at create, +1 per write |
 | priority | `seeds:priority` | integer 0-4 |
-| type | `seeds:issueType` | `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
+| type | `seeds:issueType` | `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`, `ops` |
 | assignee | `schema:agent` | principal IRI `https://seeds.local/principal/<name>` |
 | creator, owner | `schema:creator`, `schema:accountablePerson` | principal IRI |
 | labels | `schema:keywords` | one fact per label |

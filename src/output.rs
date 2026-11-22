@@ -145,6 +145,7 @@ pub fn with_tx(mut value: Json, tx: Option<u64>) -> Json {
 pub fn stats_json(st: &Stats) -> Json {
     let mut o = json!({"summary": {
         "total_issues": st.total,
+        "ops_issues": st.ops,
         "open_issues": st.open,
         "in_progress_issues": st.in_progress,
         "closed_issues": st.closed,
@@ -188,6 +189,7 @@ pub fn stats_json(st: &Stats) -> Json {
 pub fn stats_text(st: &Stats) -> String {
     let mut lines = vec![
         format!("total {}", st.total),
+        format!("  operations records {} (not counted as work)", st.ops),
         format!(
             "  open {} · in progress {} · blocked {} · deferred {} · closed {}",
             st.open, st.in_progress, st.blocked, st.deferred, st.closed

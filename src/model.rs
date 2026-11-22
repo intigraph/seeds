@@ -25,7 +25,7 @@ pub const STATUSES: &[&str] = &[
 pub const TOMBSTONE: &str = "tombstone";
 /// Types a seed can have (br's set).
 pub const TYPES: &[&str] = &[
-    "task", "bug", "feature", "epic", "chore", "docs", "question",
+    "task", "bug", "feature", "epic", "chore", "docs", "question", "ops",
 ];
 /// Dependency types `dep add --type` accepts. Only `blocks` affects `ready`.
 pub const DEP_TYPES: &[&str] = &["blocks", "related", "parent-child", "discovered-from"];

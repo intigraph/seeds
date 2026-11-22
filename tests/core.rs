@@ -5660,3 +5660,124 @@ fn cas_transition_comment_rebinds_an_unchanged_assignment_atomically() {
     assert_eq!(after.seeds, unchanged.seeds);
     assert_eq!(after.comments, unchanged.comments);
 }
+
+#[test]
+fn ops_records_are_visible_explicitly_but_never_backlog_or_ready_work() {
+    let mut b = backend();
+    let task = mk(&mut b, "work", 1);
+    let ops = engine::create(
+        &mut b,
+        &ctx(2),
+        &CreateReq {
+            title: "machine operation".into(),
+            issue_type: Some("ops".into()),
+            ..CreateReq::default()
+        },
+    )
+    .unwrap()
+    .0
+    .id;
+    for all in [false, true] {
+        let page = engine::list(
+            &b,
+            &ListReq {
+                all,
+                ..ListReq::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.issues[0].id, task);
+    }
+    let page = engine::list(
+        &b,
+        &ListReq {
+            filter: Filter {
+                issue_type: Some("ops".into()),
+                ..Filter::default()
+            },
+            ..ListReq::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.issues[0].id, ops);
+    assert_eq!(
+        engine::show(&b, std::slice::from_ref(&ops), None).unwrap()[0]
+            .seed
+            .issue_type,
+        "ops"
+    );
+    assert_eq!(ready_ids(&b, 3), vec![task.clone()]);
+    let snap = b.snapshot(None).unwrap();
+    assert_eq!(
+        engine::ready_by_model(&snap, &ctx(3).now),
+        vec![task.clone()]
+    );
+    engine::update(
+        &mut b,
+        &ctx(4),
+        std::slice::from_ref(&ops),
+        &UpdateReq {
+            status: Some("deferred".into()),
+            defer: Some("2026-09-29".into()),
+            ..UpdateReq::default()
+        },
+    )
+    .unwrap();
+    for include_deferred in [false, true] {
+        let page = engine::ready(
+            &b,
+            &ctx(5),
+            &ReadyReq {
+                include_deferred,
+                ..ReadyReq::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.issues[0].id, task);
+    }
+    engine::close(
+        &mut b,
+        &ctx(6),
+        std::slice::from_ref(&ops),
+        Some("resolved"),
+        false,
+    )
+    .unwrap();
+    let st = engine::stats(
+        &b,
+        &ctx(7),
+        engine::StatsReq {
+            by_type: true,
+            activity_hours: Some(1),
+            ..engine::StatsReq::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        (st.total, st.ops, st.open, st.closed, st.ready),
+        (1, 1, 1, 0, 1)
+    );
+    assert_eq!(st.breakdowns[0].1, vec![("task".into(), 1)]);
+    assert_eq!(st.activity.unwrap().closed, 0);
+    let explicit = engine::list(
+        &b,
+        &ListReq {
+            all: true,
+            filter: Filter {
+                issue_type: Some("ops".into()),
+                ..Filter::default()
+            },
+            ..ListReq::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(explicit.issues[0].status, "closed");
+}

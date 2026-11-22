@@ -55,3 +55,8 @@ including past or malformed values. It does not interpret the date or change
 status. Combine it with `--status open` to find date-based deferrals without
 reading every open item's body; status-based deferrals still need their own
 `--status deferred` query.
+
+Operations records (`ops`) are hidden from backlog lists, including `--all`
+and explicit statuses. Use `sd list --type ops` for the Operations log; add
+`--all` there to include resolved records. Direct `show`, updates and dependency
+links keep their normal behavior. Operations records are never ready work.

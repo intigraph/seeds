@@ -2070,23 +2070,8 @@ impl Backend for RemoteBackend {
     }
 
     fn spec_change_ids(&self) -> Result<Vec<String>> {
-        let branches: Vec<_> = [&self.graph, &vocab::ephemeral_graph(&self.graph)]
-            .iter()
-            .map(|graph| {
-                format!(
-                    "{{ GRAPH <{graph}> {{ ?s <{}> ?v ; <{}> ?id }} }}",
-                    vocab::seeds("specVersion"),
-                    term::identifier()
-                )
-            })
-            .collect();
-        let (rows, truncated) = self.select_marked(
-            &format!(
-                "SELECT ?id WHERE {{ {} }} LIMIT 501",
-                branches.join(" UNION ")
-            ),
-            None,
-        )?;
+        let graphs = [self.graph.clone(), vocab::ephemeral_graph(&self.graph)];
+        let (rows, truncated) = self.select_marked(&spec_change_ids_query(&graphs), None)?;
         if truncated || rows.len() >= 501 {
             return Err(SdError::failed(
                 "spec change read exceeded its bounded 500-item ceiling",
@@ -3142,6 +3127,31 @@ impl RemoteBackend {
 #[path = "remote_scoped_tests.rs"]
 mod scoped_tests;
 
+/// The bounded spec-change identity read. The few subjects carrying
+/// `seeds:specVersion` are selected FIRST in their own bounded subquery and
+/// only then joined to `schema:identifier`. A flat
+/// `?s seeds:specVersion ?v ; schema:identifier ?id` let the store drive the
+/// join from the identifier of every item on the board: on a large production
+/// board that hit the 10s query deadline (HTTP 408) for six rows, while the
+/// subquery form returned the same six in 0.03s (measured 2026-11-22).
+fn spec_change_ids_query(graphs: &[String]) -> String {
+    let branches: Vec<_> = graphs
+        .iter()
+        .map(|graph| {
+            format!(
+                "{{ {{ SELECT DISTINCT ?s WHERE {{ GRAPH <{graph}> {{ ?s <{}> ?v }} }} LIMIT 501 }} \
+                 GRAPH <{graph}> {{ ?s <{}> ?id }} }}",
+                vocab::seeds("specVersion"),
+                term::identifier()
+            )
+        })
+        .collect();
+    format!(
+        "SELECT ?id WHERE {{ {} }} LIMIT 501",
+        branches.join(" UNION ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3167,6 +3177,29 @@ mod tests {
         assert!(!seeds.contains(term::comment_on().as_str()));
         assert!(history.contains(term::comment_on().as_str()));
         assert!(seeds.contains("urn:project") && seeds.contains("urn:ephemeral"));
+    }
+
+    #[test]
+    fn spec_change_ids_select_the_bounded_spec_subjects_before_joining_identifiers() {
+        let graphs = [
+            "urn:project".to_string(),
+            "urn:project#seeds-ephemeral".to_string(),
+        ];
+        let query = spec_change_ids_query(&graphs);
+        let version = vocab::seeds("specVersion");
+        let identifier = term::identifier();
+        for graph in &graphs {
+            let inner = format!(
+                "{{ SELECT DISTINCT ?s WHERE {{ GRAPH <{graph}> {{ ?s <{version}> ?v }} }} LIMIT 501 }}"
+            );
+            let join = format!("GRAPH <{graph}> {{ ?s <{identifier}> ?id }}");
+            let at = query.find(&inner).expect("bounded spec subquery per graph");
+            assert!(query[at + inner.len()..].trim_start().starts_with(&join));
+        }
+        // The flat join that drove from every item's identifier is gone.
+        assert!(!query.contains(&format!("?v ; <{identifier}>")));
+        assert!(query.starts_with("SELECT ?id WHERE") && query.ends_with("LIMIT 501"));
+        assert_eq!(query.matches(" UNION ").count(), 1);
     }
 
     /// quipu's 401 for a refused signed write, byte-for-byte as captured from a

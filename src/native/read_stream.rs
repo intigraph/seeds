@@ -46,6 +46,33 @@ fn unknown(reason: &str) -> SdError {
         "push read UNKNOWN: {reason}; no primary polling fallback"
     ))
 }
+/// Longest refusal reason relayed across the IPC boundary.
+const MAX_REASON: usize = 300;
+/// One bounded line of a reader refusal. The reader and its consumer share one
+/// private UID socket, and every reader refusal is a fixed protocol/budget
+/// string, so the reason is safe to relay. Erasing it made a freshness-budget
+/// refusal indistinguishable from a broken binding (aegis-ygz).
+fn refusal_reason(message: &str) -> String {
+    let line: String = message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(MAX_REASON) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line,
+    }
+}
+/// The consumer's error for a reader that refused: its own reason when it
+/// sent one in protocol form, otherwise the reason wrapped as UNKNOWN.
+fn relayed_refusal(reason: &str) -> SdError {
+    let reason = refusal_reason(reason);
+    if reason.starts_with("push read UNKNOWN") {
+        SdError::refused(reason)
+    } else {
+        unknown(&format!("reader refused: {reason}"))
+    }
+}
 fn io<T>(result: std::io::Result<T>) -> Result<T> {
     result.map_err(|_| unknown("local transport or pinned input unavailable"))
 }
@@ -299,7 +326,7 @@ pub fn read(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &Path) -> Result<Outcome
         MAX_REQUEST,
     )?;
     let reply: std::result::Result<Reply, String> = receive(&mut stream, MAX_REPLY)?;
-    let mut reply = reply.map_err(|_| unknown("consumer refused freshness or read binding"))?;
+    let mut reply = reply.map_err(|reason| relayed_refusal(&reason))?;
     let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     if reply.version != 1
         || reply.primary_url != c.primary_url
@@ -820,7 +847,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         }
                         Ok(r)
                     })
-                    .map_err(|_| "push read UNKNOWN; no primary polling fallback".to_string());
+                    .map_err(|e| refusal_reason(&e.message));
                 let _ = send(&mut stream, &result, MAX_REPLY);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

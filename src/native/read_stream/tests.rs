@@ -724,3 +724,55 @@ fn every_stream_gets_a_new_generation_for_its_challenge_replies() {
     live.reconnected();
     assert_ne!(live.generation(), first); // a late reply tagged `first` is ignored
 }
+
+// aegis-ygz: a reader refusal kept its reason on neither side of the IPC
+// boundary, so a freshness-budget refusal of a heavy owner-plate read surfaced
+// as "consumer refused freshness or read binding" and, one layer up, as
+// "SDK refused or response exceeded budget".
+#[test]
+fn a_reader_refusal_reaches_the_consumer_with_its_reason() {
+    let budget = super::unknown("read exceeded proof budget");
+    let relayed = super::relayed_refusal(&super::refusal_reason(&budget.message));
+    assert_eq!(relayed.message, budget.message);
+    assert!(relayed.message.contains("read exceeded proof budget"));
+
+    // A pre-fix reader sends the generic protocol line; it passes through as-is.
+    let old = "push read UNKNOWN; no primary polling fallback";
+    assert_eq!(super::relayed_refusal(old).message, old);
+
+    // Anything not in protocol form is still reported as an UNKNOWN push read.
+    let foreign = super::relayed_refusal("engine said\nno\tthanks");
+    assert!(foreign
+        .message
+        .starts_with("push read UNKNOWN: reader refused: engine said no thanks"));
+    assert_eq!(foreign.kind, budget.kind);
+}
+
+#[test]
+fn a_relayed_reason_is_one_bounded_line() {
+    let long = "x".repeat(10_000);
+    let reason = super::refusal_reason(&format!("a\r\nb\u{1b}[31m{long}"));
+    assert!(!reason.chars().any(char::is_control));
+    assert!(reason.starts_with("a b [31m"));
+    assert_eq!(reason.chars().count(), super::MAX_REASON + 1); // + the ellipsis
+    assert_eq!(super::refusal_reason("short"), "short");
+}
+
+#[test]
+fn actual_private_ipc_relays_the_reader_refusal_reason() {
+    let f = Fixture::new();
+    let listener = UnixListener::bind(&f.config.socket).unwrap();
+    fs::set_permissions(&f.config.socket, fs::Permissions::from_mode(0o600)).unwrap();
+    let refusal = super::unknown("read exceeded proof budget").message;
+    let sent = refusal.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        timeout(&stream).unwrap();
+        let _: Request = receive(&mut stream, MAX_REQUEST).unwrap();
+        send(&mut stream, &Err::<Reply, _>(sent), MAX_REPLY).unwrap();
+    });
+    let cli = Cli::try_parse_from(["sd", "--json", "list"]).unwrap();
+    let error = read(&cli, &f.cfg, &context(), &f.config_path).unwrap_err();
+    assert_eq!(error.message, refusal);
+    server.join().unwrap();
+}

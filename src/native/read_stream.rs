@@ -39,7 +39,23 @@ struct QueryArgs {
 const MAX_REQUEST: usize = 64 * 1024;
 const MAX_REPLY: usize = 16 * 1024 * 1024;
 const MAX_FRESH_MS: u64 = 5000;
-const IO_TIMEOUT: Duration = Duration::from_secs(2);
+const IO_TIMEOUT_MS: u64 = 2_000;
+const IO_TIMEOUT: Duration = Duration::from_millis(IO_TIMEOUT_MS);
+/// A projection query's engine deadline on the reader (query_scope).
+pub(super) const QUERY_DEADLINE_MS: u64 = 1_000;
+/// Headroom a read needs inside the freshness cap when it starts. The reader
+/// charges render time to the bound and the client charges its whole round
+/// trip again, so a deadline-length query costs it twice, plus IPC margin
+/// (aegis-ygz: a 0.84 s owner-plate read was refused in ~20% of cycles).
+const READ_HEADROOM_MS: u64 = 2 * QUERY_DEADLINE_MS + 500;
+/// Longest a read is parked waiting for an on-demand proof. With a
+/// deadline-length render after it, the reply still beats the client's
+/// IO_TIMEOUT.
+const PARK_MAX_MS: u64 = 800;
+/// Reads parked at once; past this a read is answered without waiting.
+const MAX_PARKED: usize = 16;
+const _: () = assert!(PARK_MAX_MS + QUERY_DEADLINE_MS < IO_TIMEOUT_MS);
+const _: () = assert!(READ_HEADROOM_MS < MAX_FRESH_MS);
 
 fn unknown(reason: &str) -> SdError {
     SdError::refused(format!(
@@ -600,6 +616,13 @@ struct Liveness {
     backoff: u64,
     /// When this stream first applied a frame; None until it proves live.
     live_since: Option<u64>,
+    /// When the last challenge of either kind went out.
+    last_sent: Option<u64>,
+    /// When the last on-demand challenge went out.
+    last_on_demand: Option<u64>,
+    /// Challenges actually sent, by kind, since the reader started.
+    scheduled_sent: u64,
+    on_demand_sent: u64,
 }
 
 impl Liveness {
@@ -612,6 +635,10 @@ impl Liveness {
             next_reconnect: 0,
             backoff: RECONNECT_INITIAL_MS,
             live_since: None,
+            last_sent: None,
+            last_on_demand: None,
+            scheduled_sent: 0,
+            on_demand_sent: 0,
         }
     }
     fn connected(&self) -> bool {
@@ -627,6 +654,36 @@ impl Liveness {
     }
     fn challenge_sent(&mut self, now: u64) {
         self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
+        self.last_sent = Some(now);
+        self.scheduled_sent += 1;
+    }
+    /// A challenge went out within the last round-trip allowance, so a fresh
+    /// proof may still arrive for a read that waits for it.
+    fn in_flight(&self, now: u64) -> bool {
+        self.open
+            && self
+                .last_sent
+                .is_some_and(|t| now.saturating_sub(t) < CHALLENGE_RTT_HEADROOM_MS)
+    }
+    /// An extra challenge for a read that lacks freshness headroom (aegis-ygz,
+    /// Sattler ruling A). The cap is enforced HERE: at most one per
+    /// CHALLENGE_INTERVAL_MS, and none while any challenge is in flight, so
+    /// an idle reader stays at the scheduled ~900/h and a busy one at most
+    /// doubles it.
+    fn on_demand_due(&self, now: u64) -> bool {
+        self.open
+            && !self.in_flight(now)
+            && self
+                .last_on_demand
+                .is_none_or(|t| now.saturating_sub(t) >= CHALLENGE_INTERVAL_MS)
+    }
+    /// An on-demand challenge went out. It proves freshness like a scheduled
+    /// one, so the schedule restarts from it rather than adding to it.
+    fn on_demand_sent(&mut self, now: u64) {
+        self.next_challenge = now.saturating_add(CHALLENGE_INTERVAL_MS);
+        self.last_sent = Some(now);
+        self.last_on_demand = Some(now);
+        self.on_demand_sent += 1;
     }
     /// A clock discontinuity discarded every proof: re-prove at once.
     fn clock_jump(&mut self) {
@@ -758,6 +815,9 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
     });
     let mut clock = Clock::new();
     let mut live = Liveness::new();
+    let mut parked: Vec<(UnixStream, Request, u64)> = Vec::new();
+    let mut parked_total: u64 = 0;
+    let mut stats_at: u64 = 0;
     loop {
         let (now, changed) = clock.sample();
         if changed {
@@ -802,19 +862,10 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
             }
         }
         if !dropped && live.challenge_due(now) {
-            let mut nonce = [0; 16];
-            getrandom::getrandom(&mut nonce)
-                .map_err(|_| unknown("challenge entropy unavailable"))?;
-            // No session yet (connecting): retry next tick, slot not consumed.
-            if let Ok(session) = board.challenge(nonce, now) {
-                let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-                let body = encode(&json!({"session":session,"nonce":nonce}))?;
-                let request = remote.request("/replicate/challenge")?;
-                match challenges.try_send((live.generation(), request, body)) {
-                    Ok(()) => live.challenge_sent(now),
-                    Err(mpsc::TrySendError::Full(_)) => {} // one in flight; retry next tick
-                    Err(mpsc::TrySendError::Disconnected(_)) => dropped = true,
-                }
+            match issue_challenge(&mut board, &remote, &challenges, live.generation(), now)? {
+                Some(true) => live.challenge_sent(now),
+                Some(false) => {} // no session yet, or one in flight: retry next tick
+                None => dropped = true,
             }
         }
         if dropped && live.connected() {
@@ -822,33 +873,70 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
             incoming = None; // close the dead stream now, not at the next reconnect
             live.disconnected(now, jitter_permille());
         }
+        // Parked reads go as soon as a fresh proof gives them headroom, or once
+        // they have waited PARK_MAX_MS (answered as before, possibly refused).
+        let mut i = 0;
+        while i < parked.len() {
+            let waited = now.saturating_sub(parked[i].2);
+            if has_headroom(&board, now) || waited >= PARK_MAX_MS || !live.connected() {
+                let (mut stream, request, _) = parked.swap_remove(i);
+                answer(&mut stream, request, &mut board, &c, cfg, &mut clock, now);
+            } else {
+                i += 1;
+            }
+        }
+        if now.saturating_sub(stats_at) >= STATS_EVERY_MS {
+            stats_at = now;
+            eprintln!(
+                "sd read-stream: challenges scheduled={} on_demand={} parked_reads={} (since start)",
+                live.scheduled_sent, live.on_demand_sent, parked_total
+            );
+        }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                let result = timeout(&stream)
-                    .and_then(|_| receive::<Request>(&mut stream, MAX_REQUEST))
-                    .and_then(|r| {
-                        let (now, changed) = clock.sample();
-                        if changed {
-                            board.clock_discontinuity();
+                let request =
+                    timeout(&stream).and_then(|_| receive::<Request>(&mut stream, MAX_REQUEST));
+                match request {
+                    Err(e) => {
+                        let _ = send(
+                            &mut stream,
+                            &Err::<Reply, _>(refusal_reason(&e.message)),
+                            MAX_REPLY,
+                        );
+                    }
+                    Ok(request) => {
+                        // A read without headroom waits for a fresh proof: one
+                        // already in flight, or one on-demand challenge
+                        // (rate-limited inside Liveness).
+                        let mut wait = false;
+                        if !has_headroom(&board, now) && parked.len() < MAX_PARKED {
+                            if live.in_flight(now) {
+                                wait = true;
+                            } else if live.on_demand_due(now) {
+                                match issue_challenge(
+                                    &mut board,
+                                    &remote,
+                                    &challenges,
+                                    live.generation(),
+                                    now,
+                                )? {
+                                    Some(true) => {
+                                        live.on_demand_sent(now);
+                                        wait = true;
+                                    }
+                                    Some(false) => {}
+                                    None => {}
+                                }
+                            }
                         }
-                        let budget = r.max_ms;
-                        render(&mut board, &c, cfg, r, now).map(|reply| (reply, budget))
-                    });
-                let (after, changed) = clock.sample();
-                if changed {
-                    board.clock_discontinuity();
+                        if wait {
+                            parked_total += 1;
+                            parked.push((stream, request, now));
+                        } else {
+                            answer(&mut stream, request, &mut board, &c, cfg, &mut clock, now);
+                        }
+                    }
                 }
-                let result = result
-                    .and_then(|(mut r, budget)| {
-                        // charge rendering time, never certify an old capture
-                        r.bound_ms = r.bound_ms.saturating_add(after.saturating_sub(now));
-                        if changed || r.bound_ms > budget {
-                            return Err(unknown("read exceeded proof budget"));
-                        }
-                        Ok(r)
-                    })
-                    .map_err(|e| refusal_reason(&e.message));
-                let _ = send(&mut stream, &result, MAX_REPLY);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10))
@@ -856,6 +944,74 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
             Err(_) => return Err(unknown("local listener failed")),
         }
     }
+}
+
+/// How often the reader logs its challenge counters (challenges/h metric).
+const STATS_EVERY_MS: u64 = 600_000;
+
+/// The board can answer a read now without it running out of freshness.
+fn has_headroom(board: &StreamBoard, now: u64) -> bool {
+    board
+        .staleness_bound(now)
+        .is_some_and(|b| b.saturating_add(READ_HEADROOM_MS) <= MAX_FRESH_MS)
+}
+
+/// Issue one liveness challenge. `Some(true)` it went out; `Some(false)` no
+/// session yet or one already in flight (retry later); `None` the challenge
+/// thread is gone (the stream must drop).
+fn issue_challenge(
+    board: &mut StreamBoard,
+    remote: &transport::Transport,
+    challenges: &mpsc::SyncSender<(u64, ureq::Request, Vec<u8>)>,
+    generation: u64,
+    now: u64,
+) -> Result<Option<bool>> {
+    let mut nonce = [0; 16];
+    getrandom::getrandom(&mut nonce).map_err(|_| unknown("challenge entropy unavailable"))?;
+    let Ok(session) = board.challenge(nonce, now) else {
+        return Ok(Some(false));
+    };
+    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let body = encode(&json!({"session":session,"nonce":nonce}))?;
+    let request = remote.request("/replicate/challenge")?;
+    Ok(match challenges.try_send((generation, request, body)) {
+        Ok(()) => Some(true),
+        Err(mpsc::TrySendError::Full(_)) => Some(false),
+        Err(mpsc::TrySendError::Disconnected(_)) => None,
+    })
+}
+
+/// Render one read and reply. Rendering time from `since` is charged to the
+/// bound: an old capture is never certified.
+fn answer(
+    stream: &mut UnixStream,
+    request: Request,
+    board: &mut StreamBoard,
+    c: &Config,
+    cfg: &Resolved,
+    clock: &mut Clock,
+    since: u64,
+) {
+    let (now, changed) = clock.sample();
+    if changed {
+        board.clock_discontinuity();
+    }
+    let budget = request.max_ms;
+    let result = render(board, c, cfg, request, now);
+    let (after, changed) = clock.sample();
+    if changed {
+        board.clock_discontinuity();
+    }
+    let result = result
+        .and_then(|mut r| {
+            r.bound_ms = r.bound_ms.saturating_add(after.saturating_sub(since));
+            if changed || r.bound_ms > budget {
+                return Err(unknown("read exceeded proof budget"));
+            }
+            Ok(r)
+        })
+        .map_err(|e| refusal_reason(&e.message));
+    let _ = send(stream, &result, MAX_REPLY);
 }
 
 #[cfg(test)]

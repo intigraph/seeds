@@ -776,3 +776,71 @@ fn actual_private_ipc_relays_the_reader_refusal_reason() {
     assert_eq!(error.message, refusal);
     server.join().unwrap();
 }
+
+// aegis-ygz, Sattler ruling A: an on-demand challenge for a read that lacks
+// freshness headroom, capped IN CODE at one per interval.
+#[test]
+fn on_demand_challenges_are_capped_at_one_per_interval() {
+    let mut live = super::Liveness::new();
+    // Worst case: a headroom-starved read arrives every 10 ms for an hour.
+    for t in (0..3_600_000u64).step_by(10) {
+        if live.challenge_due(t) {
+            live.challenge_sent(t);
+        }
+        if live.on_demand_due(t) {
+            live.on_demand_sent(t);
+        }
+    }
+    assert!(
+        live.on_demand_sent <= 900,
+        "on-demand {}",
+        live.on_demand_sent
+    );
+    assert!(
+        live.scheduled_sent + live.on_demand_sent <= 1_800,
+        "total {}",
+        live.scheduled_sent + live.on_demand_sent
+    );
+    assert!(live.on_demand_sent > 0);
+}
+
+#[test]
+fn idle_reader_stays_at_the_scheduled_cadence() {
+    let mut live = super::Liveness::new();
+    for t in (0..3_600_000u64).step_by(10) {
+        if live.challenge_due(t) {
+            live.challenge_sent(t);
+        }
+    }
+    assert_eq!((live.scheduled_sent, live.on_demand_sent), (900, 0));
+}
+
+#[test]
+fn on_demand_waits_for_an_in_flight_challenge_and_restarts_the_schedule() {
+    let mut live = super::Liveness::new();
+    live.challenge_sent(0);
+    assert!(live.in_flight(500));
+    assert!(!live.on_demand_due(500)); // a proof is already coming
+    assert!(live.on_demand_due(super::CHALLENGE_RTT_HEADROOM_MS));
+    live.on_demand_sent(2_500);
+    assert!(!live.on_demand_due(2_500 + super::CHALLENGE_INTERVAL_MS - 1));
+    assert!(!live.challenge_due(2_500 + super::CHALLENGE_INTERVAL_MS - 1));
+    assert!(live.challenge_due(2_500 + super::CHALLENGE_INTERVAL_MS));
+    // A dropped stream issues nothing on demand.
+    live.disconnected(3_000, 0);
+    assert!(!live.on_demand_due(100_000));
+}
+
+#[test]
+fn headroom_is_the_read_budget_inside_the_freshness_cap() {
+    let mut f = Fixture::new();
+    assert!(!super::has_headroom(&f.board, 0)); // no proof yet: UNKNOWN
+    f.prove(1, 1_000);
+    let fresh = f.board.staleness_bound(1_000).unwrap();
+    let limit = super::MAX_FRESH_MS - super::READ_HEADROOM_MS;
+    assert!(super::has_headroom(&f.board, 1_000));
+    assert!(super::has_headroom(&f.board, 1_000 + limit - fresh));
+    assert!(!super::has_headroom(&f.board, 1_000 + limit - fresh + 1));
+    // The measured refusal: a bound of ~4.2 s left no room for a 0.84 s read.
+    assert!(!super::has_headroom(&f.board, 1_000 + 4_200));
+}

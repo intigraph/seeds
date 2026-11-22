@@ -188,6 +188,15 @@ impl StreamBoard {
         })
     }
 
+    /// The current staleness bound (ms since the latest answered challenge was
+    /// sent), or None while freshness is UNKNOWN.
+    pub(crate) fn staleness_bound(&self, now_ms: u64) -> Option<u64> {
+        if !self.bootstrapped {
+            return None;
+        }
+        self.applier.freshness(now_ms).staleness_bound_ms
+    }
+
     fn progress(&self, now_ms: u64, max_ms: u64) -> Result<(AppliedProgress, u64)> {
         let fresh = self.applier.freshness(now_ms);
         if !self.bootstrapped || max_ms == 0 || !fresh.within(max_ms) {

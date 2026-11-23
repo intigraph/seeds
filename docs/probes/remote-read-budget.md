@@ -28,5 +28,8 @@ must pass against the candidate binary before any repair claim.
 The first numeric-budget candidate built successfully: eight SDK probes and
 97 focused remote tests passed (two explicitly artifact-gated tests ignored).
 A later invalid-byte environment probe reproduced a fail-open encoding fallback.
-The source now rejects that encoding; its fresh build qualification is pending.
+The corrected candidate rejects that encoding. A fresh serial qualification
+passed all nine real SDK probes and 97 focused remote tests, with the same two
+explicitly artifact-gated tests ignored. The invalid-byte probe first failed
+against the previously qualified binary and then passed against the correction.
 No installed acceptance or budget activation has been claimed.

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.26.0] - 2026-11-23
+
+### Added
+
+- Separate overseer Asks from executable board work (#302) ([70f502d](https://github.com/scbrown/seeds/commit/70f502d22e8e1ba0cfccda43bcf15550a2692773))
+- Settle overseer Asks atomically through Seeds (#303) ([0614201](https://github.com/scbrown/seeds/commit/0614201bcd181985faee17ebcf316755b2ac0cad))
+- Add a disabled native Ask settlement port (#304) ([213c7f9](https://github.com/scbrown/seeds/commit/213c7f9966f443f4dbb3a844221ae10bead84018))
+
+### Fixed
+
+- *(read-stream)* Relay the reader's refusal reason to the consumer (#300) ([f58d7bf](https://github.com/scbrown/seeds/commit/f58d7bfdd918ec264bc13d2e648e08d92be47bcc))
+- *(read-stream)* Challenge on demand when a read lacks freshness headroom (#301) ([e47bf57](https://github.com/scbrown/seeds/commit/e47bf578c9efa4adde5d226c81d68cead2702f1d))
+
+### Perf
+
+- *(spec)* Select bounded spec subjects before joining identifiers (#298) ([baeb29b](https://github.com/scbrown/seeds/commit/baeb29bc48a55fe7dcc82627ad5df7b0cafc4578))
+
 ## [0.25.0] - 2026-11-22
 
 ### Added

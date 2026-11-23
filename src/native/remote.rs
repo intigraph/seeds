@@ -60,10 +60,10 @@ mod message_listing;
 mod message_tests;
 mod owner_query;
 mod projection;
-mod summary;
-mod tls;
 #[cfg(unix)]
 mod read_budget;
+mod summary;
+mod tls;
 
 /// Registry coverage failures are UNKNOWN, never an empty or recent-only inbox.
 fn live_message_windows(project: &str, value: &Json) -> Result<Vec<String>> {

@@ -45,6 +45,8 @@ jobs:
         run: |
           cargo build --locked --bin sd
           python3 tests/history_wire.py
+      - name: Shared HTTP budget caps actual SDK dispatches
+        run: SEEDS_TEST_SD="$PWD/target/debug/sd" python3 scripts/test-remote-read-budget.py
       - name: Exact message lookups isolate malformed neighbours
         run: MESSAGE_SD="$PWD/target/debug/sd" python3 tests/message_show_wire.py
       # The core without the CLI or SHACL (the feature set the wasm build uses),

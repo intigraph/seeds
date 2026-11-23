@@ -47,6 +47,9 @@ pub mod acquisition;
 pub mod archive;
 #[cfg(test)]
 mod archive_tests;
+mod ask_scope;
+#[cfg(all(test, unix))]
+mod ask_scope_tests;
 #[cfg(test)]
 mod comment_tests;
 #[cfg(test)]
@@ -282,6 +285,8 @@ pub struct RemoteBackend {
     audience: Option<String>,
     agent: ureq::Agent,
     graph_registered: bool,
+    /// Only the explicitly admitted native settler keeps audit in the project.
+    project_provenance: bool,
     ephemeral_registered: bool,
     /// The ephemeral graph was seen holding facts (an existence ASK said so,
     /// or this backend wrote to it). Only ever set: a later read of that graph
@@ -490,6 +495,7 @@ impl RemoteBackend {
             audience: None,
             agent,
             graph_registered: false,
+            project_provenance: false,
             ephemeral_registered: false,
             ephemeral_seen: std::cell::Cell::new(false),
             last_items: std::cell::RefCell::new(None),
@@ -2758,7 +2764,6 @@ impl Backend for RemoteBackend {
                 &main_graph
             }
         };
-        let g = &main_graph;
         let rev = term::revision();
         // Per graph: [0] the project graph, [1] its ephemeral graph.
         let ix = |id: &str| usize::from(graph_of(id) != main_graph.as_str());
@@ -2894,7 +2899,7 @@ impl Backend for RemoteBackend {
         update.push_str(&format!(
             "INSERT {{ {}GRAPH <{}> {{ {prov} }} }}\n",
             blocks(&insert),
-            provenance_graph(g)
+            self.write_record_graph()
         ));
         let guard_block: String = (0..2)
             .filter(|&i| !guards[i].is_empty())
@@ -3104,12 +3109,7 @@ impl RemoteBackend {
             // well as comments. Its facts are declarations, not authentication.
             let subjects = write_record.iter().map(|(iri, _)| iri.clone()).collect();
             let mut recorded = Facts::new();
-            self.read_all(
-                &provenance_graph(&self.graph),
-                &subjects,
-                None,
-                &mut recorded,
-            )?;
+            self.read_all(&self.write_record_graph(), &subjects, None, &mut recorded)?;
             for (iri, expected) in write_record {
                 if !recorded
                     .get(iri)

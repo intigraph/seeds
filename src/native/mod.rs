@@ -9,6 +9,8 @@
 mod actor_policy;
 mod agent_context;
 mod archive_cli;
+#[cfg(unix)]
+mod ask_native;
 pub mod attest;
 pub mod cli;
 mod command_context;
@@ -69,6 +71,24 @@ fn run_legacy(cli: &Cli) -> Outcome {
     let _command_context = command_context::Scope::new(&cli.command);
     // This must precede even init/merge-driver and the other early exits.
     // A launcher may ask about a mutating command, but admission never runs it.
+    #[cfg(unix)]
+    if matches!(cli.command, Command::AskSettle(_))
+        && (cli.credential_admission || cli.authentication_admission)
+    {
+        return error_outcome(true, &SdError::refused("native settlement uses only its admitted dedicated credential; generic admission is unsupported"), vec![]);
+    }
+    #[cfg(unix)]
+    if let Command::AskSettle(args) = &cli.command {
+        if !args.execute && !args.reconcile {
+            return error_outcome(
+                cli.wants_json(),
+                &SdError::refused(
+                    "native Ask settlement is disabled; explicit execute or reconcile required",
+                ),
+                vec![],
+            );
+        }
+    }
     if cli.credential_admission || cli.authentication_admission {
         let result =
             config::Inputs::from_env(cli.store.clone(), cli.quipu.clone(), cli.graph.clone())
@@ -1233,6 +1253,10 @@ fn actor(cli: &Cli) -> String {
 /// - **sync** (`[sync] remote`): a local store (with or without a pendant)
 ///   that `sd sync` merges with a remote.
 pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
+    #[cfg(unix)]
+    if let Command::AskSettle(args) = &cli.command {
+        return ask_native::run(cli, cfg, args);
+    }
     transfer::validate_selection(&cli.command)?;
     retained_history_cli::validate(cli, cfg)?;
     // Admit before opening the backend: even connection/provenance reads
@@ -2695,7 +2719,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
     }
     match &cli.command {
         #[cfg(unix)]
-        Command::ReadStream { .. } | Command::ReadStreamQuery => Err(SdError::refused("read-stream is not a board operation")),
+        Command::ReadStream { .. } | Command::ReadStreamQuery | Command::AskSettle(_) => Err(SdError::refused("native port is not an ordinary board operation")),
         Command::Rescope { id, spec_file, quote, requester, summary, urgent, dry_run } => {
             use std::io::Read;
             let file = std::fs::File::open(spec_file).map_err(|e| SdError::usage(format!("cannot read spec file: {e}")))?;

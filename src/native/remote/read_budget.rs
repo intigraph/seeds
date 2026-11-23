@@ -61,7 +61,7 @@ fn admit(request_url: &str) -> io::Result<()> {
     {
         return Err(refused("noncanonical origin spelling"));
     }
-    if !host.is_ascii() || host.contains(':') || request_url.chars().any(|c| !c.is_ascii()) {
+    if !host.is_ascii() || host.contains(':') || !request_url.is_ascii() {
         return Err(refused("unsupported origin spelling"));
     }
     let port = url
@@ -145,6 +145,8 @@ fn admit(request_url: &str) -> io::Result<()> {
     Ok(())
 }
 
+// ureq requires its concrete error in the middleware callback signature.
+#[allow(clippy::result_large_err)]
 pub(super) fn middleware(
     request: ureq::Request,
     next: ureq::MiddlewareNext<'_>,

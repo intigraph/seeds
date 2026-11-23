@@ -11,6 +11,30 @@ pub(super) fn agent(ca_file: Option<&Path>, pin: Option<&str>) -> Result<ureq::A
     let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout(Duration::from_secs(120));
+    #[cfg(not(unix))]
+    if std::env::var("ST_QUIPU_READS_PER_MINUTE")
+        .unwrap_or_else(|_| "0".into())
+        .trim()
+        != "0"
+    {
+        return Err(SdError::refused(
+            "local Quipu read budget requires Unix ledger locking",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let enabled = super::read_budget::limit()
+            .map_err(|e| SdError::refused(e.to_string()))?
+            .is_some();
+        builder = builder.middleware(super::read_budget::middleware);
+        if enabled {
+            // ureq follows redirects inside the middleware chain. Refuse that
+            // uncharged second dispatch instead of claiming a per-request cap.
+            // Recycled sockets can trigger an internal retry below middleware
+            // (ureq unit::connect_inner). Disable pooling while the cap is on.
+            builder = builder.redirects(0).max_idle_connections(0);
+        }
+    }
     if let Some(path) = ca_file {
         let refuse = |why: &str| SdError::refused(format!("CA file {}: {why}", path.display()));
         let bytes =

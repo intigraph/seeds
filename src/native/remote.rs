@@ -62,6 +62,8 @@ mod owner_query;
 mod projection;
 mod summary;
 mod tls;
+#[cfg(unix)]
+mod read_budget;
 
 /// Registry coverage failures are UNKNOWN, never an empty or recent-only inbox.
 fn live_message_windows(project: &str, value: &Json) -> Result<Vec<String>> {
@@ -328,6 +330,11 @@ fn transport(url: &str, e: &ureq::Transport) -> SdError {
     let mut timeout = false;
     while let Some(error) = cause {
         if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::PermissionDenied
+                && io.to_string().starts_with("local Quipu read budget:")
+            {
+                return SdError::refused(io.to_string());
+            }
             timeout |= matches!(
                 io.kind(),
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock

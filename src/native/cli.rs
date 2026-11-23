@@ -85,6 +85,9 @@ pub struct Cli {
 /// The verbs.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Settle one signed Ask through an explicitly admitted native port (default OFF)
+    #[cfg(unix)]
+    AskSettle(super::ask_native::Args),
     /// Serve an operator-admitted push-fed read view on a private local socket
     #[cfg(unix)]
     ReadStream {
@@ -1626,6 +1629,8 @@ impl Command {
     pub fn writes(&self) -> bool {
         match self {
             #[cfg(unix)]
+            Command::AskSettle(a) => a.execute && !a.reconcile,
+            #[cfg(unix)]
             Command::ReadStream { .. } | Command::ReadStreamQuery => false,
             Command::Cutover(a) => !a.dry_run && matches!(a.operation.as_str(), "import" | "sync"),
             Command::Archive(a) => a.execute,
@@ -1710,6 +1715,8 @@ impl Command {
     /// The verb as a user typed it.
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(unix)]
+            Command::AskSettle(_) => "ask-settle",
             #[cfg(unix)]
             Command::ReadStream { .. } => "read-stream",
             #[cfg(unix)]

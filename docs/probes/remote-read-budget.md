@@ -25,4 +25,8 @@ location proof. These correct the earlier inference that `where` itself spends
 remote requests. Concurrent-child, retry, redirect and corrupt-ledger controls
 must pass against the candidate binary before any repair claim.
 
-No Cargo qualification or installed acceptance has been claimed for this source.
+The first numeric-budget candidate built successfully: eight SDK probes and
+97 focused remote tests passed (two explicitly artifact-gated tests ignored).
+A later invalid-byte environment probe reproduced a fail-open encoding fallback.
+The source now rejects that encoding; its fresh build qualification is pending.
+No installed acceptance or budget activation has been claimed.

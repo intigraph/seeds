@@ -12,10 +12,10 @@ pub(super) fn agent(ca_file: Option<&Path>, pin: Option<&str>) -> Result<ureq::A
         .timeout_connect(Duration::from_secs(5))
         .timeout(Duration::from_secs(120));
     #[cfg(not(unix))]
-    if std::env::var("ST_QUIPU_READS_PER_MINUTE")
-        .unwrap_or_else(|_| "0".into())
-        .trim()
-        != "0"
+    if !matches!(
+        std::env::var("ST_QUIPU_READS_PER_MINUTE"),
+        Err(std::env::VarError::NotPresent)
+    ) && !matches!(std::env::var("ST_QUIPU_READS_PER_MINUTE"), Ok(value) if value.trim() == "0")
     {
         return Err(SdError::refused(
             "local Quipu read budget requires Unix ledger locking",

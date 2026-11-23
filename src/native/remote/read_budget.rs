@@ -16,7 +16,11 @@ fn refused(message: &str) -> io::Error {
 }
 
 pub(super) fn limit() -> io::Result<Option<usize>> {
-    let raw = std::env::var("ST_QUIPU_READS_PER_MINUTE").unwrap_or_else(|_| "0".into());
+    let raw = match std::env::var("ST_QUIPU_READS_PER_MINUTE") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => "0".into(),
+        Err(std::env::VarError::NotUnicode(_)) => return Err(refused("invalid limit encoding")),
+    };
     let value = raw
         .trim()
         .parse::<usize>()

@@ -103,4 +103,9 @@ class Admission(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIn('local Quipu read budget:', result.stderr)
 
+    def test_non_utf8_limit_never_silently_disables_admission(self):
+        calls, result = self.probe('\udcff')
+        self.assertEqual(calls, [])
+        self.assertIn('local Quipu read budget:', result.stderr)
+
 if __name__ == '__main__': unittest.main()

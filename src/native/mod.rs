@@ -1061,6 +1061,7 @@ fn capabilities(command_path: Option<&str>) -> Result<Json> {
                      "SEEDS_QUIPU_TOKEN_FILE", "SEEDS_MAX_WRITE_BYTES",
                      "SEEDS_MAX_WRITE_CLAUSES"],
         "safety": [
+            "remote creates reserve IDs across work, ephemeral, archive and operations-log graphs",
             "every write is one quipu transaction: all named seeds change, or none do",
             "a sync over the server's request limit is pushed in dependency-ordered batches, one transaction each; a re-run resumes",
             "a write over the request limit is refused before it is sent (exit 5), never reported as unknown",

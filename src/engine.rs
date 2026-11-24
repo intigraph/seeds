@@ -530,18 +530,28 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
             });
         }
     }
+    if let Some(id) = &keyed {
+        if b.id_reserved_elsewhere(id)? {
+            return Err(SdError::refused(
+                "this workflow ID belongs to a related graph; use that record's graph",
+            ));
+        }
+    }
+    let mut reserved = BTreeSet::new();
     let id = loop {
         let candidate = match (&keyed, &req.parent) {
             (Some(id), _) => id.clone(),
             (None, Some(p)) => {
                 snap.get(p)?;
-                ids::child(p, |c| snap.seeds.contains_key(c))
+                ids::child(p, |c| snap.seeds.contains_key(c) || reserved.contains(c))
             }
             (None, None) => match req.slug.as_deref().and_then(ids::slug) {
                 Some(slug) => ids::mint_slugged(&ctx.prefix, &slug, title, &ctx.now, |c| {
-                    snap.seeds.contains_key(c)
+                    snap.seeds.contains_key(c) || reserved.contains(c)
                 }),
-                None => ids::mint(&ctx.prefix, title, &ctx.now, |c| snap.seeds.contains_key(c)),
+                None => ids::mint(&ctx.prefix, title, &ctx.now, |c| {
+                    snap.seeds.contains_key(c) || reserved.contains(c)
+                }),
             },
         };
         if keyed.is_some() {
@@ -553,6 +563,10 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
             // would put two seeds under one IRI, one live and one archived.
             occupied = b.snapshot_archived(std::slice::from_ref(&candidate))?;
             if !occupied.seeds.contains_key(&candidate) {
+                if b.id_reserved_elsewhere(&candidate)? {
+                    reserved.insert(candidate);
+                    continue;
+                }
                 break candidate;
             }
         }

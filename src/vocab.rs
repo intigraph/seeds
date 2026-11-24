@@ -304,6 +304,15 @@ pub fn project_graph_iri(prefix: &str) -> String {
     format!("{SEEDS_BASE}project/{}", encode(prefix))
 }
 
+/// Machine records outside the work graph, with a stable derived address.
+pub fn operations_graph(graph: &str) -> String {
+    if graph.contains('#') {
+        format!("{graph}-operations-log")
+    } else {
+        format!("{graph}#operations-log")
+    }
+}
+
 /// The ready definition, as SPARQL over one project graph: open seeds with no
 /// `blockedOn` target whose status is anything but `closed`. This is the
 /// query camayoc is meant to carry as a stored query; `sd ready` runs it

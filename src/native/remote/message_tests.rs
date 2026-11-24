@@ -49,6 +49,35 @@ fn send_checked(
 }
 
 #[test]
+fn remote_window_presence_preserves_recipient_ttl_and_historical_window_mail() {
+    let Some(server) = super::tests::quipu_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for window presence control");
+        return;
+    };
+    let graph = "https://example.org/project/window-presence";
+    let mut backend = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+    let (ctx, fresh) = candidate("2026-11-24T12:00:00Z", "fresh-in-history");
+    let old_window = window_graph(graph, "2026-10-01T12:00:00Z").unwrap();
+    let recent_window = window_graph(graph, &ctx.now).unwrap();
+    send_checked(&mut backend, &ctx, &old_window, &fresh, "test");
+    let (_, mut other) = candidate(&ctx.now, "other-recipient");
+    other.recipient = "another-reader".into();
+    send_checked(&mut backend, &ctx, &recent_window, &other, "test");
+    let windows = vec![old_window, recent_window];
+    let listing = backend
+        .message_listing_since(&windows, Some("reader"), Some("2026-11-20T00:00:00Z"))
+        .unwrap();
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.messages, vec![fresh]);
+    assert!(backend
+        .message_listing_since(&windows, Some("reader"), Some("2026-11-25T00:00:00Z"))
+        .unwrap()
+        .messages
+        .is_empty());
+    assert_eq!(backend.messages(&windows, None).unwrap().len(), 2);
+}
+
+#[test]
 fn remote_key_binding_is_atomic_across_week_windows() {
     let Some(server) = super::tests::quipu_server() else {
         eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for the real atomic message control");

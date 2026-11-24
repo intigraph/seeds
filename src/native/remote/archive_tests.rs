@@ -703,10 +703,37 @@ fn operations_log_moves_only_closed_ops_with_comments_and_roundtrips() {
     assert_eq!(moved.subjects, 2);
     assert!(r.family_facts_for_test(&r.graph.clone(), &ids).is_empty());
     assert_eq!(
-        r.family_facts_for_test(&format!("{}#operations-log", r.graph), &ids),
+        r.family_facts_for_test(&vocab::operations_graph(&r.graph), &ids),
         before
     );
     assert_eq!(r.operations_log_ids(&ids).unwrap(), ids);
+    let next = create(&mut r, &c, "machine record", None);
+    assert_ne!(next, machine, "an operations-log record still owns its ID");
+    let mut log = RemoteBackend::connect(
+        &server.base,
+        &vocab::operations_graph(&r.graph),
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let from_log = engine::create(
+        &mut log,
+        &c,
+        &CreateReq {
+            title: "ordinary work".into(),
+            issue_type: Some("ops".into()),
+            ..CreateReq::default()
+        },
+    )
+    .unwrap()
+    .0
+    .id;
+    assert_ne!(
+        from_log, ordinary,
+        "log creation must also respect work-board IDs"
+    );
+
     r.archive_move_scoped(&c, &ids, false, true).unwrap();
     assert_eq!(r.family_facts_for_test(&r.graph.clone(), &ids), before);
     assert!(r.snapshot_items(&[ordinary]).unwrap().seeds.len() == 1);

@@ -17,3 +17,5 @@ An uncertain result stops the run; inspect both graphs before continuing.
 Restore with `sd unarchive --operations-log --from-log move.jsonl --execute`.
 The inverse retains the recorded closed disposition. Reopening work is a separate
 operator action. Do not mix archive and operations-log intent files.
+
+Remote creates reserve IDs across the work, ephemeral, archive and operations-log graphs. Moving a record does not release its ID. A keyed create targeting an ID owned by another graph is refused. Restore moved records before downgrading to an SDK without this reservation.

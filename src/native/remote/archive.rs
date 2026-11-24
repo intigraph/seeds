@@ -313,7 +313,7 @@ impl RemoteBackend {
     }
 
     pub fn operations_log_ids(&self, ids: &[String]) -> Result<Vec<String>> {
-        let facts = self.family_facts(&format!("{}#operations-log", self.graph), ids)?;
+        let facts = self.family_facts(&vocab::operations_graph(&self.graph), ids)?;
         Ok(ids
             .iter()
             .filter(|id| facts.contains_key(&vocab::item_iri(id)))
@@ -347,7 +347,7 @@ impl RemoteBackend {
         }
         let live = self.graph.clone();
         let arch = if operations_log {
-            format!("{live}#operations-log")
+            vocab::operations_graph(&live)
         } else {
             vocab::archive_graph(&live)
         };

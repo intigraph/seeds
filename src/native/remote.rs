@@ -257,8 +257,29 @@ fn item_family_query(graphs: &[String; 2], items: &[&String], comments: bool) ->
     )
 }
 
-/// [`item_family_query`] over the board archive graph alone (aegis-n0wc.1):
-/// one bound branch per item and per item's comments, never `VALUES`.
+/// The fixed work/log identity family; records stay out of work snapshots.
+fn identity_graphs(graph: &str) -> BTreeSet<String> {
+    let base = graph
+        .strip_suffix("#operations-log")
+        .or_else(|| {
+            graph
+                .contains('#')
+                .then(|| graph.strip_suffix("-operations-log"))
+                .flatten()
+        })
+        .unwrap_or(graph);
+    let log = vocab::operations_graph(base);
+    BTreeSet::from([
+        base.to_string(),
+        vocab::ephemeral_graph(base),
+        vocab::archive_graph(base),
+        log.clone(),
+        vocab::ephemeral_graph(&log),
+        vocab::archive_graph(&log),
+    ])
+}
+
+/// Bound archive families, including each selected item's comments.
 fn archive_family_query(archive: &str, items: &[&String]) -> String {
     let parent = term::comment_on();
     let branches: Vec<String> = items
@@ -2402,6 +2423,30 @@ impl Backend for RemoteBackend {
         self.snapshot_of(&items)
     }
 
+    fn id_reserved_elsewhere(&self, id: &str) -> Result<bool> {
+        let mut graphs = identity_graphs(&self.graph);
+        graphs.remove(&self.graph);
+        graphs.remove(&vocab::ephemeral_graph(&self.graph));
+        graphs.remove(&vocab::archive_graph(&self.graph));
+        let subject = vocab::item_iri(id);
+        let branches = graphs
+            .iter()
+            .map(|graph| format!("{{ GRAPH <{graph}> {{ <{subject}> ?p ?o }} }}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ");
+        let query = format!("ASK {{ {branches} }}");
+        let body = self.post(
+            "/query",
+            "application/json",
+            &json!({"query": query}).to_string(),
+            false,
+        )?;
+        serde_json::from_str::<Json>(&body)
+            .ok()
+            .and_then(|v| v.get("boolean").and_then(Json::as_bool))
+            .ok_or_else(|| SdError::failed("related-graph ID reservation is UNKNOWN; no create"))
+    }
+
     /// One COUNT over the archive graph's seeds. A timeout is `None`
     /// (unknown), never zero.
     fn archived_count(&self) -> Result<Option<usize>> {
@@ -2860,13 +2905,17 @@ impl Backend for RemoteBackend {
                     guards[gi].push_str(&format!("<{iri}> <{rev}> {r} . "));
                     replace(gi, &iri, true, &mut delete, &mut unions);
                 }
-                // A new seed must be absent from BOTH graphs: ids are unique
-                // across the project, whichever graph a seed lives in.
+                // IDs remain reserved across the fixed work/log family.
+                // Two bounded unions retain the original two-filter budget.
                 None => {
-                    for gr in graphs {
-                        absent.push_str(&format!(
-                            "FILTER NOT EXISTS {{ GRAPH <{gr}> {{ <{iri}> ?x ?y }} }} "
-                        ));
+                    let family: Vec<_> = identity_graphs(&self.graph).into_iter().collect();
+                    for group in family.chunks(3) {
+                        let branches = group
+                            .iter()
+                            .map(|gr| format!("{{ GRAPH <{gr}> {{ <{iri}> ?x ?y }} }}"))
+                            .collect::<Vec<_>>()
+                            .join(" UNION ");
+                        absent.push_str(&format!("FILTER NOT EXISTS {{ {branches} }} "));
                     }
                 }
             }

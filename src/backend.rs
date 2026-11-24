@@ -502,6 +502,13 @@ pub trait Backend {
         Ok(Snapshot::default())
     }
 
+    /// Whether an ID belongs to a related off-board graph. This reserves an
+    /// identity without importing machine records into work views. Backends
+    /// without such a layout have no additional reservations.
+    fn id_reserved_elsewhere(&self, _id: &str) -> Result<bool> {
+        Ok(false)
+    }
+
     /// How many seeds the board archive holds (aegis-n0wc.1), or `None` when
     /// this backend has no archive or the count could not be read.
     fn archived_count(&self) -> Result<Option<usize>> {

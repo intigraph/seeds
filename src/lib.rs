@@ -34,6 +34,7 @@ pub mod blockers;
 pub mod engine;
 pub mod error;
 pub mod ids;
+pub mod intake;
 pub mod message;
 pub mod model;
 pub mod output;

@@ -585,6 +585,13 @@ pub struct SyncArgs {
 /// `sd create`.
 #[derive(Debug, Args)]
 pub struct CreateArgs {
+    /// Explicitly reject a near-duplicate candidate (repeat for each candidate)
+    #[arg(long, requires = "because")]
+    pub new_despite: Vec<String>,
+    /// Why a new seed is distinct; recorded atomically with the candidate IDs
+    #[arg(long, requires = "new_despite")]
+    pub because: Option<String>,
+
     /// Create every `## Title` item of a markdown file, in one transaction
     /// (br's bulk import; sections: Description, Notes, Design, Acceptance
     /// Criteria, Priority, Type, Assignee, Labels, Parent, Dependencies). br's --file
@@ -592,7 +599,7 @@ pub struct CreateArgs {
         "title", "title_flag", "issue_type", "priority", "description", "status", "defer",
         "description_file", "assignee", "owner", "labels", "parent", "deps", "workflow_run",
         "step", "visit", "acceptance_criteria", "external_ref", "due", "estimate", "slug",
-        "agent_context", "ephemeral", "unblocks", "default", "expires_at",
+        "agent_context", "ephemeral", "unblocks", "default", "expires_at", "new_despite", "because",
     ])]
     pub file: Option<String>,
     /// Title (positional form)

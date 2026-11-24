@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.0] - 2026-11-24
+
+### Fixed
+
+- Refresh intake source witnesses and preserve dry-run relations ([57ff4fc](https://github.com/scbrown/seeds/commit/57ff4fc82b0306b1677ff2bdc8ceb6f8a0e34f93))
+
 ## [0.26.1] - 2026-11-24
 
 ### Added

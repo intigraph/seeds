@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.26.1] - 2026-11-24
+
+### Added
+
+- *(remote)* Enforce default-off shared HTTP request budget (#305) ([96cab32](https://github.com/scbrown/seeds/commit/96cab324bc9ed2fd81aa955fcac57764e3156bfd))
+
+### Fixed
+
+- *(read-stream)* Share opt-in Quipu request admission (#307) ([1b721b2](https://github.com/scbrown/seeds/commit/1b721b219a0671ee5a79fc89d31f1290d5e65214))
+
 ## [0.26.0] - 2026-11-23
 
 ### Added

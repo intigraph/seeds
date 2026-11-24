@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.0] - 2026-11-24
+
+### Added
+
+- *(archive)* Move machine records to an operations log ([c51fe9a](https://github.com/scbrown/seeds/commit/c51fe9ad273fa9619dfcd878646e6f8488404295))
+
+### Fixed
+
+- *(remote)* Reserve IDs across work and operations-log graphs ([2778639](https://github.com/scbrown/seeds/commit/2778639b5c5d677028529d40e248959a99d61128))
+
 ## [0.27.0] - 2026-11-24
 
 ### Fixed

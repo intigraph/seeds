@@ -17,6 +17,7 @@ mod command_context;
 pub mod config;
 pub mod credentials;
 mod cutover;
+mod intake;
 pub mod prime;
 mod project_artifact;
 pub mod provenance;
@@ -2802,6 +2803,19 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let path = a.file.as_deref().unwrap_or_default();
             let mut items = engine::parse_bulk_markdown(&read_text(path)?)?;
             for item in &mut items { item.req.due_priority_days = cfg.due_priority_days; }
+            for (index, item) in items.iter().enumerate() {
+                let mut req = item.req.clone();
+                intake::check(b, &mut req, &[], None)?;
+                // Bulk creation is atomic: compare with earlier proposals too,
+                // before any seed is written.
+                let previous = items[..index].iter().enumerate().map(|(i, p)| crate::model::Seed {
+                    id: format!("bulk-{}", i+1), title:p.req.title.clone(), status:"open".into(),
+                    ..Default::default()
+                }).collect::<Vec<_>>();
+                if !crate::intake::name_candidates(&previous, &req.title, req.description.as_deref())?.is_empty() {
+                    return Err(SdError::refused(format!("bulk item {} duplicates an earlier proposal; no create sent", index+1)));
+                }
+            }
             let (seeds, tx) = engine::create_many(b, ctx, &items, a.dry_run)?;
             let verb = if a.dry_run { "would create" } else { "created" };
             let text = if a.silent {
@@ -2838,7 +2852,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 (None, Some(f)) => Some(read_text(f)?),
                 (None, None) => None,
             };
-            let req = engine::CreateReq {
+            let mut req = engine::CreateReq {
+                intake_comment: None,
                 due_priority_days: cfg.due_priority_days,
                 title,
                 description,
@@ -2866,7 +2881,17 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 defer: a.defer.clone(),
                 dry_run: a.dry_run,
             };
-            let engine::Created { seed, tx, existed } = engine::create_outcome(b, ctx, &req)?;
+            let mut preview = req.clone();
+            preview.dry_run = true;
+            let validated = engine::create_outcome(b, ctx, &preview)?;
+            if !validated.existed {
+                intake::check(b, &mut req, &a.new_despite, a.because.as_deref())?;
+            }
+            let engine::Created { seed, tx, existed } = if validated.existed {
+                validated
+            } else {
+                engine::create_outcome(b, ctx, &req)?
+            };
             let text = if a.silent {
                 seed.id.clone()
             } else if a.dry_run {
@@ -2886,7 +2911,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             Ok(ok(json, output::with_tx(seed.to_json(), tx), text, vec![]))
         }
         Command::Q(a) => {
-            let req = engine::CreateReq {
+            let mut req = engine::CreateReq {
                 due_priority_days: cfg.due_priority_days,
                 title: a.title.join(" "),
                 description: a.description.clone(),
@@ -2897,6 +2922,10 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 estimate: a.estimate.clone(),
                 ..engine::CreateReq::default()
             };
+            let mut preview = req.clone();
+            preview.dry_run = true;
+            engine::create_outcome(b, ctx, &preview)?;
+            intake::check(b, &mut req, &[], None)?;
             let (seed, tx) = engine::create(b, ctx, &req)?;
             let value = serde_json::json!({"id": seed.id, "title": seed.title, "tx": tx});
             Ok(ok(json, value, seed.id.clone(), vec![]))

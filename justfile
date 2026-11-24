@@ -43,6 +43,7 @@ wasm-test:
 # Everything the native CI job runs
 check:
     cargo fmt --check
+    python3 scripts/test-repository-knowledge.py
     cargo clippy --all-targets -- -D warnings
     cargo fmt --manifest-path tools/acquisition-verifier/Cargo.toml --check
     cargo clippy --locked --manifest-path tools/acquisition-verifier/Cargo.toml -- -D warnings

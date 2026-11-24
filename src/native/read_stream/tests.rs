@@ -855,23 +855,25 @@ fn replication_http_budget_covers_stream_and_challenge_dispatch() {
     if std::env::var_os(CHILD).is_none() {
         for limit in ["0", "1", "invalid"] {
             let cache = tempfile::tempdir().unwrap();
+            // libtest names omit the crate prefix from module_path!(). Require
+            // one actual executed test so an incorrect filter cannot pass.
+            let name = format!(
+                "{}::replication_http_budget_covers_stream_and_challenge_dispatch",
+                module_path!().split_once("::").unwrap().1,
+            );
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("ST_QUIPU_READS_PER_MINUTE", limit)
+                .env("XDG_CACHE_HOME", cache.path())
+                .output()
+                .unwrap();
             assert!(
-                std::process::Command::new(std::env::current_exe().unwrap())
-                    .args([
-                        "--exact",
-                        concat!(
-                            module_path!(),
-                            "::replication_http_budget_covers_stream_and_challenge_dispatch"
-                        ),
-                        "--nocapture",
-                    ])
-                    .env(CHILD, "1")
-                    .env("ST_QUIPU_READS_PER_MINUTE", limit)
-                    .env("XDG_CACHE_HOME", cache.path())
-                    .status()
-                    .unwrap()
-                    .success(),
-                "replication budget control {limit}"
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "replication budget control {limit}: {} {}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
             );
         }
         return;

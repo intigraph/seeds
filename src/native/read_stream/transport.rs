@@ -29,11 +29,13 @@ impl Transport {
         Ok(Self {
             base: c.primary_url.trim_end_matches('/').into(),
             credential: c.replication_credential_file.clone(),
-            agent: ureq::AgentBuilder::new()
-                .timeout_connect(Duration::from_secs(5))
-                .timeout_read(Duration::from_secs(25))
-                .redirects(0)
-                .build(),
+            agent: super::super::remote::budgeted_agent_builder(
+                ureq::AgentBuilder::new()
+                    .timeout_connect(Duration::from_secs(5))
+                    .timeout_read(Duration::from_secs(25))
+                    .redirects(0),
+            )?
+            .build(),
         })
     }
     pub(super) fn request(&self, path: &str) -> Result<ureq::Request> {

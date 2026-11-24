@@ -10,9 +10,11 @@ requests. No network request runs under the ledger lock.
 
 Enabled callers disable connection pooling (preventing uncharged internal socket
 retries) and refuse redirects, unsupported origin spellings and non-Unix
-platforms rather than claiming coverage they cannot enforce. Independent native
-transfer and read-stream clients are outside this source candidate. Do not
-activate a fleet budget based on this candidate until every relevant caller's
+platforms rather than claiming coverage they cannot enforce. The replication
+stream/challenge transport now uses that same admission builder while retaining
+its dedicated credential and endpoint restrictions. Native GitHub release checks
+and external transfer endpoints do not target Quipu and keep their own transport.
+Do not activate a fleet budget based on source alone until every relevant caller's
 coverage, installed binary and shared-ledger behavior are qualified.
 
 The real-binary probe is `SEEDS_TEST_SD=/absolute/qualified/sd python3

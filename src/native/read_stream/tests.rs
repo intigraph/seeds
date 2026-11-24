@@ -844,3 +844,119 @@ fn headroom_is_the_read_budget_inside_the_freshness_cap() {
     // The measured refusal: a bound of ~4.2 s left no room for a 0.84 s read.
     assert!(!super::has_headroom(&f.board, 1_000 + 4_200));
 }
+
+#[test]
+fn replication_http_budget_covers_stream_and_challenge_dispatch() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const CHILD: &str = "SEEDS_REPLICATION_BUDGET_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for limit in ["0", "1", "invalid"] {
+            let cache = tempfile::tempdir().unwrap();
+            assert!(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        concat!(
+                            module_path!(),
+                            "::replication_http_budget_covers_stream_and_challenge_dispatch"
+                        ),
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .env("ST_QUIPU_READS_PER_MINUTE", limit)
+                    .env("XDG_CACHE_HOME", cache.path())
+                    .status()
+                    .unwrap()
+                    .success(),
+                "replication budget control {limit}"
+            );
+        }
+        return;
+    }
+    let mut f = Fixture::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    f.config.primary_url = format!("http://{}", listener.local_addr().unwrap());
+    fs::write(
+        &f.config.replication_credential_file,
+        "fixture-only-token\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        &f.config.replication_credential_file,
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let transport = transport::Transport::new(&f.cfg, &f.config);
+    let limit = std::env::var("ST_QUIPU_READS_PER_MINUTE").unwrap();
+    if limit == "invalid" {
+        assert!(transport.is_err());
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+        return;
+    }
+    let transport = transport.unwrap();
+    assert!(transport.request("/query").is_err());
+    let done = Arc::new(AtomicBool::new(false));
+    let stop = done.clone();
+    let worker = std::thread::spawn(move || {
+        let mut paths = Vec::new();
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut bytes = Vec::new();
+                    let mut byte = [0];
+                    while !bytes.ends_with(b"\r\n\r\n") {
+                        assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                        bytes.push(byte[0]);
+                        assert!(bytes.len() < 16384);
+                    }
+                    let header = String::from_utf8(bytes).unwrap();
+                    paths.push(header.lines().next().unwrap().to_owned());
+                    assert!(header.contains("Bearer fixture-only-token"));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.load(Ordering::Acquire) {
+                        return paths;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(e) => panic!("loopback accept failed: {e}"),
+            }
+        }
+    });
+    assert!(transport
+        .request("/replicate/stream")
+        .unwrap()
+        .call()
+        .is_ok());
+    let challenge = transport.request("/replicate/challenge").unwrap().call();
+    done.store(true, Ordering::Release);
+    let paths = worker.join().unwrap();
+    if limit == "1" {
+        assert!(challenge
+            .unwrap_err()
+            .to_string()
+            .contains("local Quipu read budget"));
+        assert_eq!(paths, ["POST /replicate/stream HTTP/1.1"]);
+    } else {
+        assert!(challenge.is_ok());
+        assert_eq!(
+            paths,
+            [
+                "POST /replicate/stream HTTP/1.1",
+                "POST /replicate/challenge HTTP/1.1"
+            ]
+        );
+    }
+}

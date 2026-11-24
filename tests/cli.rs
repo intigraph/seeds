@@ -3556,6 +3556,7 @@ fn decimal_rank_cli_roundtrip_and_single_item_move() {
 #[test]
 fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
     let s = Sandbox::new("ask-no-defer");
+    let mut controls: Vec<String> = Vec::new();
     for label in [
         "needs-stiwi",
         "blocked:human",
@@ -3575,7 +3576,16 @@ fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
         if label != "title" {
             args.extend(["--labels", label]);
         }
+        if label != "title" && !controls.is_empty() {
+            for id in &controls {
+                args.extend(["--new-despite", id]);
+            }
+            args.extend(["--because", "separate policy-label control"]);
+        }
         let item = s.json(&args);
+        if label != "title" {
+            controls.push(item["id"].as_str().unwrap().to_string());
+        }
         let id = item["id"].as_str().unwrap();
         let before = s.json(&["show", id]);
         for args in [
@@ -3589,7 +3599,12 @@ fn ask_deferral_refuses_all_cli_spellings_and_keeps_the_current_revision() {
             assert_eq!(s.json(&["show", id]), before);
         }
     }
-    let normal = s.json(&["create", "Technical control", "--labels", "security"]);
+    let normal = s.json(&[
+        "create",
+        "Unrelated engineering task",
+        "--labels",
+        "security",
+    ]);
     let id = normal["id"].as_str().unwrap();
     s.ok(&["defer", id, "--until", "2027-01-01"]);
     assert_eq!(s.json(&["show", id])[0]["status"], "deferred");

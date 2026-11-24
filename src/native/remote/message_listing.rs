@@ -7,6 +7,50 @@ const SUBJECT_PAGE: usize = 128;
 const FACT_LIMIT: usize = 1000;
 const MAX_PAGES: usize = 1024;
 
+// Historical windows usually contain no live mail for this recipient. Prove
+// that in bounded groups instead of spending one empty subject query per week.
+// This is a fresh scoped read, never a recent-window shortcut or receipt cache.
+fn populated_windows(
+    windows: &[String],
+    recipient: &str,
+    sent_filter: &str,
+    select: &mut impl FnMut(&str) -> Result<(Rows, bool)>,
+) -> Result<Vec<String>> {
+    if windows.len() <= 1 {
+        return Ok(windows.to_vec());
+    }
+    let mut populated = BTreeSet::new();
+    for chunk in windows.chunks(64) {
+        let values = chunk
+            .iter()
+            .map(|w| format!("<{w}>"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let query = format!("SELECT DISTINCT ?window WHERE {{ VALUES ?window {{ {values} }} GRAPH ?window {{ ?m a <{}Message>{recipient}{sent_filter} . }} }} LIMIT {}", vocab::SCHEMA, chunk.len() + 1);
+        let (rows, truncated) = select(&query)?;
+        if truncated || rows.len() > chunk.len() {
+            return Err(SdError::failed(
+                "incomplete message window presence coverage",
+            ));
+        }
+        for row in rows {
+            let Some(Obj::Iri(window)) = row.get("window") else {
+                return Err(SdError::failed("invalid message window presence row"));
+            };
+            if !chunk.contains(window) || !populated.insert(window.clone()) {
+                return Err(SdError::failed(
+                    "message window presence escaped scope or repeated",
+                ));
+            }
+        }
+    }
+    Ok(windows
+        .iter()
+        .filter(|w| populated.contains(*w))
+        .cloned()
+        .collect())
+}
+
 fn facts(
     window: &str,
     subjects: &[String],
@@ -54,19 +98,20 @@ pub(super) fn collect(
             )
         })
         .unwrap_or_default();
-    for window in windows {
+    let recipient = recipient
+        .map(|r| {
+            format!(
+                " ; <{}recipient> <{}>",
+                vocab::SCHEMA,
+                vocab::principal_iri(r)
+            )
+        })
+        .unwrap_or_default();
+    let windows = populated_windows(windows, &recipient, &sent_filter, &mut select)?;
+    for window in &windows {
         let mut after = String::new();
         let mut complete = false;
         for _ in 0..MAX_PAGES {
-            let recipient = recipient
-                .map(|r| {
-                    format!(
-                        " ; <{}recipient> <{}>",
-                        vocab::SCHEMA,
-                        vocab::principal_iri(r)
-                    )
-                })
-                .unwrap_or_default();
             let cursor = if after.is_empty() {
                 String::new()
             } else {
@@ -142,6 +187,73 @@ pub(super) fn collect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_history_is_one_scoped_probe_not_one_query_per_window() {
+        let windows: Vec<_> = (1..=20)
+            .map(|n| format!("https://example.org/mail/{n}"))
+            .collect();
+        let mut calls = 0;
+        let listing = collect(
+            &windows,
+            Some("reader"),
+            Some("2026-11-13T06:00:00Z"),
+            |q| {
+                calls += 1;
+                assert!(q.starts_with("SELECT DISTINCT ?window"), "{q}");
+                for w in &windows {
+                    assert!(q.contains(&format!("<{w}>")));
+                }
+                assert!(q.contains(&vocab::principal_iri("reader")));
+                assert!(q.contains("FILTER(?sent >="));
+                Ok((vec![], false))
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert!(listing.messages.is_empty() && listing.warnings.is_empty());
+    }
+
+    #[test]
+    fn presence_refuses_unknown_duplicate_truncated_and_malformed_rows() {
+        let windows: Vec<String> = vec![
+            "https://example.org/a".into(),
+            "https://example.org/b".into(),
+        ];
+        let row = |w: &str| BTreeMap::from([("window".into(), Obj::Iri(w.into()))]);
+        for (rows, truncated) in [
+            (vec![], true),
+            (vec![BTreeMap::new()], false),
+            (vec![row("https://example.org/outside")], false),
+            (vec![row(&windows[0]), row(&windows[0])], false),
+        ] {
+            assert!(collect(&windows, None, None, |_| Ok((rows.clone(), truncated))).is_err());
+        }
+    }
+
+    #[test]
+    fn presence_is_bounded_and_keeps_nonempty_windows_in_caller_order() {
+        let windows: Vec<_> = (0..130)
+            .map(|n| format!("https://example.org/mail/{n}"))
+            .collect();
+        let mut probes = 0;
+        let got = populated_windows(&windows, "", "", &mut |q| {
+            let chunk = &windows[probes * 64..((probes + 1) * 64).min(windows.len())];
+            probes += 1;
+            assert!(q.contains(&format!("LIMIT {}", chunk.len() + 1)));
+            Ok((
+                chunk
+                    .iter()
+                    .rev()
+                    .map(|w| BTreeMap::from([("window".into(), Obj::Iri(w.clone()))]))
+                    .collect(),
+                false,
+            ))
+        })
+        .unwrap();
+        assert_eq!(probes, 3);
+        assert_eq!(got, windows);
+    }
 
     fn message(n: usize) -> crate::message::Message {
         crate::message::Message {

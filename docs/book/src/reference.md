@@ -163,6 +163,12 @@ records rather than claiming a complete unread total. Transport failures,
 incomplete pages and exhausted traversal bounds remain errors. This is a live
 traversal, not an atomic mailbox snapshot.
 
+For multiple windows, a fresh bounded presence query first checks the exact
+requested graphs using the same recipient and expiry filters. Only windows
+proven empty are skipped; nonempty windows retain subject and fact pagination.
+Incomplete or unexpected presence results refuse the read. This adds no recent
+window shortcut or retained receipt cache.
+
 `msg show` and `msg read` use a message's delivery binding when available,
 without scanning unrelated mail. They still enforce the requested window
 scope; messages predating bindings retain the listing compatibility path.

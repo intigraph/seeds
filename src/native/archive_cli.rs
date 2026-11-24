@@ -56,6 +56,18 @@ pub(super) fn archive(
     a: &ArchiveArgs,
 ) -> Result<Outcome> {
     check_instant(&a.closed_before)?;
+    for id in &a.ids {
+        if id.is_empty()
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b))
+        {
+            return Err(SdError::usage(
+                "operations-log ID must contain only letters, digits, dash, dot or underscore",
+            ));
+        }
+    }
+
     if a.batch == 0 || a.batch > 200 {
         return Err(SdError::usage("--batch must be 1..=200"));
     }
@@ -71,13 +83,43 @@ pub(super) fn archive(
         ))
     })?;
     let protect = Protect::parse(&text)?;
+    if a.operations_log {
+        let snapshot = remote.snapshot_items(&a.ids)?;
+        for id in &a.ids {
+            let seed = snapshot
+                .seeds
+                .get(id)
+                .ok_or_else(|| SdError::refused("operations-log ID absent; no move"))?;
+            if seed.issue_type != "ops" || seed.status != "closed" {
+                return Err(SdError::refused(
+                    "operations-log requires closed ops records; close with a disposition first",
+                ));
+            }
+        }
+    }
     let protected = remote.archive_protected(&a.closed_before, &protect)?;
     let mut movable = Vec::new();
     let mut scanned = 0usize;
     let mut kept = 0usize;
     let mut cursor = String::new();
+    let mut explicit = a.ids.clone();
+    explicit.sort();
+    explicit.dedup();
+    if a.operations_log && (explicit.is_empty() || explicit.len() > 200) {
+        return Err(SdError::usage(
+            "--operations-log requires 1..=200 exact --id values",
+        ));
+    }
     loop {
-        let page = remote.archive_candidates(&a.closed_before, &cursor, PAGE)?;
+        let page = if a.operations_log {
+            if cursor.is_empty() {
+                explicit.clone()
+            } else {
+                Vec::new()
+            }
+        } else {
+            remote.archive_candidates(&a.closed_before, &cursor, PAGE)?
+        };
         let Some(last) = page.last().cloned() else {
             break;
         };
@@ -104,7 +146,7 @@ pub(super) fn archive(
     let batches = movable.len().div_ceil(a.batch);
     if !a.execute {
         let value = json!({
-            "mode": "plan", "closed_before": a.closed_before,
+            "mode": "plan", "operations_log": a.operations_log, "closed_before": a.closed_before,
             "candidates_scanned": scanned, "protected_kept": kept, "movable": movable.len(),
             "batches": batches, "protected_by_reason": reasons,
             "sample": movable.iter().take(20).collect::<Vec<_>>(),
@@ -128,19 +170,20 @@ pub(super) fn archive(
         // intent for a batch that never landed restores nothing.
         append(
             log,
-            &json!({"op": "archive", "phase": "intent", "batch": n, "ids": chunk}),
+            &json!({"op": "archive", "operations_log": a.operations_log, "phase": "intent", "batch": n, "ids": chunk}),
         )?;
-        let m = remote.archive_move(ctx, chunk, true).map_err(|e| {
+        let m = if a.operations_log { remote.archive_move_scoped(ctx, chunk, true, true) } else { remote.archive_move(ctx, chunk, true) }.map_err(|e| {
             SdError::failed(format!(
-                "{}\nbatch {n} ids: {}\nits intent is logged; reverse it with: sd unarchive --from-log {} --execute",
+                "{}\nbatch {n} ids: {}\nits intent is logged; reverse it with: sd unarchive{} --from-log {} --execute",
                 e.message,
                 chunk.join(" "),
+                if a.operations_log { " --operations-log" } else { "" },
                 log.display()
             ))
         })?;
         append(
             log,
-            &json!({"op": "archive", "phase": "result", "batch": n, "tx": m.tx, "ids": m.ids, "subjects": m.subjects, "facts": m.facts}),
+            &json!({"op": "archive", "operations_log": a.operations_log, "phase": "result", "batch": n, "tx": m.tx, "ids": m.ids, "subjects": m.subjects, "facts": m.facts}),
         )
         .map_err(|e| {
             SdError::failed(format!(
@@ -162,7 +205,7 @@ pub(super) fn archive(
     Ok(ok(json_out, value, text, vec![]))
 }
 
-fn log_ids(path: &std::path::Path) -> Result<Vec<String>> {
+fn log_ids(path: &std::path::Path, operations_log: bool) -> Result<Vec<String>> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| SdError::usage(format!("cannot read archive log {}: {e}", path.display())))?;
     let mut ids = BTreeSet::new();
@@ -175,6 +218,15 @@ fn log_ids(path: &std::path::Path) -> Result<Vec<String>> {
             .map_err(|e| SdError::usage(format!("archive log line {} is not JSON: {e}", n + 1)))?;
         if v["op"] != "archive" {
             continue;
+        }
+        if v.get("operations_log")
+            .and_then(Json::as_bool)
+            .unwrap_or(false)
+            != operations_log
+        {
+            return Err(SdError::refused(
+                "archive log graph differs; preserve intent, do not restore from another graph",
+            ));
         }
         for id in v["ids"].as_array().into_iter().flatten() {
             ids.insert(
@@ -200,7 +252,7 @@ pub(super) fn unarchive(
     }
     let mut ids: Vec<String> = a.ids.clone();
     if let Some(log) = &a.from_log {
-        ids.extend(log_ids(log)?);
+        ids.extend(log_ids(log, a.operations_log)?);
     }
     ids.sort();
     ids.dedup();
@@ -209,7 +261,11 @@ pub(super) fn unarchive(
     }
     let mut held = Vec::new();
     for chunk in ids.chunks(a.batch) {
-        held.extend(remote.snapshot_archived(chunk)?.seeds.into_keys());
+        if a.operations_log {
+            held.extend(remote.operations_log_ids(chunk)?);
+        } else {
+            held.extend(remote.snapshot_archived(chunk)?.seeds.into_keys());
+        }
     }
     held.sort();
     let absent = ids.len() - held.len();
@@ -225,7 +281,11 @@ pub(super) fn unarchive(
     let mut restored = 0usize;
     let mut subjects = 0usize;
     for chunk in held.chunks(a.batch) {
-        let m = remote.archive_move(ctx, chunk, false)?;
+        let m = if a.operations_log {
+            remote.archive_move_scoped(ctx, chunk, false, true)?
+        } else {
+            remote.archive_move(ctx, chunk, false)?
+        };
         restored += m.ids.len();
         subjects += m.subjects;
     }
@@ -253,6 +313,19 @@ mod tests {
     }
 
     #[test]
+    fn operations_log_inverse_rejects_mixed_graph_intents() {
+        let dir = std::env::temp_dir().join(format!("seeds-ops-log-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("intent.jsonl");
+        std::fs::write(&path, "{\"op\":\"archive\",\"operations_log\":true,\"ids\":[\"x\"]}\n{\"op\":\"archive\",\"operations_log\":true,\"ids\":[\"x\"]}\n").unwrap();
+        assert_eq!(log_ids(&path, true).unwrap(), vec!["x"]);
+        assert!(log_ids(&path, false).is_err());
+        std::fs::write(&path, "{\"op\":\"archive\",\"ids\":[\"x\"]}\n").unwrap();
+        assert!(log_ids(&path, true).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_log_names_only_archive_batches() {
         let dir = std::env::temp_dir().join(format!("seeds-archive-log-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -262,9 +335,9 @@ mod tests {
             "{\"op\":\"archive\",\"ids\":[\"b\",\"a\"]}\n\n{\"op\":\"other\",\"ids\":[\"z\"]}\n{\"op\":\"archive\",\"ids\":[\"a\",\"c\"]}\n",
         )
         .unwrap();
-        assert_eq!(log_ids(&path).unwrap(), vec!["a", "b", "c"]);
+        assert_eq!(log_ids(&path, false).unwrap(), vec!["a", "b", "c"]);
         std::fs::write(&path, "not json\n").unwrap();
-        assert!(log_ids(&path).is_err());
+        assert!(log_ids(&path, false).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

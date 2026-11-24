@@ -86,6 +86,20 @@ fn override_requires_candidate_and_reason_and_commits_audit_with_related_edge() 
     ] {
         assert!(!s.run(&args).status.success());
     }
+    let before_preview = s.count();
+    let preview: Value = serde_json::from_str(&s.ok(&[
+        "create",
+        "Repair parser authentication",
+        "--new-despite",
+        id.trim(),
+        "--because",
+        "separate deployment",
+        "--dry-run",
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(preview["dependency_count"], 1);
+    assert_eq!(s.count(), before_preview);
     let new_id = s.ok(&[
         "create",
         "Repair parser authentication",

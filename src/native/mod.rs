@@ -2887,7 +2887,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             if !validated.existed {
                 intake::check(b, &mut req, &a.new_despite, a.because.as_deref())?;
             }
-            let engine::Created { seed, tx, existed } = if req.dry_run || validated.existed {
+            let engine::Created { seed, tx, existed } = if validated.existed {
                 validated
             } else {
                 engine::create_outcome(b, ctx, &req)?

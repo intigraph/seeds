@@ -139,14 +139,27 @@ pub(super) fn move_update(
     owners: &BTreeMap<String, String>,
     closed_guard: Option<&str>,
 ) -> String {
+    move_update_scoped(src, dst, owners, closed_guard, false)
+}
+
+fn move_update_scoped(
+    src: &str,
+    dst: &str,
+    owners: &BTreeMap<String, String>,
+    closed_guard: Option<&str>,
+    operations_log: bool,
+) -> String {
     let mut templates = String::new();
     let mut branches = Vec::with_capacity(owners.len());
     for (n, (subject, item)) in owners.iter().enumerate() {
         let triple = format!("<{subject}> ?p{n} ?o{n} . ");
         templates.push_str(&triple);
-        let guard = closed_guard
+        let mut guard = closed_guard
             .map(|status| format!("<{item}> <{status}> \"closed\" . "))
             .unwrap_or_default();
+        if operations_log {
+            guard.push_str(&format!("<{item}> <{}> \"ops\" . ", term::issue_type()));
+        }
         branches.push(format!("{{ GRAPH <{src}> {{ {guard}{triple}}} }}"));
     }
     format!(
@@ -299,10 +312,31 @@ impl RemoteBackend {
         Ok(facts)
     }
 
+    pub fn operations_log_ids(&self, ids: &[String]) -> Result<Vec<String>> {
+        let facts = self.family_facts(&format!("{}#operations-log", self.graph), ids)?;
+        Ok(ids
+            .iter()
+            .filter(|id| facts.contains_key(&vocab::item_iri(id)))
+            .cloned()
+            .collect())
+    }
+
     /// Move `ids` (and their comments) between the live and archive graphs in
     /// one update, then verify. `forward` = live -> archive, and moves only
     /// items still `closed`; backward moves whatever the archive holds.
     pub fn archive_move(&self, ctx: &Ctx, ids: &[String], forward: bool) -> Result<Moved> {
+        self.archive_move_scoped(ctx, ids, forward, false)
+    }
+
+    /// Fixed operations-log transport: closed ops only on the forward path.
+    /// It retains the archive's constant-subject update and exact verification.
+    pub fn archive_move_scoped(
+        &self,
+        ctx: &Ctx,
+        ids: &[String],
+        forward: bool,
+        operations_log: bool,
+    ) -> Result<Moved> {
         if ids.is_empty() {
             return Ok(Moved {
                 ids: Vec::new(),
@@ -312,7 +346,11 @@ impl RemoteBackend {
             });
         }
         let live = self.graph.clone();
-        let arch = vocab::archive_graph(&live);
+        let arch = if operations_log {
+            format!("{live}#operations-log")
+        } else {
+            vocab::archive_graph(&live)
+        };
         let (src, dst) = if forward {
             (&live, &arch)
         } else {
@@ -320,6 +358,25 @@ impl RemoteBackend {
         };
         let before = self.family_facts(src, ids)?;
         let status = term::status();
+        if operations_log {
+            for id in ids {
+                let facts = before
+                    .get(&vocab::item_iri(id))
+                    .ok_or_else(|| SdError::refused("operations-log source ID absent; no move"))?;
+                if !facts.iter().any(|(p, o)| {
+                    *p == term::issue_type() && matches!(o, Obj::Str(t) if t == "ops")
+                }) {
+                    return Err(SdError::refused(
+                        "operations-log move requires type ops; no move",
+                    ));
+                }
+            }
+            if !self.family_facts(dst, ids)?.is_empty() {
+                return Err(SdError::refused(
+                    "operations-log destination already holds an ID; reconcile, no overwrite",
+                ));
+            }
+        }
         // Forward moves only items the pre-read shows closed: one reopened
         // since selection is skipped (its guarded branch would match nothing).
         let found: BTreeSet<String> = ids
@@ -361,8 +418,14 @@ impl RemoteBackend {
                 tx: 0,
             });
         }
-        let update = move_update(src, dst, &owners, forward.then_some(status.as_str()));
-        let source = if forward {
+        let update = if operations_log {
+            move_update_scoped(src, dst, &owners, forward.then_some(status.as_str()), true)
+        } else {
+            move_update(src, dst, &owners, forward.then_some(status.as_str()))
+        };
+        let source = if operations_log {
+            "seeds:operations-log"
+        } else if forward {
             "seeds:archive"
         } else {
             "seeds:unarchive"

@@ -482,6 +482,8 @@ fn a_batch_that_fails_verification_after_commit_is_logged_and_reversible() {
         }));
     });
     let args = crate::native::cli::ArchiveArgs {
+        operations_log: false,
+        ids: vec![],
         closed_before: "2026-10-01T00:00:00Z".into(),
         protect: protect.clone(),
         batch: 100,
@@ -517,6 +519,7 @@ fn a_batch_that_fails_verification_after_commit_is_logged_and_reversible() {
     );
 
     let un = crate::native::cli::UnarchiveArgs {
+        operations_log: false,
         ids: Vec::new(),
         from_log: Some(log.clone()),
         batch: 100,
@@ -652,4 +655,59 @@ fn archive_moves_on_a_store_too_large_for_an_unsliceable_update() {
     assert!(r
         .family_facts_for_test(&vocab::archive_graph(&live), &ids)
         .is_empty());
+}
+
+#[test]
+fn operations_log_moves_only_closed_ops_with_comments_and_roundtrips() {
+    let Some(server) = server_or_skip() else {
+        return;
+    };
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/ops-control",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let c = ctx();
+    let machine = engine::create(
+        &mut r,
+        &c,
+        &CreateReq {
+            title: "machine record".into(),
+            issue_type: Some("ops".into()),
+            ..CreateReq::default()
+        },
+    )
+    .unwrap()
+    .0
+    .id;
+    let ordinary = create(&mut r, &c, "ordinary work", None);
+    engine::comment_add(&mut r, &c, &machine, "retained evidence", None).unwrap();
+    engine::close(
+        &mut r,
+        &c,
+        &[machine.clone(), ordinary.clone()],
+        Some("record moved"),
+        false,
+    )
+    .unwrap();
+    let ids = vec![machine.clone()];
+    let before = r.family_facts_for_test(&r.graph.clone(), &ids);
+    assert!(r
+        .archive_move_scoped(&c, std::slice::from_ref(&ordinary), true, true)
+        .is_err());
+    let moved = r.archive_move_scoped(&c, &ids, true, true).unwrap();
+    assert_eq!(moved.ids, ids);
+    assert_eq!(moved.subjects, 2);
+    assert!(r.family_facts_for_test(&r.graph.clone(), &ids).is_empty());
+    assert_eq!(
+        r.family_facts_for_test(&format!("{}#operations-log", r.graph), &ids),
+        before
+    );
+    assert_eq!(r.operations_log_ids(&ids).unwrap(), ids);
+    r.archive_move_scoped(&c, &ids, false, true).unwrap();
+    assert_eq!(r.family_facts_for_test(&r.graph.clone(), &ids), before);
+    assert!(r.snapshot_items(&[ordinary]).unwrap().seeds.len() == 1);
 }

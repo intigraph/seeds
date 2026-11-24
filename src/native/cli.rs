@@ -454,6 +454,12 @@ pub struct InitArgs {
 /// `sd archive`: move closed seeds past a cutoff out of the live board graph.
 #[derive(Debug, Args)]
 pub struct ArchiveArgs {
+    /// Move only the explicit closed ops IDs into the operations-log graph
+    #[arg(long, requires = "ids")]
+    pub operations_log: bool,
+    /// Exact reviewed IDs for --operations-log (never a board-wide selection)
+    #[arg(long = "id", requires = "operations_log")]
+    pub ids: Vec<String>,
     /// Archive seeds closed and last modified before this RFC 3339 UTC instant
     #[arg(long)]
     pub closed_before: String,
@@ -479,6 +485,9 @@ pub struct ArchiveArgs {
 /// `sd unarchive`: move archived seeds back into the live board graph.
 #[derive(Debug, Args)]
 pub struct UnarchiveArgs {
+    /// Restore from the operations log rather than the board archive
+    #[arg(long)]
+    pub operations_log: bool,
     /// Seed ids to restore
     pub ids: Vec<String>,
     /// Restore every seed a `sd archive --log` file recorded

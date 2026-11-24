@@ -60,6 +60,8 @@ mod message_listing;
 mod message_tests;
 mod owner_query;
 mod projection;
+#[cfg(unix)]
+mod read_budget;
 mod summary;
 mod tls;
 
@@ -328,6 +330,11 @@ fn transport(url: &str, e: &ureq::Transport) -> SdError {
     let mut timeout = false;
     while let Some(error) = cause {
         if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::PermissionDenied
+                && io.to_string().starts_with("local Quipu read budget:")
+            {
+                return SdError::refused(io.to_string());
+            }
             timeout |= matches!(
                 io.kind(),
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock

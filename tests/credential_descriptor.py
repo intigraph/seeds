@@ -30,10 +30,7 @@ def main():
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
             observed.append((self.path, self.headers.get("Authorization")))
-            if self.path == "/resolve":
-                assert self.headers.get("Authorization") is None
-                self.reply({"has_matches": False, "candidates": [], "vector_scope": {"kind": "whole_store"}})
-            elif self.path == "/query" and "ASK" in body:
+            if self.path == "/query" and "ASK" in body:
                 self.reply({"boolean": False})
             elif self.path == "/query":
                 self.reply({"head": {"vars": ["probe"]}, "results": {"bindings": [{"probe": {"type": "literal", "value": "complete"}}] if "SELECT ?probe" in body else []}, "truncated": False})

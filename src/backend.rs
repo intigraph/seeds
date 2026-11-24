@@ -236,16 +236,6 @@ impl WriteBatch {
 
 /// Storage for one project.
 pub trait Backend {
-    /// Remote creation resolution, including configured embeddings. Local
-    /// backends return None and intake builds an active-only name corpus.
-    fn creation_resolution(
-        &self,
-        _title: &str,
-        _description: Option<&str>,
-    ) -> Result<Option<Vec<quipu::resolution::EntityCandidate>>> {
-        Ok(None)
-    }
-
     /// IDs carrying governed rescope metadata. Remote readers must override
     /// this with a bounded indexed read; an incomplete answer is an error.
     fn spec_change_ids(&self) -> Result<Vec<String>> {

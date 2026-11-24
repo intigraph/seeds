@@ -74,9 +74,3 @@ The CLI verbs cover what agents type directly: `create`, `show`, `list`,
 | 5 | health / liveness | nothing to build locally; the store is a file |
 | 6 | maintenance | nothing to build |
 | 7 | read projections | built: `count`, `list` and `ready` (ready is a SPARQL query) |
-
-## Creation intake
-
-A new item should not fragment existing work. [Duplicate intake](duplicate-intake.md)
-reuses Quipu's entity resolver before `create`, with an explicit, recorded distinct
-work override instead of an automatic merge or a second ticket by default.

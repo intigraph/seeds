@@ -31,8 +31,6 @@ pub type Warnings = Vec<String>;
 /// `sd create`.
 #[derive(Debug, Clone, Default)]
 pub struct CreateReq {
-    /// Creation intake override audit, committed with the new seed.
-    pub intake_comment: Option<String>,
     /// Deployment-provided calendar days by P0-P4; explicit due wins.
     pub due_priority_days: Option<[u32; 5]>,
     /// Title (required, non-empty).
@@ -574,19 +572,7 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
                 seed: seed.clone(),
                 expected_revision: None,
             }],
-            comments: req
-                .intake_comment
-                .as_ref()
-                .map(|text| Comment {
-                    seed: seed.id.clone(),
-                    index: 1,
-                    author: ctx.actor.clone(),
-                    text: text.clone(),
-                    created_at: ctx.now.clone(),
-                    extra: Default::default(),
-                })
-                .into_iter()
-                .collect(),
+            comments: vec![],
             source: "seeds:create".into(),
             ..WriteBatch::default()
         },

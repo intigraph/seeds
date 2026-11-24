@@ -726,14 +726,14 @@ impl RemoteBackend {
             let signed = self
                 .signed_request("POST", path, content_type, body.as_bytes())
                 .map_err(|e| (false, e))?;
-            if matches!(path, "/query" | "/resolve") && !auth {
+            if path == "/query" && !auth {
                 // aegis-dnw: a signed read still declares its source/operation.
-                super::provenance::apply_signed_read(signed, path.trim_start_matches('/'))
+                super::provenance::apply_signed_read(signed, "query")
             } else {
                 signed
             }
-        } else if matches!(path, "/query" | "/resolve") && !auth {
-            quipu_read_request(request, path.trim_start_matches('/'))
+        } else if path == "/query" && !auth {
+            quipu_read_request(request, "query")
         } else {
             quipu_request(request)
         };
@@ -2465,21 +2465,9 @@ impl Backend for RemoteBackend {
         Ok(Snapshot::from_graphs(&facts, &Facts::new()))
     }
 
-    /// Shared Quipu episode resolver; caller filters the complete bounded
-    /// candidate set to active seeds in this project.
-    fn creation_resolution(
-        &self,
-        title: &str,
-        description: Option<&str>,
-    ) -> Result<Option<Vec<quipu::resolution::EntityCandidate>>> {
-        let input = serde_json::json!({
-            "name": title.trim(), "properties": {"description": description.unwrap_or("")},
-            "threshold": crate::intake::THRESHOLD, "top_k": crate::intake::CANDIDATE_CAP
-        });
-        let body = self.post("/resolve", "application/json", &input.to_string(), false)?;
-        super::intake::decode_resolution(&body).map(Some)
-    }
-
+    /// The seeds [`vocab::seed_query_pattern`] lists, range-partitioned in each
+    /// graph, then read by subject. An unconstrained query is a whole
+    /// snapshot.
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {
         if vocab::seed_query_pattern(q).is_none() {
             return self.snapshot(None);

@@ -65,38 +65,6 @@ mod read_budget;
 mod summary;
 mod tls;
 
-/// Apply the same opt-in host admission to every Quipu HTTP agent.
-/// Credentials and endpoint restrictions remain the caller's responsibility.
-pub(super) fn budgeted_agent_builder(builder: ureq::AgentBuilder) -> Result<ureq::AgentBuilder> {
-    #[cfg(unix)]
-    let mut builder = builder;
-    #[cfg(not(unix))]
-    if !matches!(
-        std::env::var("ST_QUIPU_READS_PER_MINUTE"),
-        Err(std::env::VarError::NotPresent)
-    ) && !matches!(std::env::var("ST_QUIPU_READS_PER_MINUTE"), Ok(value) if value.trim() == "0")
-    {
-        return Err(SdError::refused(
-            "local Quipu read budget requires Unix ledger locking",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        let enabled = read_budget::limit()
-            .map_err(|e| SdError::refused(e.to_string()))?
-            .is_some();
-        builder = builder.middleware(read_budget::middleware);
-        if enabled {
-            // ureq follows redirects inside the middleware chain. Refuse that
-            // uncharged second dispatch instead of claiming a per-request cap.
-            // Recycled sockets can trigger an internal retry below middleware
-            // (ureq unit::connect_inner). Disable pooling while the cap is on.
-            builder = builder.redirects(0).max_idle_connections(0);
-        }
-    }
-    Ok(builder)
-}
-
 /// Registry coverage failures are UNKNOWN, never an empty or recent-only inbox.
 fn live_message_windows(project: &str, value: &Json) -> Result<Vec<String>> {
     let bad = || SdError::failed("live message window registry incomplete or malformed");

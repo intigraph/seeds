@@ -323,6 +323,20 @@ fn selection_keeps_every_protected_seed_live() {
     let blocker = mk(&mut r, &c, "blocker of open work");
     let gate = mk(&mut r, &c, "named in a resume condition");
     let pinned = mk(&mut r, &c, "pinned by label");
+    let exact_label = mk(&mut r, &c, "pinned by exact label");
+    let recent_target = mk(&mut r, &c, "target of recent work");
+    let recent_holder = mk(&mut r, &c, "recently closed holder");
+    engine::dep_add(&mut r, &c, &recent_holder, &recent_target, "related").unwrap();
+    engine::update(
+        &mut r,
+        &c,
+        std::slice::from_ref(&exact_label),
+        &engine::UpdateReq {
+            add_labels: vec!["needs-stiwi".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let open = mk(&mut r, &c, "open work");
     let deferred = mk(&mut r, &c, "deferred work");
     engine::dep_add(&mut r, &c, &open, &blocker, "blocks").unwrap();
@@ -340,23 +354,72 @@ resume_when: closed:{gate}"
         ..Default::default()
     };
     engine::update(&mut r, &c, std::slice::from_ref(&pinned), &l).unwrap();
-    for id in [&plain, &listed, &blocker, &gate, &pinned] {
+    for id in [
+        &plain,
+        &listed,
+        &blocker,
+        &gate,
+        &pinned,
+        &exact_label,
+        &recent_target,
+    ] {
         engine::close(&mut r, &c, std::slice::from_ref(id), Some("done"), false).unwrap();
     }
+    let mut later = ctx();
+    later.now = "2026-10-02T00:00:00Z".into();
+    engine::close(
+        &mut r,
+        &later,
+        std::slice::from_ref(&recent_holder),
+        Some("done"),
+        false,
+    )
+    .unwrap();
     let protect = Protect {
         ids: [listed.clone()].into(),
+        labels: ["needs-stiwi".into()].into(),
         label_prefixes: vec!["recurring-class:".into()],
-        ..Protect::default()
     };
     let cutoff = "2026-10-01T00:00:00Z";
     let protected = r.archive_protected(cutoff, &protect).unwrap();
-    for id in [&listed, &blocker, &gate, &pinned] {
+    let selected = vec![
+        plain.clone(),
+        listed.clone(),
+        blocker.clone(),
+        gate.clone(),
+        pinned.clone(),
+        exact_label.clone(),
+        recent_target.clone(),
+    ];
+    assert_eq!(
+        r.archive_protected_ids(cutoff, &protect, &selected)
+            .unwrap(),
+        protected
+    );
+
+    for id in [
+        &listed,
+        &blocker,
+        &gate,
+        &pinned,
+        &exact_label,
+        &recent_target,
+    ] {
         assert!(
             protected.contains_key(id),
             "{id} must be protected: {protected:?}"
         );
     }
     assert!(!protected.contains_key(&plain));
+    assert!(r
+        .archive_protected_ids(cutoff, &protect, std::slice::from_ref(&plain))
+        .unwrap()
+        .is_empty());
+    let single = r
+        .archive_protected_ids(cutoff, &protect, std::slice::from_ref(&gate))
+        .unwrap();
+    assert_eq!(single.len(), 1);
+    assert_eq!(single[&gate], "named in a live resume condition");
     let candidates = r.archive_candidates(cutoff, "", 100).unwrap();
     let movable: Vec<&String> = candidates
         .iter()

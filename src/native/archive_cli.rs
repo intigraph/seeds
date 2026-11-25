@@ -83,9 +83,17 @@ pub(super) fn archive(
         ))
     })?;
     let protect = Protect::parse(&text)?;
+    let mut explicit = a.ids.clone();
+    explicit.sort();
+    explicit.dedup();
+    if a.operations_log && (explicit.is_empty() || explicit.len() > 200) {
+        return Err(SdError::usage(
+            "--operations-log requires 1..=200 exact --id values",
+        ));
+    }
     if a.operations_log {
-        let snapshot = remote.snapshot_items(&a.ids)?;
-        for id in &a.ids {
+        let snapshot = remote.snapshot_items(&explicit)?;
+        for id in &explicit {
             let seed = snapshot
                 .seeds
                 .get(id)
@@ -97,19 +105,15 @@ pub(super) fn archive(
             }
         }
     }
-    let protected = remote.archive_protected(&a.closed_before, &protect)?;
+    let protected = if a.operations_log {
+        remote.archive_protected_ids(&a.closed_before, &protect, &explicit)?
+    } else {
+        remote.archive_protected(&a.closed_before, &protect)?
+    };
     let mut movable = Vec::new();
     let mut scanned = 0usize;
     let mut kept = 0usize;
     let mut cursor = String::new();
-    let mut explicit = a.ids.clone();
-    explicit.sort();
-    explicit.dedup();
-    if a.operations_log && (explicit.is_empty() || explicit.len() > 200) {
-        return Err(SdError::usage(
-            "--operations-log requires 1..=200 exact --id values",
-        ));
-    }
     loop {
         let page = if a.operations_log {
             if cursor.is_empty() {

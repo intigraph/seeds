@@ -19,3 +19,5 @@ The inverse retains the recorded closed disposition. Reopening work is a separat
 operator action. Do not mix archive and operations-log intent files.
 
 Remote creates reserve IDs across the work, ephemeral, archive and operations-log graphs. Moving a record does not release its ID. A keyed create targeting an ID owned by another graph is refused. Restore moved records before downgrading to an SDK without this reservation.
+
+Exact-ID operations-log selection checks incoming dependencies against the named targets. Live resume notes are read with literal status selection and complete bounded results. Unknown status metadata or a truncated protection read refuses the move.

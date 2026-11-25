@@ -4593,7 +4593,11 @@ fn msg(
                 windows(*weeks)?
             };
             let (selected, cutoff) = live(base, ttl)?;
-            let listing = b.message_listing_since(&selected, to.as_deref(), cutoff.as_deref())?;
+            let listing = if *unread {
+                b.message_unread_listing_since(&selected, to.as_deref(), cutoff.as_deref())?
+            } else {
+                b.message_listing_since(&selected, to.as_deref(), cutoff.as_deref())?
+            };
             let mut ms = listing.messages;
             if *unread {
                 ms.retain(|m| m.read_at.is_none());
@@ -4647,7 +4651,11 @@ fn msg(
                 windows(*weeks)?
             };
             let (selected, cutoff) = live(base, ttl)?;
-            let listing = b.message_listing_since(&selected, to.as_deref(), cutoff.as_deref())?;
+            let listing = if *unread {
+                b.message_unread_listing_since(&selected, to.as_deref(), cutoff.as_deref())?
+            } else {
+                b.message_listing_since(&selected, to.as_deref(), cutoff.as_deref())?
+            };
             // Like `messages`: a count never silently skips a malformed record.
             if !listing.warnings.is_empty() {
                 return Err(SdError::failed(listing.warnings.join("; ")));

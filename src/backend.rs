@@ -424,6 +424,20 @@ pub trait Backend {
         Ok(listing)
     }
 
+    /// [`Backend::message_listing_since`] restricted to unread messages. The
+    /// default lists, then drops read messages; a remote backend pushes the
+    /// read predicate into its query so read mail never leaves the server.
+    fn message_unread_listing_since(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<crate::message::Listing> {
+        let mut listing = self.message_listing_since(windows, recipient, since)?;
+        listing.messages.retain(|m| m.read_at.is_none());
+        Ok(listing)
+    }
+
     /// An indexed search page. The backend selects and counts matches before
     /// retrieving the full facts of just the requested page.
     fn search_page(

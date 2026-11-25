@@ -85,6 +85,8 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
             let body = match path {
                 "/health" => json!({"ok":true}),
                 "/resolve" => json!({"has_matches":false,"candidates":[],"vector_scope":{"kind":"whole_store"}}),
+                // sd create's advisory directive hint (aegis-8dda.9): read-only.
+                "/hybrid_search" => json!({"count":0,"results":[]}),
                 // The store id a v2 signature names (aegis-2idcev).
                 "/stats" => json!({"store_id":"urn:uuid:actor-principal-fixture"}),
                 "/identity" if served_identity.load(Ordering::Relaxed) => identity.clone(),

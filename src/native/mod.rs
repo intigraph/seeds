@@ -2909,7 +2909,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             // keyed create whose seed already existed, or a remote store (tx 0:
             // quipu's /update returns no transaction id, aegis-xajsgn).
             let tx = (!a.dry_run && !existed && tx != 0).then_some(tx);
-            Ok(ok(json, output::with_tx(seed.to_json(), tx), text, vec![]))
+            let hints = if existed || a.silent { vec![] } else { intake::directive_hint(b, &req) };
+            Ok(ok(json, output::with_tx(seed.to_json(), tx), text, hints))
         }
         Command::Q(a) => {
             let mut req = engine::CreateReq {
@@ -2929,7 +2930,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             intake::check(b, &mut req, &[], None)?;
             let (seed, tx) = engine::create(b, ctx, &req)?;
             let value = serde_json::json!({"id": seed.id, "title": seed.title, "tx": tx});
-            Ok(ok(json, value, seed.id.clone(), vec![]))
+            let hints = intake::directive_hint(b, &req);
+            Ok(ok(json, value, seed.id.clone(), hints))
         }
         Command::Show(a) => {
             show::run(a, b, at, json)

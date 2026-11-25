@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.2] - 2026-11-25
+
+### Fixed
+
+- *(archive)* Scope operations-log protection to the exact IDs ([9aea582](https://github.com/scbrown/seeds/commit/9aea582b84aed8078d72f81b148160dd86392482))
+
 ## [0.28.1] - 2026-11-24
 
 ### Perf

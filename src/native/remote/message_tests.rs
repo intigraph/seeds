@@ -48,6 +48,25 @@ fn send_checked(
     }
 }
 
+// Like send_checked: an older applier acknowledges the update without an
+// affected count, so the mark is Indeterminate. Prove it by reading it back.
+fn mark_read_checked(b: &mut RemoteBackend, ctx: &Ctx, window: &str, id: &str) {
+    match b.message_mark_read(ctx, window, id) {
+        Ok(marked) => assert!(marked, "{id} was not newly marked read"),
+        Err(error) => {
+            assert_eq!(error.kind, ErrorKind::Indeterminate, "{error:?}");
+            let (_, stored) = b
+                .message_lookup(&[window.to_string()], id)
+                .unwrap()
+                .expect("marked message must still be readable");
+            assert!(
+                stored.read_at.is_some(),
+                "{id}: read mark not stored ({error:?})"
+            );
+        }
+    }
+}
+
 #[test]
 fn remote_window_presence_preserves_recipient_ttl_and_historical_window_mail() {
     let Some(server) = super::tests::quipu_server() else {
@@ -90,7 +109,7 @@ fn remote_unread_listing_skips_read_mail_in_the_query_and_matches_the_full_filte
     let window = window_graph(graph, &ctx.now).unwrap();
     send_checked(&mut backend, &ctx, &window, &read, "test");
     send_checked(&mut backend, &ctx, &window, &unread, "test");
-    assert!(backend.message_mark_read(&ctx, &window, &read.id).unwrap());
+    mark_read_checked(&mut backend, &ctx, &window, &read.id);
     let windows = vec![window];
     let full = backend
         .message_listing_since(&windows, Some("reader"), Some("2026-11-20T00:00:00Z"))

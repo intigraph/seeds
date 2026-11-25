@@ -90,6 +90,24 @@ pub(super) fn check(
     Ok(())
 }
 
+/// Advisory directive hint for a new seed that names none (aegis-8dda.9,
+/// Stiwi 2026-11-22/24). Returns stderr warnings only; it never refuses.
+pub(super) fn directive_hint(b: &dyn Backend, req: &CreateReq) -> Vec<String> {
+    if !crate::intake::wants_directive_hint(req.issue_type.as_deref(), req.ephemeral)
+        || crate::intake::names_directive(&req.title, req.description.as_deref())
+    {
+        return vec![];
+    }
+    let text = format!(
+        "{}\n{}",
+        req.title,
+        req.description.as_deref().unwrap_or_default()
+    );
+    crate::intake::directive_hint_lines(
+        b.directive_hints(text.trim(), crate::intake::DIRECTIVE_HINTS),
+    )
+}
+
 /// Validate coverage before filtering global matches to active project seeds.
 pub(super) fn decode_resolution(body: &str) -> Result<Vec<quipu::resolution::EntityCandidate>> {
     let result: quipu::resolution::ResolutionResult = serde_json::from_str(body).map_err(|e| {

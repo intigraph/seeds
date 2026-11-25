@@ -246,6 +246,13 @@ pub trait Backend {
         Ok(None)
     }
 
+    /// Operator directives nearest to a new seed's text, best first, as
+    /// (IRI, score) (aegis-8dda.9). Local backends have no directive corpus
+    /// and return None. Advisory only: callers never block a create on it.
+    fn directive_hints(&self, _text: &str, _limit: usize) -> Result<Option<Vec<(String, f64)>>> {
+        Ok(None)
+    }
+
     /// IDs carrying governed rescope metadata. Remote readers must override
     /// this with a bounded indexed read; an incomplete answer is an error.
     fn spec_change_ids(&self) -> Result<Vec<String>> {

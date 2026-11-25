@@ -2525,6 +2525,41 @@ impl Backend for RemoteBackend {
         super::intake::decode_resolution(&body).map(Some)
     }
 
+    /// Semantic ranking over the operator directives only: asserted
+    /// a:Directive (no RDFS subclass expansion, which would add rules and
+    /// alert rules) whose name is an operator directive's (stiwi-...).
+    fn directive_hints(&self, text: &str, limit: usize) -> Result<Option<Vec<(String, f64)>>> {
+        let sparql = format!(
+            "SELECT ?s WHERE {{ ?s a ?t . FILTER(?t = <{}> && STRSTARTS(STR(?s), \"{}\")) }}",
+            vocab::aegis("Directive"),
+            vocab::aegis(crate::intake::OPERATOR_DIRECTIVE_PREFIX),
+        );
+        let input = serde_json::json!({"query": text, "sparql": sparql, "limit": limit});
+        let body = self.post(
+            "/hybrid_search",
+            "application/json",
+            &input.to_string(),
+            false,
+        )?;
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
+        let results = value
+            .get("results")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| SdError::failed("directive hints: no results array"))?;
+        Ok(Some(
+            results
+                .iter()
+                .filter_map(|r| {
+                    Some((
+                        r.get("entity")?.as_str()?.to_string(),
+                        r.get("score")?.as_f64()?,
+                    ))
+                })
+                .collect(),
+        ))
+    }
+
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {
         if vocab::seed_query_pattern(q).is_none() {
             return self.snapshot(None);

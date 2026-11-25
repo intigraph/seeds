@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.1] - 2026-11-24
+
+### Perf
+
+- *(remote)* Coalesce empty message-window probes ([9fa7374](https://github.com/scbrown/seeds/commit/9fa737422f6df1285e52c1f3133489e7ceb6a15b))
+
 ## [0.28.0] - 2026-11-24
 
 ### Added

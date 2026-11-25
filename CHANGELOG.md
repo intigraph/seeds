@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.3] - 2026-11-25
+
+### Added
+
+- *(intake)* Hint the nearest operator directives when a new seed names none ([58c57db](https://github.com/scbrown/seeds/commit/58c57db3bd9f3a73c5170f7058e4ae21f3615327))
+
+### Testing
+
+- *(msg)* Read back an unreported read mark instead of unwrapping ([a03f40d](https://github.com/scbrown/seeds/commit/a03f40d436532d2888805c12f17e7b42a113ce4e))
+
+### Perf
+
+- *(msg)* Push the unread predicate into the remote listing query ([2399a4b](https://github.com/scbrown/seeds/commit/2399a4b7fa109cf739ec4a9409debebeeedc5fe0))
+
 ## [0.28.2] - 2026-11-25
 
 ### Fixed

@@ -78,6 +78,46 @@ fn remote_window_presence_preserves_recipient_ttl_and_historical_window_mail() {
 }
 
 #[test]
+fn remote_unread_listing_skips_read_mail_in_the_query_and_matches_the_full_filter() {
+    let Some(server) = super::tests::quipu_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for the unread pushdown control");
+        return;
+    };
+    let graph = "https://example.org/project/unread-pushdown";
+    let mut backend = RemoteBackend::connect(&server.base, graph, None, None, &[]).unwrap();
+    let (ctx, read) = candidate("2026-11-24T12:00:00Z", "already-read");
+    let (_, unread) = candidate("2026-11-24T12:00:01Z", "still-unread");
+    let window = window_graph(graph, &ctx.now).unwrap();
+    send_checked(&mut backend, &ctx, &window, &read, "test");
+    send_checked(&mut backend, &ctx, &window, &unread, "test");
+    assert!(backend.message_mark_read(&ctx, &window, &read.id).unwrap());
+    let windows = vec![window];
+    let full = backend
+        .message_listing_since(&windows, Some("reader"), Some("2026-11-20T00:00:00Z"))
+        .unwrap();
+    let expected: Vec<_> = full
+        .messages
+        .iter()
+        .filter(|m| m.read_at.is_none())
+        .cloned()
+        .collect();
+    let pushed = backend
+        .message_unread_listing_since(&windows, Some("reader"), Some("2026-11-20T00:00:00Z"))
+        .unwrap();
+    assert!(full.warnings.is_empty() && pushed.warnings.is_empty());
+    assert_eq!(full.messages.len(), 2);
+    assert_eq!(pushed.messages, expected);
+    assert_eq!(pushed.messages.len(), 1);
+    assert_eq!(pushed.messages[0].id, unread.id);
+    // A recipient filter is still applied with the read predicate.
+    assert!(backend
+        .message_unread_listing_since(&windows, Some("another-reader"), None)
+        .unwrap()
+        .messages
+        .is_empty());
+}
+
+#[test]
 fn remote_key_binding_is_atomic_across_week_windows() {
     let Some(server) = super::tests::quipu_server() else {
         eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER for the real atomic message control");

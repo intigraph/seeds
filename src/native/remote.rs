@@ -2135,6 +2135,23 @@ impl Backend for RemoteBackend {
         message_listing::collect(windows, recipient, since, |q| self.select_marked(q, None))
     }
 
+    fn message_unread_listing_since(
+        &self,
+        windows: &[String],
+        recipient: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<crate::message::Listing> {
+        for window in windows {
+            if !crate::message::is_window_of(&self.graph, window) {
+                return Err(SdError::usage(format!(
+                    "{window} is not a message window of {}",
+                    self.graph
+                )));
+            }
+        }
+        message_listing::collect_unread(windows, recipient, since, |q| self.select_marked(q, None))
+    }
+
     fn spec_change_ids(&self) -> Result<Vec<String>> {
         let graphs = [self.graph.clone(), vocab::ephemeral_graph(&self.graph)];
         let (rows, truncated) = self.select_marked(&spec_change_ids_query(&graphs), None)?;

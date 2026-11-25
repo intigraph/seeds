@@ -82,6 +82,31 @@ pub(super) fn collect(
     windows: &[String],
     recipient: Option<&str>,
     since: Option<&str>,
+    select: impl FnMut(&str) -> Result<(Rows, bool)>,
+) -> Result<crate::message::Listing> {
+    collect_selected(windows, recipient, since, false, select)
+}
+
+/// Only messages without a literal `schema:dateRead` in their window, which is
+/// exactly what `Message::from_facts` leaves with `read_at: None` (aegis-jve).
+/// The read predicate runs in the presence and subject queries, so marked mail
+/// is never paged or hydrated just to be discarded by the caller. Every selected
+/// subject is still hydrated and validated; a malformed unread record still
+/// surfaces as a warning.
+pub(super) fn collect_unread(
+    windows: &[String],
+    recipient: Option<&str>,
+    since: Option<&str>,
+    select: impl FnMut(&str) -> Result<(Rows, bool)>,
+) -> Result<crate::message::Listing> {
+    collect_selected(windows, recipient, since, true, select)
+}
+
+fn collect_selected(
+    windows: &[String],
+    recipient: Option<&str>,
+    since: Option<&str>,
+    unread: bool,
     mut select: impl FnMut(&str) -> Result<(Rows, bool)>,
 ) -> Result<crate::message::Listing> {
     let mut out = crate::message::Listing::default();
@@ -107,6 +132,14 @@ pub(super) fn collect(
             )
         })
         .unwrap_or_default();
+    let sent_filter = if unread {
+        format!(
+            "{sent_filter} . FILTER NOT EXISTS {{ ?m <{}dateRead> ?read . FILTER(isLiteral(?read)) }}",
+            vocab::SCHEMA
+        )
+    } else {
+        sent_filter
+    };
     let windows = populated_windows(windows, &recipient, &sent_filter, &mut select)?;
     for window in &windows {
         let mut after = String::new();
@@ -158,7 +191,9 @@ pub(super) fn collect(
                 for (subject, facts) in by {
                     match crate::message::Message::from_facts(&facts) {
                         Some(m) if crate::message::message_iri(&m.id) == subject => {
-                            if !since.is_some_and(|c| crate::message::is_expired(&m, c)) {
+                            if !since.is_some_and(|c| crate::message::is_expired(&m, c))
+                                && !(unread && m.read_at.is_some())
+                            {
                                 out.messages.push(m)
                             }
                         }
@@ -212,6 +247,50 @@ mod tests {
         .unwrap();
         assert_eq!(calls, 1);
         assert!(listing.messages.is_empty() && listing.warnings.is_empty());
+    }
+
+    #[test]
+    fn unread_pushes_the_read_predicate_into_presence_and_subject_queries() {
+        let windows: Vec<String> = vec![
+            "https://example.org/mail/a".into(),
+            "https://example.org/mail/b".into(),
+        ];
+        let not_read = format!(
+            "FILTER NOT EXISTS {{ ?m <{}dateRead> ?read . FILTER(isLiteral(?read)) }}",
+            vocab::SCHEMA
+        );
+        let mut seen = Vec::new();
+        let listing = collect_unread(
+            &windows,
+            Some("reader"),
+            Some("2026-11-13T06:00:00Z"),
+            |q| {
+                seen.push(q.to_string());
+                assert!(q.contains(&not_read), "{q}");
+                assert!(q.contains("FILTER(?sent >="), "{q}");
+                if q.starts_with("SELECT DISTINCT ?window") {
+                    return Ok((
+                        vec![BTreeMap::from([(
+                            "window".into(),
+                            Obj::Iri(windows[1].clone()),
+                        )])],
+                        false,
+                    ));
+                }
+                assert!(q.starts_with("SELECT DISTINCT ?m"), "{q}");
+                assert!(q.contains(&format!("GRAPH <{}>", windows[1])), "{q}");
+                Ok((vec![], false))
+            },
+        )
+        .unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(listing.messages.is_empty() && listing.warnings.is_empty());
+        // The ordinary listing keeps read mail: no read predicate.
+        collect(&windows, Some("reader"), None, |q| {
+            assert!(!q.contains("dateRead"), "{q}");
+            Ok((vec![], false))
+        })
+        .unwrap();
     }
 
     #[test]

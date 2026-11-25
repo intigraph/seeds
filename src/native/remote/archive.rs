@@ -255,6 +255,93 @@ impl RemoteBackend {
         Ok(out)
     }
 
+    /// Exact-ID protection for operations-log moves. Incoming edges name each
+    /// target as a constant IRI. Resume notes are read by literal live status,
+    /// rather than joining every status and filtering the whole board.
+    pub(crate) fn archive_protected_ids(
+        &self,
+        cutoff: &str,
+        protect: &Protect,
+        ids: &[String],
+    ) -> Result<BTreeMap<String, &'static str>> {
+        if ids.is_empty() || ids.len() > 200 {
+            return Err(SdError::usage("scoped archive needs 1..=200 IDs"));
+        }
+        let g = &self.graph;
+        let status = term::status();
+        let mut out = BTreeMap::new();
+        for id in ids {
+            if protect.ids.contains(id) {
+                out.insert(id.clone(), "protect list");
+            }
+            let target = vocab::item_iri(id);
+            for (guard, reason) in [
+                (
+                    format!("?x <{status}> ?xs FILTER(?xs != \"closed\" && ?xs != \"tombstone\")"),
+                    "target of a live seed's dependency",
+                ),
+                (
+                    format!(
+                        "?x <{status}> \"closed\" ; <{}> ?m FILTER(?m >= {})",
+                        term::updated_at(),
+                        dt(cutoff)
+                    ),
+                    "target of a recently closed seed's dependency",
+                ),
+            ] {
+                let branches = DEPENDENCY_EDGES()
+                    .map(|edge| format!("{{ GRAPH <{g}> {{ ?x <{edge}> <{target}> . {guard} }} }}"))
+                    .join(" UNION ");
+                let query = format!("SELECT DISTINCT ?x WHERE {{ {branches} }} LIMIT {ROW_CAP}");
+                if !self.archive_ids(&query, "x")?.is_empty() {
+                    out.entry(id.clone()).or_insert(reason);
+                }
+            }
+        }
+        let catalog = format!(
+            "SELECT DISTINCT ?xs WHERE {{ GRAPH <{g}> {{ ?x <{status}> ?xs }} }} LIMIT {ROW_CAP}"
+        );
+        let (rows, truncated) = self.select_marked(&catalog, None)?;
+        if truncated || rows.len() >= ROW_CAP {
+            return Err(SdError::failed("archive status catalog truncated; no move"));
+        }
+        let statuses: BTreeSet<String> = rows
+            .into_iter()
+            .map(|mut row| match row.remove("xs") {
+                Some(Obj::Str(status)) if crate::model::STATUSES.contains(&status.as_str()) => {
+                    Ok(status)
+                }
+                _ => Err(SdError::failed(
+                    "unknown archive protection status; no move",
+                )),
+            })
+            .collect::<Result<_>>()?;
+        let selected: BTreeSet<_> = ids.iter().cloned().collect();
+        for live in statuses
+            .iter()
+            .filter(|s| !matches!(s.as_str(), "closed" | "tombstone"))
+        {
+            let query = format!("SELECT ?no WHERE {{ GRAPH <{g}> {{ ?x <{status}> \"{live}\" ; <{}> ?no }} }} LIMIT {ROW_CAP}", term::notes());
+            for note in self.archive_ids(&query, "no")? {
+                for id in resume_ids(&note)
+                    .into_iter()
+                    .filter(|id| selected.contains(id))
+                {
+                    out.entry(id).or_insert("named in a live resume condition");
+                }
+            }
+        }
+        let facts = self.family_facts(g, ids)?;
+        for id in ids {
+            if facts.get(&vocab::item_iri(id)).is_some_and(|facts| facts.iter().any(|(p, o)| {
+                *p == term::label() && matches!(o, Obj::Str(label) if protect.labels.contains(label) || protect.label_prefixes.iter().any(|prefix| label.starts_with(prefix)))
+            })) {
+                out.entry(id.clone()).or_insert("protected label");
+            }
+        }
+        Ok(out)
+    }
+
     /// Up to `limit` closed seeds modified before `cutoff` whose id sorts
     /// after `after`, in id order: a cursor, so pages never repeat or skip.
     pub fn archive_candidates(

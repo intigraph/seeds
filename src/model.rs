@@ -91,7 +91,7 @@ pub const LANES: [&str; 3] = ["now", "next", "later"];
 /// How many live items a lane may hold; `None` = uncapped.
 pub fn lane_cap(lane: &str) -> Option<usize> {
     match lane {
-        "now" => Some(5),
+        "now" => Some(10),
         "next" => Some(40),
         _ => None,
     }

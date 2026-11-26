@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.1] - 2026-11-26
+
+### Fixed
+
+- *(remote)* Retry HTTP 429 reads after Retry-After, then a bounded busy error ([a44aa6d](https://github.com/scbrown/seeds/commit/a44aa6de306c4b88145c1cf930cdb71ccc93742d))
+
 ## [0.29.0] - 2026-11-26
 
 ### Added

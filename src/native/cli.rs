@@ -955,6 +955,9 @@ pub struct BlockedArgs {
     /// Text: each blocker with its title, priority and status (br's --detailed)
     #[arg(long)]
     pub detailed: bool,
+    /// Only seeds whose gate has lapsed: back in `sd ready`, still marked blocked
+    #[arg(long)]
+    pub lapsed: bool,
 }
 
 /// `sd stale`.
@@ -1419,6 +1422,30 @@ pub enum BlockersCommand {
         /// Commit the validated plan in one revision-checked transaction
         #[arg(long)]
         execute: bool,
+        /// Migrate blocked:* labels into typed blocks instead (dependency
+        /// edges where the seed has them, else a gate rechecked at the date
+        /// its notes name, or the migration instant)
+        #[arg(long)]
+        labels: bool,
+    },
+    /// Block a seed on a human or decision gate that lapses back to ready
+    Gate {
+        /// The seed
+        issue: String,
+        /// Who must act
+        #[arg(long)]
+        who: String,
+        /// What is awaited
+        #[arg(long)]
+        reason: String,
+        /// When the block lapses (ISO date or instant; default now + 7 days)
+        #[arg(long)]
+        recheck_at: Option<String>,
+    },
+    /// Remove a seed's gates (the awaited thing happened)
+    Ungate {
+        /// The seed
+        issue: String,
     },
     /// Observe conditions once; unchanged observations make no write
     Reconcile {
@@ -1667,6 +1694,8 @@ impl Command {
                 command,
                 BlockersCommand::Ack { .. }
                     | BlockersCommand::Reconcile { .. }
+                    | BlockersCommand::Gate { .. }
+                    | BlockersCommand::Ungate { .. }
                     | BlockersCommand::Migrate { execute: true, .. }
             ),
             Command::Epic { command } => {
@@ -1792,6 +1821,8 @@ impl Command {
                 BlockersCommand::Reconcile { .. } => "blockers reconcile",
                 BlockersCommand::Events { .. } => "blockers events",
                 BlockersCommand::Ack { .. } => "blockers ack",
+                BlockersCommand::Gate { .. } => "blockers gate",
+                BlockersCommand::Ungate { .. } => "blockers ungate",
             },
             Command::Comments { command } => match command {
                 CommentsCommand::Add { .. } => "comments add",

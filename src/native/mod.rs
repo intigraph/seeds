@@ -3421,6 +3421,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 priorities: a.priority.clone(),
                 labels: a.label.clone(),
                 limit: a.limit,
+                lapsed: a.lapsed,
+                now: at.is_none().then(|| ctx.now.clone()),
             };
             if a.detailed && json {
                 return Err(SdError::usage(
@@ -3694,7 +3696,14 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             if at.is_some() { return Err(SdError::usage("blocker operations require current state; omit --at")); }
             let value = match command {
                 BlockersCommand::Receipt { issue, event_id } => json!({"event":crate::blockers::engine::receipt(b, issue, event_id)?}),
+                BlockersCommand::Migrate { execute, labels: true, .. } => crate::blockers::migration::migrate_labels(b, ctx, *execute)?,
                 BlockersCommand::Migrate { execute, .. } => crate::blockers::migration::migrate(b, ctx, *execute)?,
+                BlockersCommand::Gate { issue, who, reason, recheck_at } => {
+                    json!({"tx": crate::blockers::engine::gate(b, ctx, issue, who, reason, recheck_at.as_deref())?})
+                }
+                BlockersCommand::Ungate { issue } => {
+                    json!({"tx": crate::blockers::engine::ungate(b, ctx, issue)?})
+                }
                 BlockersCommand::Events { issue } => {
                     let events = crate::blockers::engine::events_for(b, issue.as_deref())?;
                     json!({"events": events})

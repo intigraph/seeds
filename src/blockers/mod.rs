@@ -79,6 +79,105 @@ pub struct Ledger {
     pub generation: u64,
     /// Pending and acknowledged intent, retaining receipt history.
     pub events: Vec<UnlockEvent>,
+    /// Human or decision gates: WHO must act, rechecked at an instant.
+    /// Absent when empty, so ledgers without gates encode as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates: Vec<Gate>,
+}
+
+/// A human or decision gate. It holds until `recheck_at`; after that it is
+/// lapsed, computed at read time from `Ctx::now`, never stored as a flag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gate {
+    /// Who must act (a person, role or crew member). Never empty.
+    pub who: String,
+    /// What is awaited. Never empty.
+    pub reason: String,
+    /// The instant the block lapses back to ready (an xsd date or dateTime).
+    pub recheck_at: String,
+    /// Creation actor, declared by the writer.
+    pub actor: String,
+    /// Creation time from the caller's Ctx.
+    pub created_at: String,
+    /// The readiness generation whose event announced the lapse; set once,
+    /// so the lapse event is emitted exactly once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lapse_generation: Option<u64>,
+}
+
+/// The recheck window a gate gets when none is given.
+pub const DEFAULT_RECHECK: &str = "P7D";
+
+/// Canonical form of a recheck instant: an xsd dateTime or date. Anything
+/// else is a usage error, so a gate always carries a checkable instant.
+pub fn recheck_instant(value: &str) -> Result<String> {
+    let v = value.trim();
+    if let Ok(t) = v.parse::<oxsdatatypes::DateTime>() {
+        return Ok(t.to_string());
+    }
+    if let Ok(d) = v.parse::<oxsdatatypes::Date>() {
+        return Ok(d.to_string());
+    }
+    Err(SdError::usage(format!(
+        "recheck_at {value:?} is not an ISO-8601 date or instant"
+    )))
+}
+
+/// `now` plus [`DEFAULT_RECHECK`].
+pub fn default_recheck(now: &str) -> Result<String> {
+    let t: oxsdatatypes::DateTime = now
+        .parse()
+        .map_err(|_| SdError::failed(format!("clock instant {now:?} is not a dateTime")))?;
+    let d: oxsdatatypes::DayTimeDuration = DEFAULT_RECHECK
+        .parse()
+        .map_err(|_| SdError::failed("default recheck window is not a duration"))?;
+    t.checked_add_day_time_duration(d)
+        .map(|t| t.to_string())
+        .ok_or_else(|| SdError::failed("recheck instant overflow"))
+}
+
+/// Whether a gate's recheck instant has passed. ISO dates and UTC instants
+/// order as strings (the same rule `defer_until` uses).
+pub fn gate_lapsed(gate: &Gate, now: &str) -> bool {
+    gate.recheck_at.as_str() <= now
+}
+
+/// Whether any gate still holds the seed at `now`. Unreadable metadata holds.
+pub fn gated(seed: &Seed, now: &str) -> bool {
+    match load(seed) {
+        Ok(ledger) => ledger.gates.iter().any(|g| !gate_lapsed(g, now)),
+        Err(_) => true,
+    }
+}
+
+/// A seed whose block has lapsed: it has gates and every one is past its
+/// recheck instant. Computed, never remembered: it returns to `sd ready`.
+pub fn lapsed(seed: &Seed, now: &str) -> bool {
+    match load(seed) {
+        Ok(ledger) => !ledger.gates.is_empty() && ledger.gates.iter().all(|g| gate_lapsed(g, now)),
+        Err(_) => false,
+    }
+}
+
+/// The label namespace the typed block replaces.
+pub const BLOCK_LABEL_PREFIX: &str = "blocked:";
+
+/// `blocked:human` stays writable: it is an ASK visibility class (Stiwi bsf8),
+/// which keeps a seed visible rather than hiding it.
+const ASK_BLOCK_LABEL: &str = "blocked:human";
+
+/// Refuse an untyped `blocked:*` label, pointing at the typed verbs.
+pub fn refuse_block_label(label: &str) -> Result<()> {
+    if label.starts_with(BLOCK_LABEL_PREFIX) && label != ASK_BLOCK_LABEL {
+        return Err(SdError::refused(format!(
+            "{label}: a blocked:* label is an unchecked claim nothing rechecks; block with a \
+             condition instead: `sd dep add` (another seed), `sd blockers gate <id> --who <who> \
+             --reason <why> [--recheck-at <instant>]` (a human or decision gate, default \
+             {DEFAULT_RECHECK}), or an external prerequisite reconcile observes"
+        )));
+    }
+    Ok(())
 }
 
 impl Default for Ledger {
@@ -89,6 +188,7 @@ impl Default for Ledger {
             managed_status: false,
             generation: 0,
             events: Vec::new(),
+            gates: Vec::new(),
         }
     }
 }
@@ -144,6 +244,15 @@ pub fn load(seed: &Seed) -> Result<Ledger> {
         return Err(SdError::refused(
             "external blocker edges and declarations disagree",
         ));
+    }
+    for gate in &ledger.gates {
+        if gate.who.trim().is_empty()
+            || gate.reason.trim().is_empty()
+            || recheck_instant(&gate.recheck_at).ok().as_deref() != Some(gate.recheck_at.as_str())
+            || gate.lapse_generation.is_some_and(|g| g > ledger.generation)
+        {
+            return Err(SdError::refused("invalid gate declaration"));
+        }
     }
     for (iri, blocker) in &ledger.blockers {
         condition::validate_iri(iri)?;

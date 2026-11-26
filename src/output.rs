@@ -151,6 +151,8 @@ pub fn stats_json(st: &Stats) -> Json {
         "closed_issues": st.closed,
         "blocked_issues": st.blocked,
         "deferred_issues": st.deferred,
+        "blocked_lapsed_issues": st.blocked_lapsed,
+        "blocked_unchecked_issues": st.blocked_unchecked,
         "draft_issues": 0,
         "ready_issues": st.ready,
         "tombstone_issues": st.tombstones,
@@ -195,6 +197,13 @@ pub fn stats_text(st: &Stats) -> String {
             st.open, st.in_progress, st.blocked, st.deferred, st.closed
         ),
         format!("  ready now {}", st.ready),
+        format!(
+            "  blocked lapsed {} · blocked with no condition {}",
+            st.blocked_lapsed
+                .map_or("unknown".into(), |n| n.to_string()),
+            st.blocked_unchecked
+                .map_or("unknown".into(), |n| n.to_string())
+        ),
         format!("  epics ready to close {}", st.epics_eligible_for_closure),
         format!("  average lead time {:.1} h", st.average_lead_time_hours),
     ];

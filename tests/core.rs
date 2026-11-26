@@ -587,6 +587,164 @@ fn external_unlock_outbox_is_persistent_receipted_and_rearms() {
 }
 
 #[test]
+fn a_gate_lapses_back_to_ready_and_announces_it_exactly_once() {
+    use seeds::blockers;
+    let mut b = backend();
+    let id = mk(&mut b, "awaits a decision", 1);
+    // Refused: no one named, nothing awaited, or a recheck already past.
+    assert!(blockers::engine::gate(&mut b, &ctx(2), &id, " ", "why", None).is_err());
+    assert!(blockers::engine::gate(&mut b, &ctx(2), &id, "lead", "", None).is_err());
+    assert!(
+        blockers::engine::gate(&mut b, &ctx(2), &id, "lead", "why", Some(&ctx(1).now)).is_err()
+    );
+    blockers::engine::gate(&mut b, &ctx(2), &id, "lead", "sign-off", Some(&ctx(10).now)).unwrap();
+    let seed = b.snapshot(None).unwrap().get(&id).unwrap().clone();
+    assert_eq!(seed.status, "blocked");
+    assert!(!ready_ids(&b, 5).contains(&id));
+    let blocked = |b: &QuipuBackend, n: u32, lapsed: bool| {
+        engine::blocked(
+            b,
+            &engine::BlockedReq {
+                lapsed,
+                now: Some(ctx(n).now),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+        .page
+        .issues
+        .into_iter()
+        .map(|s| s.id)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(blocked(&b, 5, false), vec![id.clone()]);
+    assert!(blocked(&b, 5, true).is_empty());
+    // Before the instant, reconcile writes nothing and no event is pending.
+    assert!(blockers::engine::reconcile(&mut b, &ctx(5), &id)
+        .unwrap()
+        .is_none());
+    assert!(blockers::engine::events(&b).unwrap().is_empty());
+    // Lapse is computed at read time: no write puts it back in ready.
+    assert!(ready_ids(&b, 10).contains(&id));
+    assert_eq!(blocked(&b, 10, true), vec![id.clone()]);
+    // Reconcile announces the lapse once; repeating it writes nothing.
+    assert!(blockers::engine::reconcile(&mut b, &ctx(11), &id)
+        .unwrap()
+        .is_some());
+    assert!(blockers::engine::reconcile(&mut b, &ctx(12), &id)
+        .unwrap()
+        .is_none());
+    let events = blockers::engine::events(&b).unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].issue_id, id);
+    let current = b.snapshot(None).unwrap().get(&id).unwrap().clone();
+    assert_eq!(current.status, "blocked");
+    assert!(ready_ids(&b, 12).contains(&id));
+    // Re-gating starts a new episode that holds again.
+    blockers::engine::gate(&mut b, &ctx(13), &id, "lead", "again", Some(&ctx(20).now)).unwrap();
+    assert!(!ready_ids(&b, 14).contains(&id));
+    assert!(blockers::engine::events(&b).unwrap().is_empty());
+    // Ungating returns the seed this feature blocked to open.
+    blockers::engine::ungate(&mut b, &ctx(15), &id).unwrap();
+    assert_eq!(b.snapshot(None).unwrap().get(&id).unwrap().status, "open");
+    assert!(ready_ids(&b, 15).contains(&id));
+}
+
+#[test]
+fn an_untyped_blocked_label_is_refused_and_existing_ones_migrate() {
+    use seeds::blockers;
+    let mut b = backend();
+    let id = mk(&mut b, "labelled", 1);
+    let refused = engine::label_change(
+        &mut b,
+        &ctx(2),
+        std::slice::from_ref(&id),
+        "blocked:external",
+        true,
+    );
+    assert!(refused.is_err());
+    assert!(engine::create(
+        &mut b,
+        &ctx(2),
+        &CreateReq {
+            title: "new".into(),
+            labels: vec!["blocked:access".into()],
+            ..CreateReq::default()
+        }
+    )
+    .is_err());
+    // A legacy label, written before this refusal existed.
+    let mut legacy = b.snapshot(None).unwrap().get(&id).unwrap().clone();
+    legacy.labels.insert("blocked:external".into());
+    legacy.notes = Some("waiting on CI; resume 2026-09-29 or backstop 2026-09-28".into());
+    let rev = legacy.revision;
+    legacy.revision += 1;
+    b.commit(
+        &WriteBatch {
+            seeds: vec![SeedWrite {
+                seed: legacy,
+                expected_revision: Some(rev),
+            }],
+            source: "fixture".into(),
+            ..WriteBatch::default()
+        },
+        &ctx(3),
+    )
+    .unwrap();
+    let nodate = mk(&mut b, "no date", 4);
+    let mut legacy = b.snapshot(None).unwrap().get(&nodate).unwrap().clone();
+    legacy.labels.insert("blocked:bead".into());
+    let rev = legacy.revision;
+    legacy.revision += 1;
+    b.commit(
+        &WriteBatch {
+            seeds: vec![SeedWrite {
+                seed: legacy,
+                expected_revision: Some(rev),
+            }],
+            source: "fixture".into(),
+            ..WriteBatch::default()
+        },
+        &ctx(5),
+    )
+    .unwrap();
+    let plan = blockers::migration::migrate_labels(&mut b, &ctx(6), false).unwrap();
+    assert_eq!(plan["count"], 2, "{plan}");
+    assert_eq!(plan["summary"]["gate_from_notes"], 1);
+    assert_eq!(plan["summary"]["gate_from_migration_date"], 1);
+    assert_eq!(plan["summary"]["lapsed"], 2);
+    // The dry run wrote nothing.
+    assert!(b
+        .snapshot(None)
+        .unwrap()
+        .get(&id)
+        .unwrap()
+        .labels
+        .contains("blocked:external"));
+    blockers::migration::migrate_labels(&mut b, &ctx(6), true).unwrap();
+    let snap = b.snapshot(None).unwrap();
+    for sid in [&id, &nodate] {
+        let s = snap.get(sid).unwrap();
+        assert!(
+            !s.labels.iter().any(|l| l.starts_with("blocked:")),
+            "{:?}",
+            s.labels
+        );
+        let ledger = blockers::load(s).unwrap();
+        assert_eq!(ledger.gates.len(), 1);
+        assert!(blockers::lapsed(s, &ctx(6).now));
+    }
+    assert_eq!(
+        blockers::load(snap.get(&id).unwrap()).unwrap().gates[0].recheck_at,
+        "2026-09-29"
+    );
+    // Lapsed at once, so both are back in ready.
+    let ready = ready_ids(&b, 7);
+    assert!(ready.contains(&id) && ready.contains(&nodate), "{ready:?}");
+}
+
+#[test]
 fn parent_dependency_reads_only_exact_ancestor_context_and_refuses_cycles() {
     let mut inner = backend();
     let child = mk(&mut inner, "child", 1);

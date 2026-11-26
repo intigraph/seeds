@@ -1195,7 +1195,7 @@ pub struct UpdateArgs {
     /// Exact decimal rank (up to nine fractional digits); empty clears it
     #[arg(long, allow_hyphen_values = true, conflicts_with_all = ["before", "after"])]
     pub rank: Option<String>,
-    /// Work lane: now (cap 5), next (cap 40) or later; empty clears it.
+    /// Work lane: now (cap 10), next (cap 40) or later; empty clears it.
     /// Entering a full lane is refused and names what could leave
     #[arg(long)]
     pub lane: Option<String>,

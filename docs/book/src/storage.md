@@ -147,6 +147,14 @@ clean ledger. A timeout (the first query on a large graph right after a quipu
 restart can outrun the server's query budget) is retried once after 2 s, then
 refused with a message saying the store may be warming up.
 
+A read that quipu sheds under load (HTTP 429 to `POST /query` or a `GET`
+read) is asked again after its `Retry-After` (delta seconds or an HTTP-date),
+each wait capped at 5 s, at most twice. A read still shed after that fails as a
+busy error in the query-timeout class (`"quipu query timed out: ..."`, details
+`{"http_status":429,"retry_after_s":N}`), so a caller that asks again for less
+on a timeout does so here too; it is never a refusal. A write answered 429 is
+not replayed: nothing was written, and the error carries `http_status: 429`.
+
 A comment is its own entity, `https://seeds.local/item/<id>/comment/<n>`, typed
 `schema:Comment`, with `schema:parentItem` (the seed), `schema:position`
 (1-based), `schema:author` (a principal IRI), `schema:text` and

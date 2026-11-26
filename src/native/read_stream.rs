@@ -888,8 +888,11 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         if now.saturating_sub(stats_at) >= STATS_EVERY_MS {
             stats_at = now;
             eprintln!(
-                "sd read-stream: challenges scheduled={} on_demand={} parked_reads={} (since start)",
-                live.scheduled_sent, live.on_demand_sent, parked_total
+                "sd read-stream: challenges scheduled={} on_demand={} parked_reads={} (since start) {}",
+                live.scheduled_sent,
+                live.on_demand_sent,
+                parked_total,
+                memory_line(&fs::read_to_string("/proc/self/status").unwrap_or_default())
             );
         }
         match listener.accept() {
@@ -946,8 +949,32 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
     }
 }
 
-/// How often the reader logs its challenge counters (challenges/h metric).
+/// How often the reader logs its challenge counters (challenges/h metric)
+/// and its own memory.
 const STATS_EVERY_MS: u64 = 600_000;
+
+/// `rss_kb=.. data_kb=.. swap_kb=..` from a `/proc/self/status` body, so a
+/// growth claim is read from the reader's own log (aegis-9b4). Most of the
+/// resident set is the in-memory replica the bootstrap builds (a
+/// `--check` bootstrap alone peaks at ~3.4 GB), so growth is measured from
+/// the first line after start, never from zero. A missing field is `?`.
+fn memory_line(status: &str) -> String {
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))
+            .and_then(|v| v.split_whitespace().next())
+            .filter(|v| v.bytes().all(|b| b.is_ascii_digit()))
+            .unwrap_or("?")
+            .to_owned()
+    };
+    format!(
+        "rss_kb={} data_kb={} swap_kb={}",
+        field("VmRSS"),
+        field("VmData"),
+        field("VmSwap")
+    )
+}
 
 /// The board can answer a read now without it running out of freshness.
 fn has_headroom(board: &StreamBoard, now: u64) -> bool {

@@ -962,3 +962,18 @@ fn replication_http_budget_covers_stream_and_challenge_dispatch() {
         );
     }
 }
+
+#[test]
+fn memory_line_reads_the_proc_status_fields_and_marks_missing_ones() {
+    let status = "Name:\tsd\nVmData:\t 3980332 kB\nVmRSS:\t 3963540 kB\nThreads:\t3\n";
+    assert_eq!(
+        memory_line(status),
+        "rss_kb=3963540 data_kb=3980332 swap_kb=?"
+    );
+    assert_eq!(memory_line(""), "rss_kb=? data_kb=? swap_kb=?");
+    // A prefix of another field name is not that field.
+    assert_eq!(
+        memory_line("VmRSSx:\t1 kB\nVmSwap:\tbad kB\n"),
+        "rss_kb=? data_kb=? swap_kb=?"
+    );
+}

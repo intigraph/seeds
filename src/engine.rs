@@ -1472,6 +1472,58 @@ pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Resu
     Ok(st)
 }
 
+/// `(blocked_lapsed, blocked_unchecked)` for [`Stats`] over `snap`: board
+/// work with status `blocked` whose every gate has lapsed, and blocked seeds
+/// with no checkable condition (no open dependency, no external prerequisite
+/// and no gate). `snap` must hold every blocked seed and the seeds they
+/// depend on; [`blocked_condition_counts_scoped`] reads exactly that.
+pub fn blocked_condition_counts(snap: &Snapshot, now: &str) -> (usize, usize) {
+    let blocked: Vec<&Seed> = snap
+        .seeds
+        .values()
+        .filter(|s| !s.is_tombstone() && s.is_board_work() && s.status == "blocked")
+        .collect();
+    let lapsed = blocked.iter().filter(|s| lapsed_block(s, now)).count();
+    let unchecked = blocked
+        .iter()
+        .filter(|s| snap.open_blockers(s).is_empty())
+        .filter(|s| {
+            crate::blockers::load(s).is_ok_and(|l| l.blockers.is_empty() && l.gates.is_empty())
+        })
+        .count();
+    (lapsed, unchecked)
+}
+
+/// [`blocked_condition_counts`] for a scoped backend: reads only the blocked
+/// seeds and what they depend on, never the whole board, so a server-side
+/// stats aggregate reports the same counts a whole snapshot does.
+pub fn blocked_condition_counts_scoped(b: &dyn Backend, now: &str) -> Result<(usize, usize)> {
+    let mut snap = b.snapshot_where(&SeedQuery {
+        statuses: Some(["blocked".to_string()].into()),
+        ..SeedQuery::default()
+    })?;
+    with_blocker_targets(b, &mut snap, &["blocked"])?;
+    Ok(blocked_condition_counts(&snap, now))
+}
+
+/// Read the seeds that seeds of `statuses` in `snap` depend on and are not
+/// yet in it, so `open_blockers` judges them exactly as a whole snapshot.
+fn with_blocker_targets(b: &dyn Backend, snap: &mut Snapshot, statuses: &[&str]) -> Result<()> {
+    let targets: Vec<String> = snap
+        .seeds
+        .values()
+        .filter(|s| statuses.contains(&s.status.as_str()))
+        .flat_map(|s| s.blocked_on.iter().cloned())
+        .filter(|t| !snap.seeds.contains_key(t))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !targets.is_empty() {
+        merge_snapshots(snap, b.snapshot_seeds(&targets)?);
+    }
+    Ok(())
+}
+
 /// [`stats`] over the live graph.
 fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Result<Stats> {
     if scoped(b, at) {
@@ -1545,6 +1597,7 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
             }),
         ));
     }
+    let (lapsed, unchecked) = blocked_condition_counts(&snap, &ctx.now);
     Ok(Stats {
         total: seeds.len(),
         ops,
@@ -1553,17 +1606,8 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
         closed: count("closed"),
         blocked: count("blocked"),
         deferred: count("deferred"),
-        blocked_lapsed: Some(seeds.iter().filter(|s| lapsed_block(s, &ctx.now)).count()),
-        blocked_unchecked: Some(
-            seeds
-                .iter()
-                .filter(|s| s.status == "blocked" && snap.open_blockers(s).is_empty())
-                .filter(|s| {
-                    crate::blockers::load(s)
-                        .is_ok_and(|l| l.blockers.is_empty() && l.gates.is_empty())
-                })
-                .count(),
-        ),
+        blocked_lapsed: Some(lapsed),
+        blocked_unchecked: Some(unchecked),
         tombstones,
         ready: ready(b, ctx, &ReadyReq::default(), at)?.total,
         epics_eligible_for_closure: eligible,
@@ -2322,18 +2366,15 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
                 ..query.clone()
             };
             merge_snapshots(&mut snap, b.snapshot_where(&deferred)?);
-            let targets: Vec<String> = snap
-                .seeds
-                .values()
-                .filter(|s| s.status == "deferred")
-                .flat_map(|s| s.blocked_on.iter().cloned())
-                .filter(|t| !snap.seeds.contains_key(t))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if !targets.is_empty() {
-                merge_snapshots(&mut snap, b.snapshot_seeds(&targets)?);
-            }
+            // Blocked seeds whose gate has lapsed are ready again (aegis-xjh);
+            // the backend's ready query reads only open ones, so they are
+            // read here, with what they depend on, like the deferred ones.
+            let blocked = SeedQuery {
+                statuses: Some(["blocked".to_string()].into()),
+                ..query.clone()
+            };
+            merge_snapshots(&mut snap, b.snapshot_where(&blocked)?);
+            with_blocker_targets(b, &mut snap, &["deferred", "blocked"])?;
         }
         snap
     } else {
@@ -2346,15 +2387,6 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         }
         None => None,
     };
-    if scoped {
-        // Blocked seeds whose gate has lapsed are ready again; the backend's
-        // ready query reads only open ones, so they are found here.
-        let blocked = SeedQuery {
-            statuses: Some(["blocked".to_string()].into()),
-            ..query.clone()
-        };
-        merge_snapshots(&mut snap, b.snapshot_where(&blocked)?);
-    }
     let mut ids = ready_ids;
     ids.extend(
         snap.seeds

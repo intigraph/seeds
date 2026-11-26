@@ -591,10 +591,21 @@ impl Clock {
 /// answered challenge (quipu applier: bound = now - t_send of the latest
 /// answered one), so the interval plus a round trip must stay inside the
 /// reader's freshness cap, or reads refuse between challenges (aegis-xdvg.4).
-const CHALLENGE_INTERVAL_MS: u64 = 4_000;
+///
+/// aegis-az3d.2: a read starts clean only while bound + READ_HEADROOM_MS fits
+/// in MAX_FRESH_MS (bound <= 2500 ms). The bound peaks near the interval plus
+/// the proof's stream delivery (measured up to ~800 ms, PARK_MAX_MS). At 4 s
+/// about 40% of every cycle lacked headroom, and those reads were refused
+/// whenever the on-demand proof missed the park (P1 on vati 2026-11-26: 65/600
+/// refused, every one at an estimated bound > 2500 ms). 1.5 s keeps the peak
+/// inside the clean window.
+const CHALLENGE_INTERVAL_MS: u64 = 1_500;
 /// Round-trip headroom the interval must leave inside MAX_FRESH_MS.
 const CHALLENGE_RTT_HEADROOM_MS: u64 = 1_000;
 const _: () = assert!(CHALLENGE_INTERVAL_MS + CHALLENGE_RTT_HEADROOM_MS <= MAX_FRESH_MS);
+// The scheduled peak (interval + a park-length proof delivery) stays inside
+// the window in which a read still has its full headroom.
+const _: () = assert!(CHALLENGE_INTERVAL_MS + PARK_MAX_MS <= MAX_FRESH_MS - READ_HEADROOM_MS);
 /// Reconnect backoff after the stream drops: exponential, capped, jittered.
 const RECONNECT_INITIAL_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 60_000;
@@ -668,7 +679,7 @@ impl Liveness {
     /// An extra challenge for a read that lacks freshness headroom (aegis-ygz,
     /// Sattler ruling A). The cap is enforced HERE: at most one per
     /// CHALLENGE_INTERVAL_MS, and none while any challenge is in flight, so
-    /// an idle reader stays at the scheduled ~900/h and a busy one at most
+    /// an idle reader stays at the scheduled ~2400/h and a busy one at most
     /// doubles it.
     fn on_demand_due(&self, now: u64) -> bool {
         self.open

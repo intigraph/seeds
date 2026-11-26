@@ -14,10 +14,10 @@ use std::time::Instant;
 const GRAPH: &str = "https://seeds.local/project/aegis";
 const AGENTS: &[&str] = &[
     "malcolm", "wu", "sattler", "muldoon", "ian", "arnold", "franklin", "kelly", "ellie",
-    "hammond", "dearing", "harding", "gennaro", "nedry", "grant", "lex", "tim", "henry",
-    "zara", "owen", "claire", "barry", "lowery", "vivian", "ray", "donald", "robert", "sarah",
-    "nick", "eddie", "dieter", "ajay", "roland", "peter", "billy", "udesky", "amanda", "paul",
-    "eric", "maisie",
+    "hammond", "dearing", "harding", "gennaro", "nedry", "grant", "lex", "tim", "henry", "zara",
+    "owen", "claire", "barry", "lowery", "vivian", "ray", "donald", "robert", "sarah", "nick",
+    "eddie", "dieter", "ajay", "roland", "peter", "billy", "udesky", "amanda", "paul", "eric",
+    "maisie",
 ];
 
 fn ctx() -> Ctx {
@@ -30,7 +30,10 @@ fn ctx() -> Ctx {
 }
 
 fn env(name: &str, default: usize) -> usize {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Build a board through the real seeds engine: live items in mixed states,
@@ -38,7 +41,9 @@ fn env(name: &str, default: usize) -> usize {
 /// carry retracted historical status rows exactly as production does.
 fn build(store: Store, live: usize, closed: usize) -> QuipuBackend {
     let mut b = QuipuBackend::writable(store, GRAPH).unwrap();
-    b.store().graph_create(&vocab::ephemeral_graph(GRAPH)).unwrap();
+    b.store()
+        .graph_create(&vocab::ephemeral_graph(GRAPH))
+        .unwrap();
     let total = live + closed;
     let batch = env("AZ_BATCH", 500);
     let t0 = Instant::now();
@@ -54,7 +59,11 @@ fn build(store: Store, live: usize, closed: usize) -> QuipuBackend {
                         "Synthetic description {k}: consectetur adipiscing elit sed do eiusmod"
                     )),
                     priority: Some(format!("{}", k % 5)),
-                    issue_type: Some(if k % 7 == 0 { "bug".into() } else { "task".into() }),
+                    issue_type: Some(if k % 7 == 0 {
+                        "bug".into()
+                    } else {
+                        "task".into()
+                    }),
                     assignee: Some(AGENTS[k % AGENTS.len()].into()),
                     labels: vec![format!("label{}", k % 13)],
                     acceptance_criteria: Some("criteria".into()),
@@ -148,7 +157,9 @@ fn time5(label: &str, store: &Store, q: &str, as_of: Option<i64>) {
         as_of.map_or("none".into(), |t| t.to_string()),
         v[v.len() / 2],
         v[v.len() - 1],
-        v.iter().map(|x| (x * 10.0).round() / 10.0).collect::<Vec<_>>()
+        v.iter()
+            .map(|x| (x * 10.0).round() / 10.0)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -190,7 +201,10 @@ fn az3d1_phase0_bench() {
     let b = build(store, live, closed);
     let store = b.store();
     let head = store.transaction_head().unwrap();
-    println!("FIXTURE|live={live}|closed={closed}|head_tx={head}|build_s={:.1}", t.elapsed().as_secs_f64());
+    println!(
+        "FIXTURE|live={live}|closed={closed}|head_tx={head}|build_s={:.1}",
+        t.elapsed().as_secs_f64()
+    );
     let count = run(
         store,
         &format!("SELECT (COUNT(*) AS ?n) WHERE {{ GRAPH <{GRAPH}> {{ ?s ?p ?o }} }}"),
@@ -201,7 +215,10 @@ fn az3d1_phase0_bench() {
     if let QueryResult::Select { rows, .. } =
         query_temporal(store, &cq, &TemporalContext::default()).unwrap()
     {
-        println!("FIXTURE|current_triples={:?}", rows[0].get("n").map(|v| quipu::value_to_json(store, v)));
+        println!(
+            "FIXTURE|current_triples={:?}",
+            rows[0].get("n").map(|v| quipu::value_to_json(store, v))
+        );
     }
     if std::env::var("AZ_DUMP").is_ok() {
         let dq = format!(

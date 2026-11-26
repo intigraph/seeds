@@ -888,8 +888,11 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         if now.saturating_sub(stats_at) >= STATS_EVERY_MS {
             stats_at = now;
             eprintln!(
-                "sd read-stream: challenges scheduled={} on_demand={} parked_reads={} (since start)",
-                live.scheduled_sent, live.on_demand_sent, parked_total
+                "sd read-stream: challenges scheduled={} on_demand={} parked_reads={} as_of_fallbacks={} (since start)",
+                live.scheduled_sent,
+                live.on_demand_sent,
+                parked_total,
+                query_scope::AS_OF_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed)
             );
         }
         match listener.accept() {

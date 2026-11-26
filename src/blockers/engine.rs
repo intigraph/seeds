@@ -1,5 +1,8 @@
 //! Revision-checked blocker reconciliation and receipt acknowledgement.
-use super::{condition, event_id, load, save, Blocker, Ledger, State, UnlockEvent};
+use super::{
+    condition, default_recheck, event_id, gate_lapsed, load, recheck_instant, save, Blocker, Gate,
+    Ledger, State, UnlockEvent,
+};
 use crate::backend::{Backend, Ctx, SeedWrite, WriteBatch};
 use crate::error::{Result, SdError};
 use crate::model::Seed;
@@ -57,7 +60,81 @@ pub fn add(b: &mut dyn Backend, ctx: &Ctx, id: &str, blocker: Blocker) -> Result
     write(b, ctx, before, after, &ledger)
 }
 
-/// Reconcile one seed. No-op polls do not write or generate another event.
+/// Block a seed on a human or decision gate: WHO must act, rechecked at
+/// `recheck_at` (default: now plus [`super::DEFAULT_RECHECK`]). A gate with no
+/// one named or nothing awaited is refused, as is a recheck instant already
+/// past: such a block could never be checked. Lapsed gates the seed carried
+/// are replaced, so re-blocking starts a new episode.
+pub fn gate(
+    b: &mut dyn Backend,
+    ctx: &Ctx,
+    id: &str,
+    who: &str,
+    reason: &str,
+    recheck_at: Option<&str>,
+) -> Result<u64> {
+    let (who, reason) = (who.trim(), reason.trim());
+    if who.is_empty() || reason.is_empty() {
+        return Err(SdError::usage(
+            "a gate names who must act (--who) and what is awaited (--reason)",
+        ));
+    }
+    let recheck_at = match recheck_at {
+        Some(v) => recheck_instant(v)?,
+        None => default_recheck(&ctx.now)?,
+    };
+    if recheck_at.as_str() <= ctx.now.as_str() {
+        return Err(SdError::usage(format!(
+            "recheck_at {recheck_at} has already passed; a gate must lapse in the future"
+        )));
+    }
+    let snap = b.snapshot_seeds(&[id.into()])?;
+    let before = snap.get(id)?;
+    if before.is_tombstone() || before.status == "closed" {
+        return Err(SdError::refused(
+            "closed or deleted seed cannot gain a gate",
+        ));
+    }
+    let mut ledger = load(before)?;
+    ledger.gates.retain(|g| !gate_lapsed(g, &ctx.now));
+    ledger.gates.push(Gate {
+        who: who.into(),
+        reason: reason.into(),
+        recheck_at,
+        actor: ctx.actor.clone(),
+        created_at: ctx.now.clone(),
+        lapse_generation: None,
+    });
+    let mut after = before.clone();
+    if after.status == "open" {
+        after.status = "blocked".into();
+        ledger.managed_status = true;
+    }
+    write(b, ctx, before, after, &ledger)
+}
+
+/// Remove every gate. A status this feature set returns to open when no
+/// other prerequisite holds; one set by hand is left as it is.
+pub fn ungate(b: &mut dyn Backend, ctx: &Ctx, id: &str) -> Result<Option<u64>> {
+    let snap = b.snapshot_seeds(&[id.into()])?;
+    let before = snap.get(id)?;
+    let mut ledger = load(before)?;
+    if ledger.gates.is_empty() {
+        return Ok(None);
+    }
+    ledger.gates.clear();
+    let mut after = before.clone();
+    if ledger.managed_status
+        && after.status == "blocked"
+        && ledger.blockers.values().all(|x| x.state == State::Done)
+    {
+        after.status = "open".into();
+        ledger.managed_status = false;
+    }
+    write(b, ctx, before, after, &ledger).map(Some)
+}
+
+/// Remove one external prerequisite.
 pub fn remove(b: &mut dyn Backend, ctx: &Ctx, id: &str, iri: &str) -> Result<Option<u64>> {
     condition::validate_iri(iri)?;
     let snap = b.snapshot_seeds(&[id.into()])?;
@@ -83,8 +160,32 @@ pub fn reconcile(b: &mut dyn Backend, ctx: &Ctx, id: &str) -> Result<Option<u64>
             blocker.observed_at = Some(ctx.now.clone());
         }
     }
-    let done = ledger.blockers.values().all(|x| x.state == State::Done);
-    if !done && after.status == "open" {
+    let external_done = ledger.blockers.values().all(|x| x.state == State::Done);
+    let holding = ledger.gates.iter().any(|g| !gate_lapsed(g, &ctx.now));
+    // A lapsed gate is announced once: the seed is back in ready (computed at
+    // read time) and this durable event tells the crew. Its status stays
+    // `blocked`, so `sd blocked --lapsed` keeps listing it until someone
+    // re-gates, clears or works it.
+    if external_done && !holding && ledger.gates.iter().any(|g| g.lapse_generation.is_none()) {
+        ledger.generation = ledger
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| SdError::failed("unlock generation overflow"))?;
+        let generation = ledger.generation;
+        for g in &mut ledger.gates {
+            g.lapse_generation.get_or_insert(generation);
+        }
+        ledger.events.push(UnlockEvent {
+            event_id: event_id(id, generation),
+            issue_id: id.into(),
+            assignee: after.assignee.clone(),
+            ready_generation: generation,
+            observed_at: ctx.now.clone(),
+            receipt: None,
+        });
+    }
+    let done = external_done && ledger.gates.is_empty();
+    if !(external_done && !holding) && after.status == "open" {
         after.status = "blocked".into();
         ledger.managed_status = true;
     }
@@ -139,7 +240,11 @@ pub fn events_for(b: &dyn Backend, id: Option<&str>) -> Result<Vec<UnlockEvent>>
     let mut out = Vec::new();
     for seed in snap.seeds.values() {
         let ledger = load(seed)?;
-        if seed.status != "open"
+        // A lapsed gate's event is pending while its seed is still lapsed.
+        let lapsed = seed.status == "blocked"
+            && !ledger.gates.is_empty()
+            && ledger.gates.iter().all(|g| g.lapse_generation.is_some());
+        if (seed.status != "open" && !lapsed)
             || seed.defer_until.is_some()
             || !super::currently_done(b, seed, None)
         {

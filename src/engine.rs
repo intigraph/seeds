@@ -3143,7 +3143,7 @@ fn occupies_lane(s: &Seed) -> bool {
 }
 
 /// Refuse writes that would put more live items into a capped lane than its
-/// cap (aegis-6vto.4: Now 5, Next 40), naming what could leave instead.
+/// cap (aegis-6vto.4: Now 10, Next 40), naming what could leave instead.
 ///
 /// Only items ENTERING the lane are counted against it (a new lane, or a
 /// closed item reopened inside it); editing or reranking an item that is

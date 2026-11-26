@@ -59,6 +59,11 @@ fn stored_lane(b: &QuipuBackend, id: &str) -> Option<String> {
     b.snapshot(None).unwrap().get(id).unwrap().lane.clone()
 }
 
+/// The Now cap under test, read from the model so a cap change needs no test edit.
+fn now_cap() -> usize {
+    seeds::model::lane_cap("now").expect("now is capped")
+}
+
 fn fill(b: &mut QuipuBackend, l: &str, count: usize, start: u32) -> Vec<String> {
     (0..count)
         .map(|i| {
@@ -95,13 +100,13 @@ fn an_unknown_lane_is_a_usage_error_and_writes_nothing() {
 #[test]
 fn a_sixth_now_item_is_refused_and_names_what_could_leave() {
     let mut b = backend();
-    let five = fill(&mut b, "now", 5, 1);
+    let full = fill(&mut b, "now", now_cap(), 1);
     let sixth = mk(&mut b, "sixth", 200);
     let err = lane(&mut b, &sixth, "now", 201).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Refused);
     let text = err.to_string();
     assert!(text.contains("lane now is full"), "{text}");
-    for id in &five {
+    for id in &full {
         assert!(text.contains(id.as_str()), "{id} missing from {text}");
     }
     assert_eq!(stored_lane(&b, &sixth), None, "nothing written");
@@ -123,10 +128,10 @@ fn the_forty_first_next_item_is_refused_but_later_is_uncapped() {
 #[test]
 fn editing_or_reranking_an_item_already_in_a_full_lane_is_not_refused() {
     let mut b = backend();
-    let five = fill(&mut b, "now", 5, 1);
+    let full = fill(&mut b, "now", now_cap(), 1);
     set(
         &mut b,
-        &five[0],
+        &full[0],
         UpdateReq {
             rank: Some("3".into()),
             ..Default::default()
@@ -136,7 +141,7 @@ fn editing_or_reranking_an_item_already_in_a_full_lane_is_not_refused() {
     .unwrap();
     set(
         &mut b,
-        &five[1],
+        &full[1],
         UpdateReq {
             title: Some("renamed".into()),
             ..Default::default()
@@ -144,19 +149,19 @@ fn editing_or_reranking_an_item_already_in_a_full_lane_is_not_refused() {
         301,
     )
     .unwrap();
-    lane(&mut b, &five[2], "now", 302).unwrap(); // same lane again: no-op, not an entry
+    lane(&mut b, &full[2], "now", 302).unwrap(); // same lane again: no-op, not an entry
 }
 
 #[test]
 fn leaving_frees_a_slot_and_closed_items_do_not_count() {
     let mut b = backend();
-    let five = fill(&mut b, "now", 5, 1);
+    let full = fill(&mut b, "now", now_cap(), 1);
     let sixth = mk(&mut b, "sixth", 200);
-    lane(&mut b, &five[0], "later", 201).unwrap();
+    lane(&mut b, &full[0], "later", 201).unwrap();
     lane(&mut b, &sixth, "now", 202).unwrap();
     set(
         &mut b,
-        &five[1],
+        &full[1],
         UpdateReq {
             status: Some("closed".into()),
             ..Default::default()
@@ -171,10 +176,10 @@ fn leaving_frees_a_slot_and_closed_items_do_not_count() {
 #[test]
 fn reopening_a_closed_item_inside_a_full_lane_is_an_entry_and_is_refused() {
     let mut b = backend();
-    let five = fill(&mut b, "now", 5, 1);
+    let full = fill(&mut b, "now", now_cap(), 1);
     set(
         &mut b,
-        &five[0],
+        &full[0],
         UpdateReq {
             status: Some("closed".into()),
             ..Default::default()
@@ -186,7 +191,7 @@ fn reopening_a_closed_item_inside_a_full_lane_is_an_entry_and_is_refused() {
     lane(&mut b, &replacement, "now", 302).unwrap();
     let err = set(
         &mut b,
-        &five[0],
+        &full[0],
         UpdateReq {
             status: Some("open".into()),
             ..Default::default()
@@ -200,7 +205,7 @@ fn reopening_a_closed_item_inside_a_full_lane_is_an_entry_and_is_refused() {
 #[test]
 fn moving_several_items_in_one_write_counts_them_all() {
     let mut b = backend();
-    fill(&mut b, "now", 4, 1);
+    fill(&mut b, "now", now_cap() - 1, 1); // one place left; two entries overflow
     let a = mk(&mut b, "a", 200);
     let c = mk(&mut b, "c", 201);
     let err = engine::update(
@@ -245,21 +250,21 @@ fn list_filters_by_lane() {
 #[test]
 fn sd_reopen_into_a_full_lane_is_refused_and_writes_nothing() {
     let mut b = backend();
-    let five = fill(&mut b, "now", 5, 1);
-    engine::close(&mut b, &ctx(300), &[five[0].clone()], None, false).unwrap();
+    let full = fill(&mut b, "now", now_cap(), 1);
+    engine::close(&mut b, &ctx(300), &[full[0].clone()], None, false).unwrap();
     let replacement = mk(&mut b, "replacement", 301);
     lane(&mut b, &replacement, "now", 302).unwrap();
-    let err = engine::reopen(&mut b, &ctx(303), &[five[0].clone()], None).unwrap_err();
+    let err = engine::reopen(&mut b, &ctx(303), &[full[0].clone()], None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Refused);
     let status = b
         .snapshot(None)
         .unwrap()
-        .get(&five[0])
+        .get(&full[0])
         .unwrap()
         .status
         .clone();
     assert_eq!(status, "closed", "nothing written");
     // With a free slot, the same reopen goes through.
     lane(&mut b, &replacement, "later", 304).unwrap();
-    engine::reopen(&mut b, &ctx(305), &[five[0].clone()], None).unwrap();
+    engine::reopen(&mut b, &ctx(305), &[full[0].clone()], None).unwrap();
 }

@@ -2238,7 +2238,31 @@ pub fn blocked(b: &dyn Backend, req: &BlockedReq, at: Option<u64>) -> Result<Blo
         .map(|p| model::parse_priority(p))
         .collect::<Result<BTreeSet<_>>>()?;
     let labels = clean_labels(&req.labels);
-    let snap = b.snapshot(at)?;
+    let scoped = scoped(b, at);
+    let mut snap = if scoped {
+        // Only a seed that is not closed can be listed, and only what it
+        // depends on decides whether it is: read exactly that, never the
+        // whole board (closed seeds dominate it, and a remote whole-board
+        // read outlives the server's query budget).
+        let mut snap = b.snapshot_where(&SeedQuery {
+            statuses: Some(
+                model::STATUSES
+                    .iter()
+                    .filter(|s| **s != "closed" && **s != model::TOMBSTONE)
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            other_statuses: true,
+            labels: labels.clone(),
+            ..SeedQuery::default()
+        })?;
+        let statuses: Vec<String> = snap.seeds.values().map(|s| s.status.clone()).collect();
+        let statuses: Vec<&str> = statuses.iter().map(String::as_str).collect();
+        with_blocker_targets(b, &mut snap, &statuses)?;
+        snap
+    } else {
+        b.snapshot(at)?
+    };
     let mut blocked_by = BTreeMap::new();
     let mut seeds: Vec<Seed> = Vec::new();
     for s in snap
@@ -2272,7 +2296,20 @@ pub fn blocked(b: &dyn Backend, req: &BlockedReq, at: Option<u64>) -> Result<Blo
         seeds.push(s.clone());
     }
     sort_seeds(&mut seeds, None)?;
-    let page = page(seeds, req.limit.unwrap_or(DEFAULT_LIST_LIMIT), &snap);
+    let limit = req.limit.unwrap_or(DEFAULT_LIST_LIMIT);
+    // A scoped read holds no closed seeds; count dependents as `list` does.
+    let counts = if scoped {
+        b.dependent_counts(&page_ids(&seeds, 0, limit))?
+    } else {
+        None
+    };
+    if scoped && counts.is_none() {
+        with_dependents(b, &mut snap, &page_ids(&seeds, 0, limit))?;
+    }
+    let mut page = page(seeds, limit, &snap);
+    if let Some(counts) = counts {
+        page.dependent_counts = counts;
+    }
     blocked_by.retain(|id, _| page.issues.iter().any(|s| &s.id == id));
     let blockers = blocked_by
         .values()

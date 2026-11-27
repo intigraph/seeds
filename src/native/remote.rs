@@ -152,6 +152,16 @@ const SUBJECTS_PER_READ: usize = 100;
 // id-only discovery queries, which can still use 100 bound branches.
 const FACT_SUBJECTS_PER_READ: usize = 10;
 
+/// Subjects per facts read when a whole set is read in bulk
+/// ([`RemoteBackend::read_all`], e.g. the active snapshot every create's
+/// duplicate gate reads). Each read is one client round trip; the server
+/// cost barely grows with the set (aegis-n0wc, 2026-11-27, kota: 10
+/// subjects 0.02-0.03 s, 100 subjects 0.055 s / 2339 rows, 176 subjects
+/// 0.068 s / 4113 rows), while at 10 per read a ~470-seed active set took 47
+/// sequential reads, 3.9 s of an 11.9 s `sd create --dry-run`. A read quipu
+/// truncates or times out is still halved ([`RemoteBackend::read_subjects`]).
+const BULK_FACT_SUBJECTS_PER_READ: usize = 100;
+
 /// Subjects per range of a subject listing: under quipu's 10,000-row cap, so a
 /// full page is never also a truncated one.
 const SUBJECT_PAGE: usize = 5000;
@@ -1276,7 +1286,7 @@ impl RemoteBackend {
     }
 
     /// The facts of every subject in `subjects`, in `graph`, as of `at`, read
-    /// [`SUBJECTS_PER_READ`] at a time.
+    /// [`BULK_FACT_SUBJECTS_PER_READ`] at a time.
     fn read_all(
         &self,
         graph: &str,
@@ -1285,7 +1295,7 @@ impl RemoteBackend {
         out: &mut Facts,
     ) -> Result<()> {
         let all: Vec<&String> = subjects.iter().collect();
-        for chunk in all.chunks(FACT_SUBJECTS_PER_READ) {
+        for chunk in all.chunks(BULK_FACT_SUBJECTS_PER_READ) {
             self.read_subjects(graph, chunk, at, out)?;
         }
         Ok(())

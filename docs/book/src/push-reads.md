@@ -90,3 +90,17 @@ freshness; it does not start an automatic reconnect loop. Removing the opt-in
 user setting through the normal configuration procedure restores ordinary
 primary reads. Keep installation, authorization and measured traffic acceptance
 separate from source and local fixture checks.
+
+## Memory
+
+The consumer holds the whole scoped board as an in-memory replica, so its
+resident set is large from the start: a `--check` bootstrap of a board of
+about two million facts peaks at about 3.4 GB before any stream traffic. That
+cost is the replica, not a leak. Measure growth from the first stats line
+after start, never from zero: dividing the resident set by uptime reports
+the bootstrap as hourly growth. Every ten minutes the consumer logs its
+challenge counters and its own `rss_kb`, `data_kb` and `swap_kb` (from
+`/proc/self/status`; `?` where a field is unreadable), so a growth claim is
+read from its log. Applied transactions add versioned facts, so slow growth
+under write traffic is expected; a bootstrap cut that has aged also means
+every restart replays the stream since that cut.

@@ -152,6 +152,15 @@ pub fn parse(text: &str) -> Result<Records> {
     {
         let v: Value = serde_json::from_str(line)
             .map_err(|e| SdError::usage(format!("line {}: {e}", n + 1)))?;
+        // `bd export --all` interleaves non-issue records (memories, …)
+        // tagged `_type`. They are not work items; refuse rather than drop.
+        if let Some(kind) = v.get("_type").filter(|k| k.as_str() != Some("issue")) {
+            return Err(SdError::usage(format!(
+                "line {}: record of _type {kind} is not an issue; \
+                 export with `bd export` (without --all)",
+                n + 1
+            )));
+        }
         let id = required(&v, "id")?.to_string();
         if id.is_empty()
             || id

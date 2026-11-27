@@ -89,6 +89,10 @@ pub const HINT_CLOSED_DAYS: i64 = 30;
 /// a 30-day window cost every create ~15 s; above the cap that half of the
 /// corpus is skipped and the hint is recorded UNKNOWN. The create proceeds.
 pub const HINT_CLOSED_CAP: usize = 40;
+/// Reason prefix of a hint left partial by [`HINT_CLOSED_CAP`] (or a failed
+/// closed-corpus read). The refusal gate and the resolver still ran, so the
+/// create-time line must not say the gate was skipped (aegis-n0wc review).
+pub const HINT_CLOSED_PARTIAL: &str = "recently closed seeds not checked";
 /// Quipu's durable "these are not the same" edge; quipu's resolver honours
 /// it in both directions, and so do seeds' hints.
 pub const DISTINCT_FROM: &str = "https://quipu.dev/ontology/distinctFrom";
@@ -276,6 +280,10 @@ pub fn hint_lines(hints: &[Hint], unknown: Option<&str>, at: HintContext) -> Vec
     let mut lines = Vec::new();
     if let Some(why) = unknown {
         lines.push(match at {
+            // Only the closed half was capped: the gate and resolver ran.
+            HintContext::Create if why.starts_with(HINT_CLOSED_PARTIAL) => format!(
+                "duplicate hints PARTIAL, UNKNOWN for recently closed seeds ({why}): the refusal gate ran in full and open seeds were checked; the create proceeded, run `sd dupes` later or use --strict to refuse"
+            ),
             HintContext::Create => format!(
                 "duplicate check UNKNOWN ({why}): the embedding half of the refusal gate was not applied, only the local name gate, and no duplicate hints were found; the create proceeded, run `sd dupes` later or use --strict to refuse"
             ),

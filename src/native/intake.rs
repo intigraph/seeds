@@ -72,13 +72,18 @@ pub(super) fn admit(
             }
             Ok(None) => {
                 closed_unknown = Some(format!(
-                    "recently closed seeds not checked: more than {} closed in the last {} days",
+                    "{}: more than {} closed in the last {} days",
+                    crate::intake::HINT_CLOSED_PARTIAL,
                     crate::intake::HINT_CLOSED_CAP,
                     crate::intake::HINT_CLOSED_DAYS
                 ));
             }
             Err(e) => {
-                closed_unknown = Some(format!("recently closed seeds not checked: {}", e.message));
+                closed_unknown = Some(format!(
+                    "{}: {}",
+                    crate::intake::HINT_CLOSED_PARTIAL,
+                    e.message
+                ));
             }
         }
     }
@@ -865,6 +870,17 @@ mod tests {
             why.contains(&crate::intake::HINT_CLOSED_CAP.to_string()),
             "{why}"
         );
+        // The resolver ran, so the line must not claim the gate was skipped.
+        let lines = crate::intake::hint_lines(
+            &hints,
+            unknown.as_deref(),
+            crate::intake::HintContext::Create,
+        );
+        assert!(
+            lines[0].contains("PARTIAL") && lines[0].contains("refusal gate ran in full"),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("not applied"), "{lines:?}");
         assert!(req
             .extra
             .contains(&(crate::intake::hint_state(), Obj::Str("unknown".into()))));

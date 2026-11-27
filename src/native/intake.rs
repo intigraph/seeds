@@ -55,7 +55,9 @@ pub(super) fn admit(
         statuses: Some(ACTIVE.into_iter().map(str::to_string).collect()),
         ..Default::default()
     };
-    let mut snap = b.snapshot_where(&query)?;
+    // Bodies are never read here: they were 90% of the open seeds' bytes
+    // (~5 MB on every create, aegis-10m).
+    let mut snap = b.snapshot_where_brief(&query)?;
     // Hint mode also reads seeds closed inside the window, bounded in the
     // query (never every closed seed); the window is re-applied below.
     let now = hint.and_then(|h| crate::engine::epoch_of(h.now));

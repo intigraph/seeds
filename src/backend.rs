@@ -572,6 +572,15 @@ pub trait Backend {
         self.snapshot(None)
     }
 
+    /// [`Self::snapshot_where`] without the seeds' long text bodies
+    /// (description, notes, design, acceptance criteria, bridge JSON), for a
+    /// reader that decides on identity, title, status, type, labels and
+    /// dates only: the duplicate intake gate (aegis-10m). Its seeds must
+    /// never be written back. The default is the full read.
+    fn snapshot_where_brief(&self, q: &SeedQuery) -> Result<Snapshot> {
+        self.snapshot_where(q)
+    }
+
     /// Current closed seeds at or after `since`, without unrelated bodies or
     /// comments on indexed backends. A superset is allowed: the engine reapplies
     /// both filters. Historical reads retain the ordinary pinned snapshot.

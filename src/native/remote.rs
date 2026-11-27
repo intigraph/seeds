@@ -50,6 +50,7 @@ mod archive_tests;
 mod ask_scope;
 #[cfg(all(test, unix))]
 mod ask_scope_tests;
+mod brief;
 #[cfg(test)]
 mod comment_tests;
 #[cfg(test)]
@@ -1345,10 +1346,23 @@ impl RemoteBackend {
         at: Option<u64>,
         out: &mut Facts,
     ) -> Result<()> {
+        self.read_subjects_shaped(graph, subjects, at, out, subjects_query)
+    }
+
+    /// [`Self::read_subjects`] with the read's text built by `shape`, so a
+    /// narrower read (aegis-10m) keeps the same halving and refusals.
+    fn read_subjects_shaped(
+        &self,
+        graph: &str,
+        subjects: &[&String],
+        at: Option<u64>,
+        out: &mut Facts,
+        shape: fn(&str, &[&String]) -> String,
+    ) -> Result<()> {
         if subjects.is_empty() {
             return Ok(());
         }
-        let answer = self.select_marked(&subjects_query(graph, subjects), at);
+        let answer = self.select_marked(&shape(graph, subjects), at);
         // A read quipu gave up on is asked again in halves, like a truncated
         // one: a busy server times out a long read that halves answer.
         let (rows, truncated) = match answer {
@@ -1365,8 +1379,8 @@ impl RemoteBackend {
                 )));
             }
             let (a, b) = subjects.split_at(subjects.len() / 2);
-            self.read_subjects(graph, a, at, out)?;
-            return self.read_subjects(graph, b, at, out);
+            self.read_subjects_shaped(graph, a, at, out, shape)?;
+            return self.read_subjects_shaped(graph, b, at, out, shape);
         }
         for mut r in rows {
             if let (Some(Obj::Iri(s)), Some(Obj::Iri(p)), Some(o)) =
@@ -2801,6 +2815,10 @@ impl Backend for RemoteBackend {
                 .map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
             parse_directive_hints(&text).map(Some)
         }))
+    }
+
+    fn snapshot_where_brief(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {
+        self.brief_snapshot_where(q)
     }
 
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {

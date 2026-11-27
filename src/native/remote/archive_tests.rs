@@ -228,6 +228,88 @@ fn an_archived_child_id_is_never_minted_again() {
     assert_eq!(views[1].seed.title, "second child");
 }
 
+/// aegis-2tu: a top-level id the archive holds is never minted again, by a
+/// single create or a bulk create, and a raw create of that id (what an old
+/// client that never reads the archive sends) is refused atomically by the
+/// write's own absence guard, so no second seed shares the archived IRI.
+#[test]
+fn an_archived_top_level_id_is_refused_and_a_fresh_one_is_minted() {
+    let Some(server) = server_or_skip() else {
+        return;
+    };
+    let mut r = RemoteBackend::connect(
+        &server.base,
+        "https://seeds.local/project/archive-mint-top",
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let c = ctx();
+    // Mint is deterministic on (title, now): the same title at the same
+    // instant proposes the archived id first.
+    let old = create(&mut r, &c, "same title", None);
+    engine::close(&mut r, &c, std::slice::from_ref(&old), Some("done"), false).unwrap();
+    archive(&r, &[&old]);
+    assert_moved_only(&r, &[&old], &[]);
+
+    // A write that would create the archived id is refused; nothing lands live.
+    let mut stub = r
+        .snapshot_archived(std::slice::from_ref(&old))
+        .unwrap()
+        .seeds[&old]
+        .clone();
+    stub.title = "a second item under the archived id".into();
+    let refused = r.commit(
+        &crate::backend::WriteBatch {
+            seeds: vec![crate::backend::SeedWrite {
+                seed: stub,
+                expected_revision: None,
+            }],
+            source: "seeds:test-collide".into(),
+            ..Default::default()
+        },
+        &c,
+    );
+    assert!(
+        refused.is_err(),
+        "a create of an archived id must be refused"
+    );
+    assert!(
+        r.snapshot_items(std::slice::from_ref(&old))
+            .unwrap()
+            .seeds
+            .is_empty(),
+        "the refused create left a live seed under the archived IRI"
+    );
+
+    // A single create picks a fresh id.
+    let fresh = create(&mut r, &c, "same title", None);
+    assert_ne!(fresh, old, "the archived seed still owns its id");
+
+    // So does a bulk create, for the same proposed id.
+    let (bulk, _) = engine::create_many(
+        &mut r,
+        &c,
+        &[engine::BulkItem {
+            req: CreateReq {
+                title: "same title".into(),
+                ..CreateReq::default()
+            },
+            notes: None,
+            design: None,
+        }],
+        false,
+    )
+    .unwrap();
+    assert_ne!(bulk[0].id, old, "a bulk create reused the archived id");
+    assert_ne!(bulk[0].id, fresh);
+
+    let views = engine::show(&r, &[old.clone(), fresh.clone()], None).unwrap();
+    assert_eq!(views[0].seed.title, "same title");
+    assert_eq!(views[1].seed.title, "same title");
+}
+
 #[test]
 fn a_write_to_an_archived_seed_is_refused_and_leaves_no_live_stub() {
     let Some(server) = server_or_skip() else {

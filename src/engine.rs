@@ -266,6 +266,7 @@ pub fn create_many(
     let mut snap = b.snapshot_items(&referenced)?;
     let mut ids: Vec<Option<String>> = vec![None; items.len()];
     let mut minted = BTreeSet::new();
+    let mut reserved = BTreeSet::new();
     while ids.iter().any(Option::is_none) {
         let mut progress = false;
         for (index, item) in items.iter().enumerate() {
@@ -290,14 +291,26 @@ pub fn create_many(
                 None => None,
             };
             let id = loop {
-                let occupied = |c: &str| snap.seeds.contains_key(c) || minted.contains(c);
+                let occupied = |c: &str| {
+                    snap.seeds.contains_key(c) || minted.contains(c) || reserved.contains(c)
+                };
                 let candidate = match &parent {
                     Some(p) => ids::child(p, occupied),
                     None => ids::mint(&ctx.prefix, title, &ctx.now, occupied),
                 };
-                let existing = b.snapshot_items(std::slice::from_ref(&candidate))?;
+                let mut existing = b.snapshot_items(std::slice::from_ref(&candidate))?;
                 if !existing.seeds.contains_key(&candidate) {
-                    break candidate;
+                    // An archived seed still owns its id (aegis-2tu), as in a
+                    // single create: minting it again would put a live and an
+                    // archived seed under one IRI. Pick a fresh id instead.
+                    existing = b.snapshot_archived(std::slice::from_ref(&candidate))?;
+                    if !existing.seeds.contains_key(&candidate) {
+                        if b.id_reserved_elsewhere(&candidate)? {
+                            reserved.insert(candidate);
+                            continue;
+                        }
+                        break candidate;
+                    }
                 }
                 snap.seeds.extend(existing.seeds);
             };

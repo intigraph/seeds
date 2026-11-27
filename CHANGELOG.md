@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.0] - 2026-11-27
+
+### Added
+
+- Import a Dolt-backed bd board and lead the README as a beads drop-in ([20516cd](https://github.com/scbrown/seeds/commit/20516cd4686758c972c59402f86a6438549d3af2))
+- *(intake)* Duplicate hints on create and edit, sd dupes for grooming (#337) ([de4e7b5](https://github.com/scbrown/seeds/commit/de4e7b5e0f99b651ef123346201756837218e9e9))
+- *(lanes)* Triage and icebox lanes, WIP caps as data from config and graph ([9f96c81](https://github.com/scbrown/seeds/commit/9f96c81aa549ef79bd67ac2109db8b86ececbfef))
+
+### Fixed
+
+- *(blocked)* Read only unclosed seeds and their targets on a scoped backend (#339) ([27f809e](https://github.com/scbrown/seeds/commit/27f809e2c402aa3fb390659bdb8afe7da373dec4))
+- *(lanes)* Address review of the lanes and WIP caps change ([98518fc](https://github.com/scbrown/seeds/commit/98518fc35ac76eb49003392ca5c92e35ddb94531))
+- *(lanes)* Exclude the icebox from count and stats, refuse bad icebox data as a failure ([9d3915d](https://github.com/scbrown/seeds/commit/9d3915df7359d1374c4165f246d37e109715d246))
+
+### Testing
+
+- *(lanes)* Icebox projection fallback and remote lane cap truncation ([314b810](https://github.com/scbrown/seeds/commit/314b8105afe7080799f8d38e03c9260b24fa7110))
+
+### Wip
+
+- *(lanes)* Projection count falls back to SPARQL while a seed is iceboxed ([1354e22](https://github.com/scbrown/seeds/commit/1354e22987510b5c4ddfcd4280420eaba6786946))
+
 ## [0.29.2] - 2026-11-26
 
 ### Fixed

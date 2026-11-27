@@ -4899,17 +4899,15 @@ fn clean_labels(labels: &[String]) -> BTreeSet<String> {
 
 /// Inbox pointers are delivery records rather than deadline-bearing work.
 pub fn deadline_message(seed: &Seed) -> bool {
-    inbox_message(&seed.title, &seed.labels)
+    inbox_message(&seed.title, seed.labels.iter())
 }
 
 /// [`deadline_message`] on a title and labels, for a seed not yet written.
-pub fn inbox_message(title: &str, labels: &[String]) -> bool {
+pub fn inbox_message<'a>(title: &str, mut labels: impl Iterator<Item = &'a String>) -> bool {
     let title = title.trim_start();
     title.starts_with("inbox:")
         || title.starts_with("mail:")
-        || labels
-            .iter()
-            .any(|label| label.eq_ignore_ascii_case("inbox"))
+        || labels.any(|label| label.eq_ignore_ascii_case("inbox"))
 }
 
 /// A reviewed backfill entry binds the computed date to the exact source revision.

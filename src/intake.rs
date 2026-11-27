@@ -129,7 +129,8 @@ pub fn hint_subject(
     issue_type: Option<&str>,
     ephemeral: bool,
 ) -> bool {
-    !crate::engine::inbox_message(title, labels) && wants_directive_hint(issue_type, ephemeral)
+    !crate::engine::inbox_message(title, labels.iter())
+        && wants_directive_hint(issue_type, ephemeral)
 }
 
 /// Whether `seed` belongs to the hint corpus at `now` (epoch seconds):

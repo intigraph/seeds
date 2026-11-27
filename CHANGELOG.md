@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.2] - 2026-11-27
+
+### Documentation
+
+- *(push-reads)* Record that the reader's memory is flat across runs (#340) ([6141a75](https://github.com/scbrown/seeds/commit/6141a75a84d0633afdb2fbeb40e08ae27f8b657b))
+
 ## [0.30.1] - 2026-11-27
 
 ### Fixed

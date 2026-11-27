@@ -265,13 +265,13 @@ pub struct Resolved {
     pub max_write_clauses: usize,
 }
 
-/// The default write request cap: under quipu's 64 MiB `/update` body
-/// limit, with room for a proxy's own headers.
 /// Default push read freshness wait (aegis-az3d.2): under a write burst the
 /// replica catches up in seconds, and a slower read beats a refused one.
 pub const DEFAULT_READ_PARK_MS: u64 = 5_000;
 /// Ceiling on that wait, so a misconfiguration cannot hang a caller.
 pub const MAX_READ_PARK_MS: u64 = 10_000;
+/// The default write request cap: under quipu's 64 MiB `/update` body
+/// limit, with room for a proxy's own headers.
 pub const DEFAULT_MAX_WRITE_BYTES: usize = 48 * 1024 * 1024;
 
 /// The default guard-clause cap per write: a quarter of the smallest nesting

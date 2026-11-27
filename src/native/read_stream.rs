@@ -299,13 +299,19 @@ struct Reply {
     source_tx: u64,
     local_tx: u64,
     bound_ms: u64,
-    /// Time the reader held the request, accept to reply (parked plus render).
-    /// The client charges only the rest of its round trip on top of
-    /// `bound_ms`, which already covers the render. An older reader sends
-    /// none: 0 charges the whole round trip, as before (aegis-az3d.2).
-    #[serde(default)]
+    /// Time the reader held a parked request, accept to reply (parked plus
+    /// render). The client charges only the rest of its round trip on top of
+    /// `bound_ms`, which already covers the render. A read that did not park
+    /// reports 0 and the field is not sent, so an older client (whose `Reply`
+    /// denies unknown fields) still decodes it; an older reader sends none.
+    /// 0 charges the whole round trip, as before (aegis-az3d.2).
+    #[serde(default, skip_serializing_if = "is_zero")]
     held_ms: u64,
     result: Outcome,
+}
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if signature
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 fn send<T: Serialize>(stream: &mut UnixStream, value: &T, limit: usize) -> Result<()> {
     let data = encode(value)?;
@@ -989,6 +995,16 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // A read's hold starts when it is accepted, not at the loop
+                // top: frames applied and parked reads rendered earlier in
+                // this pass happened before the client connected, and
+                // counting them would overstate `held_ms` past the client's
+                // own round trip (aegis-az3d.2).
+                let (accepted, jumped) = clock.sample();
+                if jumped {
+                    board.clock_discontinuity();
+                    live.clock_jump();
+                }
                 let request =
                     timeout(&stream).and_then(|_| receive::<Request>(&mut stream, MAX_REQUEST));
                 match request {
@@ -1004,22 +1020,22 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         // already in flight, or one on-demand challenge
                         // (rate-limited inside Liveness).
                         let mut wait = false;
-                        if !has_headroom(&board, now)
+                        if !has_headroom(&board, accepted)
                             && parked.len() < MAX_PARKED
                             && park_ms(&request, cfg) > 0
                         {
-                            if live.in_flight(now) {
+                            if live.in_flight(accepted) {
                                 wait = true;
-                            } else if live.on_demand_due(now) {
+                            } else if live.on_demand_due(accepted) {
                                 match issue_challenge(
                                     &mut board,
                                     &remote,
                                     &challenges,
                                     live.generation(),
-                                    now,
+                                    accepted,
                                 )? {
                                     Some(true) => {
-                                        live.on_demand_sent(now);
+                                        live.on_demand_sent(accepted);
                                         wait = true;
                                     }
                                     Some(false) => {}
@@ -1030,7 +1046,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         if wait {
                             parked_total += 1;
                             let park = park_ms(&request, cfg);
-                            parked.push((stream, request, now, now.saturating_add(park)));
+                            parked.push((stream, request, accepted, accepted.saturating_add(park)));
                         } else {
                             answer(
                                 &mut stream,
@@ -1039,7 +1055,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                                 &c,
                                 cfg,
                                 &mut clock,
-                                now,
+                                accepted,
                                 0,
                             );
                         }
@@ -1113,11 +1129,15 @@ fn issue_challenge(
     })
 }
 
-/// A request's freshness wait: the caller's, never past the reader's own.
+/// A request's freshness wait: the caller's, never past the reader's own. A
+/// caller that sends none waits the default (the client omits the field only
+/// then), so a reader configured longer never parks past the client's own
+/// reply timeout (aegis-az3d.2).
 fn park_ms(request: &Request, cfg: &Resolved) -> u64 {
     request
         .park_ms
-        .map_or(cfg.read_park_ms, |p| p.min(cfg.read_park_ms))
+        .unwrap_or(super::config::DEFAULT_READ_PARK_MS)
+        .min(cfg.read_park_ms)
 }
 
 /// Render one read and reply. The bound is the cut's staleness when the
@@ -1149,7 +1169,14 @@ fn answer(
     let result = result
         .and_then(|mut r| {
             r.bound_ms = r.bound_ms.saturating_add(after.saturating_sub(now));
-            r.held_ms = after.saturating_sub(since);
+            // Only a parked read reports its hold: an unparked one is charged
+            // the whole round trip, as before, and its reply stays decodable
+            // by an older client.
+            r.held_ms = if waited > 0 {
+                after.saturating_sub(since)
+            } else {
+                0
+            };
             if changed || r.bound_ms > budget {
                 return Err(unknown(&format!(
                     "read exceeded proof budget (bound {} ms, cap {budget} ms)",

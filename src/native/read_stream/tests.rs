@@ -1029,6 +1029,14 @@ fn park_deadline_is_the_shorter_of_caller_and_reader() {
     r.park_ms = Some(9_000);
     assert_eq!(park_ms(&r, &f.cfg), 5_000);
     assert_eq!(reply_timeout(5_000), Duration::from_millis(7_000));
+    // A reader configured longer than the default never parks a default
+    // caller (which sends no park_ms) past that caller's 7 s reply timeout.
+    let mut long = f.cfg.clone();
+    long.read_park_ms = super::super::config::MAX_READ_PARK_MS;
+    r.park_ms = None;
+    assert_eq!(park_ms(&r, &long), 5_000);
+    r.park_ms = Some(9_000);
+    assert_eq!(park_ms(&r, &long), 9_000);
     // The default wait is not sent, so an older reader still decodes it.
     let r = f.request(&["sd", "list"]);
     assert!(!String::from_utf8(encode(&r).unwrap())
@@ -1060,4 +1068,76 @@ fn lag_line_names_bound_frame_age_and_cursors() {
         line.contains("source tx ") && line.contains("local tx "),
         "{line}"
     );
+}
+
+/// The `Reply` an older client decodes: no `held_ms`, unknown fields denied.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct OldReply {
+    version: u32,
+    primary_url: String,
+    graph: String,
+    principal: String,
+    store_id: String,
+    log_epoch: String,
+    scope_digest: String,
+    policy_digest: String,
+    source_tx: u64,
+    local_tx: u64,
+    bound_ms: u64,
+    result: Outcome,
+}
+
+/// aegis-az3d.2 review: a read that did not park sends no `held_ms`, so an
+/// older client still decodes the reply; a parked read reports its hold from
+/// the `since` it was accepted at, never longer than the time since then.
+#[test]
+fn unparked_reply_decodes_with_an_older_client_and_parked_hold_starts_at_accept() {
+    let mut f = Fixture::new();
+    let mut clock = Clock::new();
+    let (now, _) = clock.sample();
+    f.prove(1, now);
+    let (mut server, mut client) = UnixStream::pair().unwrap();
+    let request = f.request(&["sd", "list"]);
+    answer(
+        &mut server,
+        request,
+        &mut f.board,
+        &f.config,
+        &f.cfg,
+        &mut clock,
+        now,
+        0,
+    );
+    let mut header = [0; 4];
+    client.read_exact(&mut header).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+    client.read_exact(&mut bytes).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("held_ms"));
+    let old: std::result::Result<OldReply, String> = decode(&bytes).unwrap();
+    assert!(old.is_ok());
+
+    // Parked: accepted at `since`, released `waited` ms later.
+    let started = Instant::now();
+    let (since, _) = clock.sample();
+    thread::sleep(Duration::from_millis(30));
+    let (released, _) = clock.sample();
+    f.prove(2, released);
+    let request = f.request(&["sd", "list"]);
+    answer(
+        &mut server,
+        request,
+        &mut f.board,
+        &f.config,
+        &f.cfg,
+        &mut clock,
+        since,
+        released - since,
+    );
+    let reply: std::result::Result<Reply, String> = receive(&mut client, MAX_REPLY).unwrap();
+    let held = reply.unwrap().held_ms;
+    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap();
+    assert!(held >= 30, "held {held} ms");
+    assert!(held <= elapsed + 2, "held {held} ms past {elapsed} ms");
 }

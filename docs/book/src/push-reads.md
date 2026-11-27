@@ -96,7 +96,18 @@ is still not fresh, naming the wait, the staleness bound, the last frame's age
 and the source and local cursors. Time spent parked is not staleness of the
 cut answered after it: the reader reports how long it held the request, and
 the client charges its bound plus only the rest of its round trip against
-`max_freshness_ms` (aegis-az3d.2).
+`max_freshness_ms` (aegis-az3d.2). The hold is timed from when the reader
+accepts the connection, so work the reader did earlier in the same pass is
+never counted. A read that did not park reports no hold and is charged its
+whole round trip, as before.
+
+The reader waits a caller's `read_park_ms` only up to its own. A caller that
+sends none waits the default, so a reader configured longer cannot outlast
+that caller's reply timeout (the park plus 2 s). Mixed versions: an older
+client still decodes an unparked reply, because the hold field is left out.
+A parked reply carries it, which an older client refuses. An older client
+gives up after 2 s anyway, and it would charge the park as staleness, so it
+refuses that read either way. Restart the reader after upgrading `sd`.
 
 A bounded closed-inclusive list (`sd list --all`, `sd list --status closed`,
 any `--limit` but 0) is served by the primary, not the reader. Its render on a

@@ -1141,3 +1141,99 @@ fn unparked_reply_decodes_with_an_older_client_and_parked_hold_starts_at_accept(
     assert!(held >= 30, "held {held} ms");
     assert!(held <= elapsed + 2, "held {held} ms past {elapsed} ms");
 }
+
+fn parking(deadlines: &[u64]) -> Parking<usize> {
+    let mut p = Parking::default();
+    for (i, d) in deadlines.iter().enumerate() {
+        p.park(i, 0, *d);
+    }
+    p
+}
+fn drained(
+    p: &mut Parking<usize>,
+    now: u64,
+    headroom: bool,
+    connected: bool,
+    budget: usize,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    p.drain(now, headroom, connected, |r| {
+        out.push(r.item);
+        out.len() < budget
+    });
+    out
+}
+
+#[test]
+fn parked_reads_wait_until_a_frame_brings_headroom() {
+    let mut p = parking(&[5_000, 5_000]);
+    // Headroom without the replica moving releases nothing: no timer polls.
+    assert!(drained(&mut p, 100, true, true, usize::MAX).is_empty());
+    // A frame without headroom releases nothing either.
+    p.replica_moved(true, false);
+    assert!(drained(&mut p, 200, false, true, usize::MAX).is_empty());
+    p.replica_moved(true, true);
+    assert_eq!(drained(&mut p, 300, true, true, usize::MAX), vec![0, 1]);
+    assert!(p.is_empty());
+}
+
+#[test]
+fn release_is_bounded_per_pass_and_resumes_oldest_first() {
+    let mut p = parking(&[5_000; 64]);
+    p.replica_moved(true, true);
+    // One pass renders until its budget is spent, then the loop applies frames.
+    assert_eq!(drained(&mut p, 300, true, true, 3), vec![0, 1, 2]);
+    assert_eq!(p.len(), 61);
+    // The next pass applied no frame, but the reads already released keep going.
+    p.replica_moved(false, true);
+    assert_eq!(drained(&mut p, 310, true, true, 2), vec![3, 4]);
+    // A read parked after the proof is not released by it.
+    p.park(99, 320, 5_320);
+    assert_eq!(drained(&mut p, 330, true, true, usize::MAX).len(), 59);
+    assert_eq!(p.len(), 1);
+    assert!(drained(&mut p, 340, true, true, usize::MAX).is_empty());
+}
+
+#[test]
+fn released_reads_wait_again_if_headroom_is_lost() {
+    let mut p = parking(&[5_000; 4]);
+    p.replica_moved(true, true);
+    assert_eq!(drained(&mut p, 300, true, true, 1), vec![0]);
+    assert!(drained(&mut p, 310, false, true, usize::MAX).is_empty());
+    assert_eq!(drained(&mut p, 320, true, true, usize::MAX), vec![1, 2, 3]);
+}
+
+#[test]
+fn a_parked_read_goes_at_its_deadline_without_a_frame() {
+    let mut p = parking(&[5_000, 2_000, 9_000]);
+    assert!(drained(&mut p, 1_999, false, true, usize::MAX).is_empty());
+    assert_eq!(drained(&mut p, 2_000, false, true, usize::MAX), vec![1]);
+    assert_eq!(drained(&mut p, 5_000, false, true, usize::MAX), vec![0]);
+    assert_eq!(drained(&mut p, 9_000, false, true, usize::MAX), vec![2]);
+}
+
+#[test]
+fn a_dropped_stream_releases_every_parked_read_within_the_budget() {
+    let mut p = parking(&[5_000; 5]);
+    assert_eq!(drained(&mut p, 100, false, false, 2), vec![0, 1]);
+    assert_eq!(
+        drained(&mut p, 110, false, false, usize::MAX),
+        vec![2, 3, 4]
+    );
+}
+
+#[test]
+fn a_read_past_its_clients_wait_is_refused_without_a_render() {
+    // The client waits at least park + IO_TIMEOUT_MS; a render can take
+    // QUERY_DEADLINE_MS, so past deadline + 1 s the reply cannot arrive.
+    assert!(!client_gone(5_000, 5_000));
+    assert!(!client_gone(
+        5_000,
+        5_000 + IO_TIMEOUT_MS - QUERY_DEADLINE_MS - 1
+    ));
+    assert!(client_gone(
+        5_000,
+        5_000 + IO_TIMEOUT_MS - QUERY_DEADLINE_MS
+    ));
+    const { assert!(RELEASE_BUDGET_MS < QUERY_DEADLINE_MS) };
+}

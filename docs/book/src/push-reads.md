@@ -80,7 +80,8 @@ A missing, stale, disconnected, mismatched or corrupt projection is reported as
 ordinary missing-seed exit code 3 and JSON error; lack of a valid projection
 proof still refuses UNKNOWN rather than proving absence. The local client charges IPC elapsed time
 against the proof budget. Configured head reads do not silently fall back to
-primary polling. Other board bindings refuse rather than reuse this projection.
+primary polling. The one exception is explicit, not a fallback: a bounded
+closed-inclusive list is routed to the primary (below). Other board bindings refuse rather than reuse this projection.
 
 ### Waiting for freshness
 
@@ -100,6 +101,14 @@ the client charges its bound plus only the rest of its round trip against
 accepts the connection, so work the reader did earlier in the same pass is
 never counted. A read that did not park reports no hold and is charged its
 whole round trip, as before.
+
+Parked reads are answered oldest first, and the reader renders them for at
+most 250 ms per pass before it goes back to applying frames. At least one
+goes per pass, so one deadline-length render still holds the stream for its
+length, but a proof that releases every parked read (up to 64) no longer
+renders them back to back while frames queue. A read whose client cannot get
+a reply in time any more (its deadline plus 2 s, less a deadline-length
+render) is refused as `reader busy` without being rendered.
 
 The reader waits a caller's `read_park_ms` only up to its own. A caller that
 sends none waits the default, so a reader configured longer cannot outlast

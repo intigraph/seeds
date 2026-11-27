@@ -426,9 +426,17 @@ fn signed_identity_checks_binding_and_never_sends_declared_actor() {
             !requests[0].contains("x-quipu-attestation:"),
             "the audience is read before anything is signed"
         );
+        assert!(requests[1].starts_with("get /health "), "{}", requests[1]);
+        // aegis-712c: the health check is unsigned (a signed read waits on the
+        // server's writer lock), yet it still never declares the actor.
+        assert!(
+            !requests[1].contains("x-quipu-attestation:"),
+            "{}",
+            requests[1]
+        );
         assert!(requests[2].starts_with("post /identity "));
-        for request in requests.into_iter().skip(1) {
-            assert!(request.contains("x-quipu-attestation:"));
+        for (index, request) in requests.into_iter().enumerate().skip(1) {
+            assert_eq!(request.contains("x-quipu-attestation:"), index != 1);
             assert!(!request.contains("x-quipu-agent:"));
             assert!(!request.contains("x-quipu-session:"));
             assert!(!request.contains("authorization:"));
@@ -666,8 +674,16 @@ fn signed_reads_declare_source_and_operation_but_never_the_actor() {
     assert!(requests[0].starts_with("get /stats "), "{}", requests[0]);
     assert!(requests[1].starts_with("get /health "), "{}", requests[1]);
     assert!(requests[2].starts_with("post /query "), "{}", requests[2]);
-    for (request, operation) in [(&requests[1], "health"), (&requests[2], "query")] {
-        assert!(request.contains("x-quipu-attestation:"), "{request}");
+    // aegis-712c: health declares like a signed read but is not itself signed.
+    for (request, operation, signed) in [
+        (&requests[1], "health", false),
+        (&requests[2], "query", true),
+    ] {
+        assert_eq!(
+            request.contains("x-quipu-attestation:"),
+            signed,
+            "{request}"
+        );
         assert!(request.contains("x-quipu-source: "), "{request}");
         assert!(
             request.contains(&format!("x-quipu-operation: {operation}\r\n")),

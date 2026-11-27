@@ -711,20 +711,27 @@ impl RemoteBackend {
         };
         b.audience = b.resolve_audience()?;
         super::result::request_phase(false);
-        let health = if b.signer.is_some() {
-            super::provenance::apply_signed_read(
-                b.signed_request("GET", "/health", "", b"")?,
-                "health",
-            )
-            .call()
-        } else {
-            retry_read(|| {
-                quipu_read_request(b.agent.get(&format!("{}/health", b.base)), "health")
-                    .call()
-                    .map_err(Box::new)
-            })
-            .map_err(|e| *e)
-        };
+        // The health check is never signed (aegis-712c). Quipu settles a signed
+        // read's nonce under its writer lock BEFORE dispatch, so a signed
+        // `/health` queued every sd run behind writes (~1 s per run measured,
+        // against ~40 us unsigned). Liveness and the replica staleness headers
+        // do not depend on the signature; identity is still checked, and
+        // refused with the server's own verdict, by the first signed request.
+        // With a signer it still carries the signed-read declarations, so a
+        // signing sd never declares an actor (the actor is the key's binding).
+        let health = retry_read(|| {
+            let request = b.agent.get(&format!("{}/health", b.base));
+            let request = if b.signer.is_some() {
+                super::provenance::apply_signed_read(
+                    super::provenance::apply_signed(request),
+                    "health",
+                )
+            } else {
+                quipu_read_request(request, "health")
+            };
+            request.call().map_err(Box::new)
+        })
+        .map_err(|e| *e);
         match health {
             Ok(response) => {
                 b.replica = super::replica::Staleness::from_headers(|name| response.header(name));
@@ -3951,6 +3958,41 @@ mod tests {
             }
         });
         (base, seen)
+    }
+
+    // aegis-712c: a signed health check made every sd run wait on Quipu's
+    // writer lock (signed reads spend their nonce there before dispatch). The
+    // health check goes out unsigned even when a signer is configured; the
+    // signer still signs the real request that follows.
+    #[test]
+    fn the_health_check_is_unsigned_even_with_a_signer() {
+        let (base, seen) = recording_server();
+        let mut signer = super::super::attest::Signer::from_seed([7; 32], "s", "i").unwrap();
+        signer.audience = super::super::attest::Audience::LegacyV1;
+        let remote = RemoteBackend::connect(&base, "urn:g", None, Some(signer), &[]).unwrap();
+        remote
+            .post(
+                "/update",
+                "application/sparql-update",
+                "INSERT DATA {}",
+                true,
+            )
+            .unwrap();
+        let requests = seen.lock().unwrap().clone();
+        let signed = |prefix: &str| {
+            let (line, headers) = requests
+                .iter()
+                .find(|(l, _)| l.starts_with(prefix))
+                .unwrap_or_else(|| panic!("{prefix} not sent: {requests:?}"));
+            (
+                line.clone(),
+                headers
+                    .iter()
+                    .any(|(k, _)| k == super::super::attest::HEADER),
+            )
+        };
+        assert!(!signed("GET /health").1, "health must not be signed");
+        assert!(signed("POST /update").1, "the real write is still signed");
     }
 
     // aegis-1jh5en: every request seeds sends to quipu (the health check,

@@ -161,6 +161,19 @@ pub mod term {
     pub fn lane() -> String {
         seeds("lane")
     }
+    /// Why an item is iceboxed (aegis-8dda.3), a plain string.
+    pub fn icebox_reason() -> String {
+        seeds("iceboxReason")
+    }
+    /// When to review an iceboxed item: a date or an event, a plain string.
+    pub fn icebox_review() -> String {
+        seeds("iceboxReview")
+    }
+    /// One lane cap on the project's board node (aegis-8dda.3): a literal
+    /// `key=value`, e.g. `later=150` (`0` = uncapped).
+    pub fn lane_cap() -> String {
+        seeds("laneCap")
+    }
     /// The work item an Ask unblocks.
     pub fn unblocks() -> String {
         seeds("unblocks")
@@ -255,6 +268,12 @@ pub mod term {
     pub fn text() -> String {
         schema("text")
     }
+}
+
+/// The project graph's board node, which holds board policy such as lane
+/// caps (aegis-8dda.3).
+pub fn board_iri(graph: &str) -> String {
+    format!("{graph}#board")
 }
 
 /// The IRI of a seed.

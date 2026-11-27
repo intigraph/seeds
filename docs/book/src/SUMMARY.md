@@ -8,6 +8,7 @@
 - [Why facts, not snapshots](why-facts.md)
 - [The bd intent map](intent-map.md)
 - [Duplicate intake](duplicate-intake.md)
+- [Lanes and WIP caps](lanes.md)
 - [How it works](architecture.md)
   - [The storage model](storage.md)
   - [Configuration](config.md)

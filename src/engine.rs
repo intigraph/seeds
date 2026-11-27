@@ -2676,9 +2676,14 @@ pub struct UpdateReq {
     pub if_revision: Option<u64>,
     /// Exact decimal rank; empty clears it.
     pub rank: Option<String>,
-    /// Work lane `now`, `next` or `later`; empty clears it. Entering a capped
-    /// lane past its cap is refused (aegis-6vto.4).
+    /// Work lane (`now`, `next`, `later`, `triage`, `icebox`); empty clears
+    /// it. Entering a capped lane past its cap is refused (aegis-6vto.4,
+    /// aegis-8dda.3); leaving the icebox clears its reason and review.
     pub lane: Option<String>,
+    /// Why the item is iceboxed; empty clears it.
+    pub icebox_reason: Option<String>,
+    /// When to review an iceboxed item (a date or an event); empty clears it.
+    pub icebox_review: Option<String>,
     /// Move immediately before this same-priority seed.
     pub before: Option<String>,
     /// Move immediately after this same-priority seed.
@@ -2743,6 +2748,8 @@ fn revision_conflict(current: &Seed, expected: u64, req: &UpdateReq) -> SdError 
         ("due_at", &req.due),
         ("rank", &req.rank),
         ("lane", &req.lane),
+        ("icebox_reason", &req.icebox_reason),
+        ("icebox_review", &req.icebox_review),
         ("estimated_minutes", &req.estimate),
         ("parent", &req.parent),
         ("unblocks", &req.unblocks),
@@ -3039,7 +3046,18 @@ pub fn update(
             s.rank = Some(rank.clone());
         }
         if let Some(l) = &lane {
+            if l.as_deref() != Some(model::ICEBOX) {
+                s.icebox_reason = None;
+                s.icebox_review = None;
+            }
             s.lane = l.clone();
+        }
+        let text = |v: &str| (!v.trim().is_empty()).then(|| v.trim().to_string());
+        if let Some(v) = &req.icebox_reason {
+            s.icebox_reason = text(v);
+        }
+        if let Some(v) = &req.icebox_review {
+            s.icebox_review = text(v);
         }
         if let Some(m) = &req.estimate {
             s.estimated_minutes = Some(parse_estimate(m)?);
@@ -3177,34 +3195,122 @@ pub fn update(
     }
 }
 
-/// Whether a seed occupies a lane slot: live (not closed, not a tombstone).
+/// Whether a seed occupies a lane slot: live (not closed, not a tombstone)
+/// and not iceboxed (the icebox is never counted, aegis-8dda.3).
 fn occupies_lane(s: &Seed) -> bool {
-    s.status != "closed" && !s.is_tombstone() && s.is_board_work()
+    s.status != "closed"
+        && !s.is_tombstone()
+        && s.is_board_work()
+        && s.lane.as_deref() != Some(model::ICEBOX)
+}
+
+/// The only ways an item leaves a full lane (the design's dispositions).
+const DISPOSITIONS: [&str; 5] = [
+    "done (sd close <id> --reason <evidence>)",
+    "duplicate-of <id>",
+    "superseded-by <id>",
+    "won't-do (sd close <id> --reason <why>)",
+    "iceboxed (sd update <id> --lane icebox --icebox-reason <why> --icebox-review <date or event>)",
+];
+
+/// Refuse a write that parks an item in the icebox without both a reason and
+/// a review date or event (aegis-8dda.3).
+fn check_icebox(writes: &[SeedWrite]) -> Result<()> {
+    for s in writes.iter().map(|w| &w.seed) {
+        if s.lane.as_deref() != Some(model::ICEBOX) || s.is_tombstone() {
+            continue;
+        }
+        let blank = |v: &Option<String>| v.as_deref().is_none_or(|t| t.trim().is_empty());
+        if blank(&s.icebox_reason) || blank(&s.icebox_review) {
+            return Err(SdError::usage(format!(
+                "{}: the icebox needs a reason and a review date or event \
+                 (--icebox-reason and --icebox-review); nothing written",
+                s.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal for a full lane, naming what could leave and the dispositions
+/// that are the only ways out.
+fn lane_full(
+    scope: &str,
+    lane: &str,
+    cap: usize,
+    total: usize,
+    entering: &[&Seed],
+    members: &[&Seed],
+) -> SdError {
+    let could_leave: Vec<serde_json::Value> = members
+        .iter()
+        .map(|s| {
+            serde_json::json!({"id": s.id, "priority": s.priority, "rank": s.rank,
+                "assignee": s.assignee,
+                "title": s.title.chars().take(120).collect::<String>(),
+                "updated_at": s.updated_at})
+        })
+        .collect();
+    let names: Vec<&str> = members.iter().map(|s| s.id.as_str()).collect();
+    SdError::refused(format!(
+        "{scope} is full ({total} would exceed cap {cap}); nothing written. \
+         Something leaves first, through a disposition: {}. Could leave: {}",
+        DISPOSITIONS.join("; "),
+        names.join(", ")
+    ))
+    .with_details(serde_json::json!({
+        "schema": "seed-lane-cap/v1", "lane": lane, "cap": cap, "scope": scope,
+        "entering": entering.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        "could_leave": could_leave,
+        "dispositions": DISPOSITIONS,
+    }))
 }
 
 /// Refuse writes that would put more live items into a capped lane than its
-/// cap (aegis-6vto.4: Now 10, Next 40), naming what could leave instead.
+/// cap, naming what could leave and how (aegis-6vto.4, aegis-8dda.3). Caps
+/// are data: [`LaneCaps::resolve`](model::LaneCaps::resolve) over the
+/// project file and the project graph's board node. Now is capped twice: in
+/// total, and per assignee (WIP per crew member).
 ///
 /// Only items ENTERING the lane are counted against it (a new lane, or a
 /// closed item reopened inside it); editing or reranking an item that is
-/// already in the lane is never refused. The cohort read is the same bounded
-/// `snapshot_where` a move uses; a failed read refuses, never passes.
+/// already in the lane is never refused. For the per-assignee Now cap, an
+/// item reassigned within Now enters its new assignee's slot. The cohort read
+/// is the same bounded `snapshot_where` a move uses; a failed read refuses,
+/// never passes.
 fn check_lane_caps(b: &dyn Backend, snap: &Snapshot, writes: &[SeedWrite]) -> Result<()> {
+    check_icebox(writes)?;
+    let mut caps: Option<model::LaneCaps> = None;
     for lane in model::LANES {
-        let Some(cap) = model::lane_cap(lane) else {
-            continue;
-        };
         let entering: Vec<&Seed> = writes
             .iter()
             .map(|w| &w.seed)
             .filter(|s| s.lane.as_deref() == Some(lane) && occupies_lane(s))
             .filter(|s| {
                 snap.get(&s.id).map_or(true, |before| {
-                    before.lane.as_deref() != Some(lane) || !occupies_lane(before)
+                    before.lane.as_deref() != Some(lane)
+                        || !occupies_lane(before)
+                        || (lane == "now" && before.assignee != s.assignee)
                 })
             })
             .collect();
         if entering.is_empty() {
+            continue;
+        }
+        if caps.is_none() {
+            caps = Some(model::LaneCaps::resolve(
+                &b.lane_cap_config(),
+                &b.lane_cap_graph()?,
+            )?);
+        }
+        let caps = caps.as_ref().expect("resolved above");
+        let per_assignee = if lane == "now" {
+            caps.now_per_assignee
+        } else {
+            None
+        };
+        let cap = caps.get(lane);
+        if cap.is_none() && per_assignee.is_none() {
             continue;
         }
         let written: BTreeSet<&str> = writes.iter().map(|w| w.seed.id.as_str()).collect();
@@ -3218,17 +3324,11 @@ fn check_lane_caps(b: &dyn Backend, snap: &Snapshot, writes: &[SeedWrite]) -> Re
             .filter(|s| s.lane.as_deref() == Some(lane) && occupies_lane(s))
             .filter(|s| !written.contains(s.id.as_str()))
             .collect();
-        // Staying members that are also written keep their slot.
-        let staying = writes
+        let in_lane: Vec<&Seed> = writes
             .iter()
             .map(|w| &w.seed)
             .filter(|s| s.lane.as_deref() == Some(lane) && occupies_lane(s))
-            .count()
-            - entering.len();
-        let total = members.len() + staying + entering.len();
-        if total <= cap {
-            continue;
-        }
+            .collect();
         if lane == "now" {
             members.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then(a.id.cmp(&b.id)));
         } else {
@@ -3237,25 +3337,42 @@ fn check_lane_caps(b: &dyn Backend, snap: &Snapshot, writes: &[SeedWrite]) -> Re
                 (key(a).is_none(), key(a), &a.id).cmp(&(key(b).is_none(), key(b), &b.id))
             });
         }
-        let could_leave: Vec<serde_json::Value> = members
-            .iter()
-            .map(|s| {
-                serde_json::json!({"id": s.id, "priority": s.priority, "rank": s.rank,
-                    "title": s.title.chars().take(120).collect::<String>(),
-                    "updated_at": s.updated_at})
-            })
-            .collect();
-        let names: Vec<&str> = members.iter().map(|s| s.id.as_str()).collect();
-        return Err(SdError::refused(format!(
-            "lane {lane} is full ({total} would exceed cap {cap}); nothing written. \
-             Move one of these out first (e.g. to later): {}",
-            names.join(", ")
-        ))
-        .with_details(serde_json::json!({
-            "schema": "seed-lane-cap/v1", "lane": lane, "cap": cap,
-            "entering": entering.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
-            "could_leave": could_leave,
-        })));
+        if let Some(cap) = cap {
+            // Staying members that are also written keep their slot.
+            let total = members.len() + in_lane.len();
+            if total > cap {
+                return Err(lane_full(
+                    &format!("lane {lane}"),
+                    lane,
+                    cap,
+                    total,
+                    &entering,
+                    &members,
+                ));
+            }
+        }
+        if let Some(cap) = per_assignee {
+            let owners: BTreeSet<&str> = entering
+                .iter()
+                .filter_map(|s| s.assignee.as_deref())
+                .collect();
+            for owner in owners {
+                let mine = |s: &&&Seed| s.assignee.as_deref() == Some(owner);
+                let theirs: Vec<&Seed> = members.iter().filter(mine).copied().collect();
+                let total = theirs.len() + in_lane.iter().filter(mine).count();
+                if total > cap {
+                    let coming: Vec<&Seed> = entering.iter().filter(mine).copied().collect();
+                    return Err(lane_full(
+                        &format!("lane now for {owner}"),
+                        lane,
+                        cap,
+                        total,
+                        &coming,
+                        &theirs,
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }

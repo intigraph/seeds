@@ -29,6 +29,7 @@ pub struct QuipuBackend {
     store: Store,
     graph_iri: String,
     writable: bool,
+    lane_caps: crate::model::LaneCapSettings,
 }
 
 /// Bound `UNION` branches per local dependents read (ids x edge predicates).
@@ -37,6 +38,11 @@ pub struct QuipuBackend {
 const DEPENDENT_BRANCHES_PER_READ: usize = 32;
 
 impl QuipuBackend {
+    /// Hand the backend the project file's `[lanes]` caps (aegis-8dda.3).
+    pub fn set_lane_cap_config(&mut self, caps: crate::model::LaneCapSettings) {
+        self.lane_caps = caps;
+    }
+
     /// Wrap a store opened for writing: registers the project graph and the
     /// seeds shapes (once; a store that already holds these exact shapes is
     /// left alone).
@@ -54,6 +60,7 @@ impl QuipuBackend {
             store,
             graph_iri: graph_iri.to_string(),
             writable: true,
+            lane_caps: Default::default(),
         })
     }
 
@@ -63,6 +70,7 @@ impl QuipuBackend {
             store,
             graph_iri: graph_iri.to_string(),
             writable: false,
+            lane_caps: Default::default(),
         }
     }
 
@@ -839,6 +847,26 @@ impl Backend for QuipuBackend {
             n += crate::backend::legacy_count(graph, &counts)?;
         }
         Ok(n)
+    }
+
+    fn lane_cap_config(&self) -> crate::model::LaneCapSettings {
+        self.lane_caps.clone()
+    }
+
+    fn lane_cap_graph(&self) -> Result<crate::model::LaneCapSettings> {
+        let g = &self.graph_iri;
+        let q = format!(
+            "SELECT ?v WHERE {{ GRAPH <{g}> {{ <{}> <{}> ?v }} }} LIMIT 64",
+            vocab::board_iri(g),
+            term::lane_cap()
+        );
+        let mut out = crate::model::LaneCapSettings::new();
+        for row in query_temporal(&self.store, &q, &Self::ctx(None)?)?.rows() {
+            if let Some(Value::Str(v)) = row.get("v") {
+                crate::model::insert_lane_cap_fact(&mut out, v)?;
+            }
+        }
+        Ok(out)
     }
 
     fn ready_ids(&self, at: Option<u64>) -> Result<Vec<String>> {

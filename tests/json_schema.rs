@@ -44,6 +44,8 @@ const SEED_KEYS: &[&str] = &[
     "priority",
     "rank",
     "lane",
+    "icebox_reason",
+    "icebox_review",
     "revision",
     "status",
     "title",

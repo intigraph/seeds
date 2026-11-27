@@ -9,11 +9,12 @@ use quipu::project_graph as project;
 
 use super::{cli::Cli, config, store, Outcome};
 
-// Explicit recipient policy pin, including Ask metadata constraints. This is
+// Explicit recipient policy pin, including Ask metadata constraints and the
+// aegis-8dda.3 lanes (triage, icebox) with icebox reason and review. This is
 // selected by the local executable, never by an incoming share.
 const PROFILE_SHA256: &str =
-    "sha256:7a76ec6a35ca9bb630c9940e2b2fed7e27546662b11e31643950d9373ecb01bc";
-const PROFILE_REF: &str = "seeds-overseer-asks-v1 (shapes/seeds.shapes.ttl)";
+    "sha256:e52d0d65a94b18f9b1f0015d7dfd9f24dd33791668323926df9809ba2607231e";
+const PROFILE_REF: &str = "seeds-lanes-v1 (shapes/seeds.shapes.ttl)";
 
 fn require_profile(b: &QuipuBackend) -> Result<()> {
     if b.store()

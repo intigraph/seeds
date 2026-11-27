@@ -89,10 +89,7 @@ pub(super) fn admit(
     let remote = match b.creation_resolution(&req.title, req.description.as_deref()) {
         Ok(remote) => remote.unwrap_or_default(),
         Err(e) if hint.is_some() => {
-            unknown = Some(format!(
-                "{}; the embedding refusal gate was not applied, only the local name gate",
-                e.message
-            ));
+            unknown = Some(e.message);
             vec![]
         }
         Err(e) => return Err(e),
@@ -155,6 +152,17 @@ pub(super) fn admit(
     let Some(hint) = hint else {
         return Ok(None);
     };
+    // The hinted side is filtered like the corpus: an inbox pointer,
+    // ephemeral seed or machine record is never hinted, recorded, listed by
+    // `sd dupes` or refused by `--strict` for a hint. Only an UNKNOWN
+    // lookup still matters to it, because the refusal gate was degraded.
+    let subject = hint.existing.is_some()
+        || crate::intake::hint_subject(
+            &req.title,
+            &req.labels,
+            req.issue_type.as_deref(),
+            req.ephemeral,
+        );
     let corpus: BTreeMap<_, _> = snap
         .seeds
         .values()
@@ -189,7 +197,7 @@ pub(super) fn admit(
     found.retain(|c| seen.insert(c.iri.clone()));
     let hints: Vec<Hint> = found
         .into_iter()
-        .filter(|c| !judged.contains(&corpus[&c.iri].id))
+        .filter(|c| subject && !judged.contains(&corpus[&c.iri].id))
         .take(crate::intake::HINT_TOP)
         .map(|c| {
             let s = corpus[&c.iri];
@@ -210,13 +218,19 @@ pub(super) fn admit(
         }
     }
     if hint.strict && (unknown.is_some() || !hints.is_empty()) {
-        let lines = crate::intake::hint_lines(&hints, unknown.as_deref()).join("\n");
+        let mut lines = crate::intake::hint_lines(&hints, None, crate::intake::HintContext::Create);
+        if let Some(why) = &unknown {
+            lines.insert(0, format!("duplicate check UNKNOWN ({why})"));
+        }
+        let lines = lines.join("\n");
         return Err(SdError::refused(format!(
             "--strict: possible duplicate or UNKNOWN duplicate check; no create sent:\n{lines}"
         )));
     }
-    req.extra
-        .extend(crate::intake::hint_facts(&hints, unknown.as_deref()));
+    if subject {
+        req.extra
+            .extend(crate::intake::hint_facts(&hints, unknown.as_deref()));
+    }
     req.extra.extend(hint.distinct_from.iter().map(|id| {
         (
             crate::intake::DISTINCT_FROM.to_string(),
@@ -256,7 +270,11 @@ pub(super) fn rehint(b: &mut dyn Backend, ctx: &Ctx, seed: &Seed) -> Result<Vec<
         req.extra,
         "seeds:duplicate-hint",
     )?;
-    Ok(crate::intake::hint_lines(&hints, unknown.as_deref()))
+    Ok(crate::intake::hint_lines(
+        &hints,
+        unknown.as_deref(),
+        crate::intake::HintContext::Edit,
+    ))
 }
 
 /// `sd dupes`: list open hint pairs; `sd dupes resolve`: settle one.
@@ -633,6 +651,106 @@ mod tests {
     }
 
     #[test]
+    fn an_inbox_ephemeral_or_machine_create_is_never_hinted() {
+        let (inner, ids) = board(&[OLD]);
+        // The remote resolver readily matches a pointer to the item it names
+        // (0.95: under the 0.99 refusal gate, over the 0.90 hint floor).
+        let remote = Remote {
+            name_score: Some(0.95),
+            inner,
+            candidate: vocab::item_iri(&ids[0]),
+            fail: false,
+        };
+        let cases = [
+            CreateReq {
+                title: format!("inbox: {NEW}"),
+                ..Default::default()
+            },
+            CreateReq {
+                title: NEW.into(),
+                labels: vec!["inbox".into()],
+                ..Default::default()
+            },
+            CreateReq {
+                title: NEW.into(),
+                ephemeral: true,
+                ..Default::default()
+            },
+            CreateReq {
+                title: NEW.into(),
+                issue_type: Some("ops".into()),
+                ..Default::default()
+            },
+            CreateReq {
+                title: NEW.into(),
+                issue_type: Some("ask".into()),
+                ..Default::default()
+            },
+        ];
+        for case in cases {
+            let mut req = CreateReq {
+                description: Some("same underlying problem".into()),
+                ..case
+            };
+            let (hints, unknown) = admit(&remote, &mut req, &[], None, Some(&mode(&[], false)))
+                .unwrap()
+                .unwrap();
+            assert!(
+                hints.is_empty() && unknown.is_none(),
+                "{}: {hints:?}",
+                req.title
+            );
+            assert!(
+                !req.extra
+                    .iter()
+                    .any(|(p, _)| crate::intake::is_hint_predicate(p)),
+                "{}: {:?}",
+                req.title,
+                req.extra
+            );
+            let mut strict = req.clone();
+            strict.extra.clear();
+            assert!(
+                admit(&remote, &mut strict, &[], None, Some(&mode(&[], true))).is_ok(),
+                "--strict refuses no hint on {}",
+                req.title
+            );
+        }
+        // Without the filter the same remote match is a hint.
+        let mut req = CreateReq {
+            title: NEW.into(),
+            description: Some("same underlying problem".into()),
+            ..Default::default()
+        };
+        let (hints, _) = admit(&remote, &mut req, &[], None, Some(&mode(&[], false)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(hints.len(), 1, "{hints:?}");
+    }
+
+    #[test]
+    fn sd_dupes_never_lists_an_ineligible_hinted_side() {
+        let (mut b, ids) = board(&[OLD]);
+        // A hint recorded before the filter, on an ephemeral pointer.
+        let mut req = CreateReq {
+            title: format!("inbox: {NEW}"),
+            ..Default::default()
+        };
+        req.extra.extend(crate::intake::hint_facts(
+            &[Hint {
+                id: ids[0].clone(),
+                title: OLD.into(),
+                status: "open".into(),
+                score: 0.97,
+                matched_on: "embedding:0.97".into(),
+            }],
+            None,
+        ));
+        crate::engine::create(&mut b, &ctx(), &req).unwrap();
+        assert!(crate::intake::open_hint_pairs(&b.snapshot(None).unwrap()).is_empty());
+    }
+
+    #[test]
     fn strict_refuses_at_the_threshold() {
         let (b, ids) = board(&[OLD]);
         let error = hinted(&b, &[], true).unwrap_err();
@@ -663,8 +781,19 @@ mod tests {
         assert!(req
             .extra
             .contains(&(crate::intake::hint_state(), Obj::Str("unknown".into()))));
-        let lines = crate::intake::hint_lines(&hints, unknown.as_deref());
-        assert!(lines[0].contains("UNKNOWN"));
+        let lines = crate::intake::hint_lines(
+            &hints,
+            unknown.as_deref(),
+            crate::intake::HintContext::Create,
+        );
+        assert!(lines[0].contains("UNKNOWN") && lines[0].contains("refusal gate was not applied"));
+        assert!(!lines[0].contains("not affected"), "{lines:?}");
+        let edit =
+            crate::intake::hint_lines(&hints, unknown.as_deref(), crate::intake::HintContext::Edit);
+        assert!(
+            edit[0].contains("UNKNOWN") && !edit[0].contains("gate"),
+            "{edit:?}"
+        );
         let mut strict = req.clone();
         assert!(admit(&remote, &mut strict, &[], None, Some(&mode(&[], true))).is_err());
     }

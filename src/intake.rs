@@ -119,6 +119,19 @@ pub fn is_inbox_pointer(seed: &Seed) -> bool {
     crate::engine::deadline_message(seed)
 }
 
+/// Whether a seed being created is itself hinted: the hinted side gets the
+/// same exclusions as the corpus, so an inbox pointer, ephemeral seed or
+/// machine record (ops, ask) never gets `possibleDuplicateOf`, never shows
+/// in `sd dupes` and is never refused by `--strict` for a hint.
+pub fn hint_subject(
+    title: &str,
+    labels: &[String],
+    issue_type: Option<&str>,
+    ephemeral: bool,
+) -> bool {
+    !crate::engine::inbox_message(title, labels) && wants_directive_hint(issue_type, ephemeral)
+}
+
 /// Whether `seed` belongs to the hint corpus at `now` (epoch seconds):
 /// open-ish work, or closed within [`HINT_CLOSED_DAYS`]; never inbox
 /// pointers, ephemeral seeds or machine records (ops, ask job reports).
@@ -243,13 +256,27 @@ pub fn is_hint_predicate(p: &str) -> bool {
     p == hint_state() || p == possible_duplicate_of() || p == hint_detail()
 }
 
+/// Where a hint lookup ran, which decides what an UNKNOWN line says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintContext {
+    /// `sd create`: the remote half of the refusal gate was skipped too.
+    Create,
+    /// `sd update` re-hint: there is no gate, and the edit is saved.
+    Edit,
+}
+
 /// The stderr lines for a hint result. UNKNOWN is never "no duplicates".
-pub fn hint_lines(hints: &[Hint], unknown: Option<&str>) -> Vec<String> {
+pub fn hint_lines(hints: &[Hint], unknown: Option<&str>, at: HintContext) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(why) = unknown {
-        lines.push(format!(
-            "duplicate hints UNKNOWN ({why}); the create was not affected, run `sd dupes` later"
-        ));
+        lines.push(match at {
+            HintContext::Create => format!(
+                "duplicate check UNKNOWN ({why}): the embedding half of the refusal gate was not applied, only the local name gate, and no duplicate hints were found; the create proceeded, run `sd dupes` later or use --strict to refuse"
+            ),
+            HintContext::Edit => format!(
+                "duplicate hints UNKNOWN ({why}); the edit is saved and its old hints are cleared, run `sd dupes` later"
+            ),
+        });
     }
     if !hints.is_empty() {
         lines.push(
@@ -294,7 +321,9 @@ pub fn open_hint_pairs(snap: &crate::model::Snapshot) -> Vec<HintPair> {
     }
     let mut out = Vec::new();
     for seed in snap.seeds.values() {
-        if matches!(seed.status.as_str(), "closed" | "tombstone") {
+        // Only live, hint-eligible work is a hinted side: a hint recorded on
+        // an inbox pointer, ephemeral seed or machine record is not listed.
+        if seed.status == "closed" || !hint_eligible(seed, None) {
             continue;
         }
         for (p, o) in &seed.extra {

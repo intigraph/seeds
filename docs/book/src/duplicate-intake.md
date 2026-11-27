@@ -57,6 +57,11 @@ titles, the `inbox` label), ephemeral seeds and machine records (`ops`, `ask`).
 Canonical-name matches at **0.90** (Jaro-Winkler included) and the remote
 embedding candidates become hints. Nothing is merged.
 
+The hinted side is filtered the same way. A new inbox pointer, ephemeral
+seed or machine record gets no hints and records no hint facts, so it never
+appears in `sd dupes` and `--strict` never refuses it for a hint. `sd dupes`
+also skips any such seed that already carries a hint.
+
 The create succeeds (exit 0). The top three candidates are printed on stderr
 with id, status, score and title, and recorded on the new seed:
 
@@ -81,11 +86,14 @@ or after the window start), never a snapshot of every closed seed. Remote
 canonical-name candidates are floored at 0.90, the same as local ones.
 
 - `--strict` refuses (exit 5) when there is any hint or the state is UNKNOWN.
+- `--silent` still prints the duplicate warnings on stderr; it silences
+  only stdout and the directive hints. A duplicate warning, and above all an
+  UNKNOWN one that says the refusal gate was degraded, is not advisory noise.
 - `--distinct-from <id>` (repeatable; each id must exist) records `quipu:distinctFrom` on the new
   seed. That pair is never hinted again, whichever side carries it.
 - A title or description edit (`sd update`) re-runs the hints and replaces
-  the recorded hint facts. The edit is already written, so a failure is only
-  a warning. Closed seeds, inbox pointers, ephemeral seeds and machine
+  the recorded hint facts. The edit is already written and there is no gate,
+  so a failure is only a warning that the hints are UNKNOWN. Closed seeds, inbox pointers, ephemeral seeds and machine
   records are not re-hinted.
 
 `seeds:possibleDuplicateOf` and `seeds:duplicateHintState` are seeds' stopgap

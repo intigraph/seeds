@@ -2918,7 +2918,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             // quipu's /update returns no transaction id, aegis-xajsgn).
             let tx = (!a.dry_run && !existed && tx != 0).then_some(tx);
             let mut hints = match (&dupes, existed) {
-                (Some((found, unknown)), false) => crate::intake::hint_lines(found, unknown.as_deref()),
+                (Some((found, unknown)), false) => crate::intake::hint_lines(found, unknown.as_deref(), crate::intake::HintContext::Create),
                 _ => vec![],
             };
             if !(existed || a.silent) { hints.extend(intake::directive_hint(b, &req)); }

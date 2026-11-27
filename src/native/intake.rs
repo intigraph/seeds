@@ -861,7 +861,10 @@ mod tests {
         assert!(hints.is_empty());
         let why = unknown.as_deref().unwrap();
         assert!(why.contains("recently closed seeds not checked"), "{why}");
-        assert!(why.contains(&crate::intake::HINT_CLOSED_CAP.to_string()), "{why}");
+        assert!(
+            why.contains(&crate::intake::HINT_CLOSED_CAP.to_string()),
+            "{why}"
+        );
         assert!(req
             .extra
             .contains(&(crate::intake::hint_state(), Obj::Str("unknown".into()))));
@@ -869,7 +872,11 @@ mod tests {
         assert!(admit(&remote, &mut strict, &[], None, Some(&mode(&[], true))).is_err());
         // Under the cap nothing changes: the same create is not UNKNOWN.
         let (inner, _) = board(&[]);
-        let under = Remote { closed_over_cap: false, inner, ..remote };
+        let under = Remote {
+            closed_over_cap: false,
+            inner,
+            ..remote
+        };
         let mut req = CreateReq {
             title: "Requests hang under load".into(),
             description: Some("same underlying problem".into()),

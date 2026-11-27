@@ -4,6 +4,8 @@
 requires an explicit local `--store` and `--graph` and refuses a configured
 pendant or remote destination. It never opens or updates a br database.
 Keep br authoritative until the migration owner approves the cutover.
+A Dolt-backed bd board takes the same path through `bd export`; see
+[Moving from beads](../from-beads.md).
 
 ```sh
 sd --store rehearsal.db --graph https://example.org/project/trial \

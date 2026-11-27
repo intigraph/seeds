@@ -20,3 +20,5 @@ Every document in this repository, and where it lives.
 Additional documents under `docs/` are folded into a book page or listed here.
 
 For lossless beads JSONL rehearsal and cutover sync, see [Cutover](verbs/cutover.md).
+To import a bd (Dolt) board and for the bd to sd command audit, see
+[Moving from beads](from-beads.md).

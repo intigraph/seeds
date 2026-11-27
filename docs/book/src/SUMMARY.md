@@ -3,6 +3,7 @@
 [Introduction](introduction.md)
 
 - [Getting started](getting-started.md)
+- [Moving from beads](from-beads.md)
 - [Agent orientation](agent-primer.md)
 - [Why facts, not snapshots](why-facts.md)
 - [The bd intent map](intent-map.md)

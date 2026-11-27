@@ -633,10 +633,11 @@ fn fresh_projection_preserves_not_found_exit_and_json_contract() {
     assert!(render(&mut f.board, &f.config, &f.cfg, request, 5).is_err());
 }
 
-// aegis-xdvg.4 ruling A' (4 s) and the #292 review findings.
+// aegis-xdvg.4 ruling A' (4 s), the #292 review findings, and aegis-az3d.2
+// (1.5 s: the scheduled peak must fit the read-headroom window).
 #[test]
 fn challenge_cadence_stays_inside_the_freshness_cap() {
-    assert_eq!(super::CHALLENGE_INTERVAL_MS, 4_000);
+    assert_eq!(super::CHALLENGE_INTERVAL_MS, 1_500);
     let mut live = super::Liveness::new();
     let mut count = 0;
     for t in (0..3_600_000u64).step_by(10) {
@@ -645,7 +646,7 @@ fn challenge_cadence_stays_inside_the_freshness_cap() {
             count += 1;
         }
     }
-    assert_eq!(count, 900); // ~900/h per healthy reader, not 1800
+    assert_eq!(count, 2_400); // ~2400/h per healthy reader, not 4800
 }
 
 #[test]
@@ -655,9 +656,9 @@ fn a_failed_issue_does_not_burn_the_slot_and_reconnect_or_clock_jump_challenge_a
     // board had no session yet: nothing sent, still due next tick
     assert!(live.challenge_due(10));
     live.challenge_sent(10);
-    assert!(!live.challenge_due(3_000));
+    assert!(!live.challenge_due(1_000));
     live.clock_jump();
-    assert!(live.challenge_due(3_000)); // re-prove at once after a clock jump
+    assert!(live.challenge_due(1_000)); // re-prove at once after a clock jump
     live.challenge_sent(3_000);
     live.disconnected(3_500, 0);
     assert!(!live.challenge_due(3_600)); // never while disconnected
@@ -791,13 +792,14 @@ fn on_demand_challenges_are_capped_at_one_per_interval() {
             live.on_demand_sent(t);
         }
     }
+    let per_hour = 3_600_000 / super::CHALLENGE_INTERVAL_MS;
     assert!(
-        live.on_demand_sent <= 900,
+        live.on_demand_sent <= per_hour,
         "on-demand {}",
         live.on_demand_sent
     );
     assert!(
-        live.scheduled_sent + live.on_demand_sent <= 1_800,
+        live.scheduled_sent + live.on_demand_sent <= 2 * per_hour,
         "total {}",
         live.scheduled_sent + live.on_demand_sent
     );
@@ -812,7 +814,8 @@ fn idle_reader_stays_at_the_scheduled_cadence() {
             live.challenge_sent(t);
         }
     }
-    assert_eq!((live.scheduled_sent, live.on_demand_sent), (900, 0));
+    let per_hour = 3_600_000 / super::CHALLENGE_INTERVAL_MS;
+    assert_eq!((live.scheduled_sent, live.on_demand_sent), (per_hour, 0));
 }
 
 #[test]

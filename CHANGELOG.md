@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.2] - 2026-11-26
+
+### Fixed
+
+- *(read-stream)* Challenge every 1.5 s so the freshness peak stays inside read headroom ([c3833ed](https://github.com/scbrown/seeds/commit/c3833ed38a8b01add49b11427eaeb37db19e8b12))
+
+## [0.29.1] - 2026-11-26
+
+### Fixed
+
+- *(remote)* Retry HTTP 429 reads after Retry-After, then a bounded busy error ([a44aa6d](https://github.com/scbrown/seeds/commit/a44aa6de306c4b88145c1cf930cdb71ccc93742d))
+
+## [0.29.0] - 2026-11-26
+
+### Added
+
+- *(lanes)* Raise the Now lane cap to 10 ([79e830e](https://github.com/scbrown/seeds/commit/79e830e8f79d505666d8bb271a8da2737822a25c))
+
+### Documentation
+
+- *(knowledge)* Refresh the sd CLI source witness after the lane help change ([d84456e](https://github.com/scbrown/seeds/commit/d84456e462511badda182cb1c8537fdcf3030c35))
+
+### Fixed
+
+- *(read-stream)* Read the projection at head without as_of when the cut is the head ([cc49c05](https://github.com/scbrown/seeds/commit/cc49c05b421a64d5e708e971cc474e31740676d6))
+
+### Testing
+
+- *(az3d.1)* Phase-0 local projection query latency bench (ignored) ([930f31f](https://github.com/scbrown/seeds/commit/930f31f276f088119ab2e8632635184bffdeb324))
+
 ## [0.28.3] - 2026-11-25
 
 ### Added

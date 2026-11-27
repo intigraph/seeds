@@ -152,7 +152,7 @@ fn new_seed(
             .map(|v| parse_when(v, &ctx.now, "--expires-at"))
             .transpose()?,
         estimated_minutes: req.estimate.as_deref().map(parse_estimate).transpose()?,
-        labels: clean_labels(&req.labels),
+        labels: new_labels(&BTreeSet::new(), clean_labels(&req.labels))?,
         created_at: ctx.now.clone(),
         created_by: non_empty(Some(&ctx.actor)),
         updated_at: ctx.now.clone(),
@@ -1439,6 +1439,12 @@ pub struct Stats {
     pub blocked: usize,
     /// Deferred.
     pub deferred: usize,
+    /// Status `blocked` with every gate past its recheck instant: back in
+    /// ready (aegis-xjh). `None` when the backend did not compute it.
+    pub blocked_lapsed: Option<usize>,
+    /// Status `blocked` with no checkable condition: no open dependency, no
+    /// external prerequisite and no gate. `None` when not computed.
+    pub blocked_unchecked: Option<usize>,
     /// Deleted (tombstoned); not counted in `total` or any other count.
     pub tombstones: usize,
     /// What `sd ready` would list now.
@@ -1464,6 +1470,58 @@ pub fn stats(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Resu
         st.archived = b.archived_count()?;
     }
     Ok(st)
+}
+
+/// `(blocked_lapsed, blocked_unchecked)` for [`Stats`] over `snap`: board
+/// work with status `blocked` whose every gate has lapsed, and blocked seeds
+/// with no checkable condition (no open dependency, no external prerequisite
+/// and no gate). `snap` must hold every blocked seed and the seeds they
+/// depend on; [`blocked_condition_counts_scoped`] reads exactly that.
+pub fn blocked_condition_counts(snap: &Snapshot, now: &str) -> (usize, usize) {
+    let blocked: Vec<&Seed> = snap
+        .seeds
+        .values()
+        .filter(|s| !s.is_tombstone() && s.is_board_work() && s.status == "blocked")
+        .collect();
+    let lapsed = blocked.iter().filter(|s| lapsed_block(s, now)).count();
+    let unchecked = blocked
+        .iter()
+        .filter(|s| snap.open_blockers(s).is_empty())
+        .filter(|s| {
+            crate::blockers::load(s).is_ok_and(|l| l.blockers.is_empty() && l.gates.is_empty())
+        })
+        .count();
+    (lapsed, unchecked)
+}
+
+/// [`blocked_condition_counts`] for a scoped backend: reads only the blocked
+/// seeds and what they depend on, never the whole board, so a server-side
+/// stats aggregate reports the same counts a whole snapshot does.
+pub fn blocked_condition_counts_scoped(b: &dyn Backend, now: &str) -> Result<(usize, usize)> {
+    let mut snap = b.snapshot_where(&SeedQuery {
+        statuses: Some(["blocked".to_string()].into()),
+        ..SeedQuery::default()
+    })?;
+    with_blocker_targets(b, &mut snap, &["blocked"])?;
+    Ok(blocked_condition_counts(&snap, now))
+}
+
+/// Read the seeds that seeds of `statuses` in `snap` depend on and are not
+/// yet in it, so `open_blockers` judges them exactly as a whole snapshot.
+fn with_blocker_targets(b: &dyn Backend, snap: &mut Snapshot, statuses: &[&str]) -> Result<()> {
+    let targets: Vec<String> = snap
+        .seeds
+        .values()
+        .filter(|s| statuses.contains(&s.status.as_str()))
+        .flat_map(|s| s.blocked_on.iter().cloned())
+        .filter(|t| !snap.seeds.contains_key(t))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !targets.is_empty() {
+        merge_snapshots(snap, b.snapshot_seeds(&targets)?);
+    }
+    Ok(())
 }
 
 /// [`stats`] over the live graph.
@@ -1539,6 +1597,7 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
             }),
         ));
     }
+    let (lapsed, unchecked) = blocked_condition_counts(&snap, &ctx.now);
     Ok(Stats {
         total: seeds.len(),
         ops,
@@ -1547,6 +1606,8 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
         closed: count("closed"),
         blocked: count("blocked"),
         deferred: count("deferred"),
+        blocked_lapsed: Some(lapsed),
+        blocked_unchecked: Some(unchecked),
         tombstones,
         ready: ready(b, ctx, &ReadyReq::default(), at)?.total,
         epics_eligible_for_closure: eligible,
@@ -2145,6 +2206,11 @@ pub struct BlockedReq {
     pub labels: Vec<String>,
     /// Page size; `None` means [`DEFAULT_LIST_LIMIT`] (br's 50), `Some(0)` means all.
     pub limit: Option<usize>,
+    /// Only seeds whose gate has lapsed (back in ready, still marked blocked).
+    pub lapsed: bool,
+    /// The instant gates are judged against (the caller's `Ctx::now`); `None`
+    /// treats every gate as holding.
+    pub now: Option<String>,
 }
 
 /// A page of blocked seeds and, for each, its open blockers.
@@ -2180,8 +2246,22 @@ pub fn blocked(b: &dyn Backend, req: &BlockedReq, at: Option<u64>) -> Result<Blo
         .values()
         .filter(|s| s.status != "closed" && !s.is_tombstone())
     {
-        let blockers = snap.open_blockers(s);
+        let mut blockers = snap.open_blockers(s);
+        let lapsed = req
+            .now
+            .as_deref()
+            .is_some_and(|now| crate::blockers::lapsed(s, now));
+        if let Ok(ledger) = crate::blockers::load(s) {
+            for g in &ledger.gates {
+                let state = match &req.now {
+                    Some(now) if crate::blockers::gate_lapsed(g, now) => "lapsed",
+                    _ => "until",
+                };
+                blockers.push(format!("gate:{} {state} {}", g.who, g.recheck_at));
+            }
+        }
         if blockers.is_empty()
+            || (req.lapsed && !lapsed)
             || !(types.is_empty() || types.contains(&s.issue_type))
             || !(priorities.is_empty() || priorities.contains(&s.priority))
             || !labels.is_subset(&s.labels)
@@ -2286,18 +2366,15 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
                 ..query.clone()
             };
             merge_snapshots(&mut snap, b.snapshot_where(&deferred)?);
-            let targets: Vec<String> = snap
-                .seeds
-                .values()
-                .filter(|s| s.status == "deferred")
-                .flat_map(|s| s.blocked_on.iter().cloned())
-                .filter(|t| !snap.seeds.contains_key(t))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if !targets.is_empty() {
-                merge_snapshots(&mut snap, b.snapshot_seeds(&targets)?);
-            }
+            // Blocked seeds whose gate has lapsed are ready again (aegis-xjh);
+            // the backend's ready query reads only open ones, so they are
+            // read here, with what they depend on, like the deferred ones.
+            let blocked = SeedQuery {
+                statuses: Some(["blocked".to_string()].into()),
+                ..query.clone()
+            };
+            merge_snapshots(&mut snap, b.snapshot_where(&blocked)?);
+            with_blocker_targets(b, &mut snap, &["deferred", "blocked"])?;
         }
         snap
     } else {
@@ -2311,6 +2388,12 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         None => None,
     };
     let mut ids = ready_ids;
+    ids.extend(
+        snap.seeds
+            .values()
+            .filter(|s| lapsed_block(s, &ctx.now) && snap.open_blockers(s).is_empty())
+            .map(|s| s.id.clone()),
+    );
     // Status `deferred` is not open, so the backend's ready query never
     // returns it; the unblocked ones are added here. Without
     // --include-deferred only those whose date has passed are ready.
@@ -2408,7 +2491,8 @@ pub fn ready_by_model(snap: &Snapshot, now: &str) -> Vec<String> {
     snap.seeds
         .values()
         .filter(|s| {
-            (s.status == "open" || lapsed_deferral(s, now)) && snap.open_blockers(s).is_empty()
+            (s.status == "open" || lapsed_deferral(s, now) || lapsed_block(s, now))
+                && snap.open_blockers(s).is_empty()
         })
         .filter(|s| !is_deferred(s, now))
         // Ephemeral seeds are never ready (br); the SPARQL definition gets
@@ -2416,6 +2500,12 @@ pub fn ready_by_model(snap: &Snapshot, now: &str) -> Vec<String> {
         .filter(|s| !s.ephemeral && s.is_board_work())
         .map(|s| s.id.clone())
         .collect()
+}
+
+/// A `blocked` seed whose every gate is past its recheck instant (aegis-xjh):
+/// ready again, with no one having to remember to unblock it.
+fn lapsed_block(s: &Seed, now: &str) -> bool {
+    s.status == "blocked" && !s.ephemeral && crate::blockers::lapsed(s, now)
 }
 
 fn is_deferred(s: &Seed, now: &str) -> bool {
@@ -2950,7 +3040,7 @@ pub fn update(
                 .transpose()?;
         }
         if let Some(set) = &req.set_labels {
-            s.labels = clean_labels(set);
+            s.labels = new_labels(&before.labels, clean_labels(set))?;
         }
         if let Some(p) = &req.parent {
             s.parent = reparent(&snap, id, p)?;
@@ -2960,7 +3050,7 @@ pub fn update(
                 }
             }
         }
-        for l in clean_labels(&req.add_labels) {
+        for l in new_labels(&before.labels, clean_labels(&req.add_labels))? {
             s.labels.insert(l);
         }
         for l in clean_labels(&req.remove_labels) {
@@ -3165,6 +3255,15 @@ fn unique(ids: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Labels a write would add, refusing an untyped `blocked:*` claim the seed
+/// does not already carry (aegis-xjh); existing ones are kept, never dropped.
+fn new_labels(existing: &BTreeSet<String>, labels: BTreeSet<String>) -> Result<BTreeSet<String>> {
+    for l in labels.difference(existing) {
+        crate::blockers::refuse_block_label(l)?;
+    }
+    Ok(labels)
+}
+
 /// `sd label add|remove`: every named seed changes in one transaction, or none
 /// do. A seed that already has (or lacks) the label is reported, not written.
 pub fn label_change(
@@ -3185,6 +3284,9 @@ pub fn label_change(
         let before = snap.get(id)?;
         let mut s = before.clone();
         let changed = if add {
+            if !before.labels.contains(&label) {
+                crate::blockers::refuse_block_label(&label)?;
+            }
             s.labels.insert(label.clone())
         } else {
             s.labels.remove(&label)
@@ -3225,6 +3327,7 @@ pub fn label_change(
 /// instead, in one transaction. Returns the number of seeds changed.
 pub fn label_rename(b: &mut dyn Backend, ctx: &Ctx, old: &str, new: &str) -> Result<(usize, u64)> {
     let (old, new) = (one_label(old)?, one_label(new)?);
+    crate::blockers::refuse_block_label(&new)?;
     let snap = b.snapshot(None)?;
     if old == new {
         return Ok((0, snap.tx));

@@ -414,10 +414,96 @@ fn is_query_timeout(e: &SdError) -> bool {
     e.message.starts_with(QUERY_TIMEOUT)
 }
 
-/// Whether `/query` definitely refused a read (HTTP 4xx other than 408): the
-/// server evaluated nothing it could answer, so a different read may succeed.
+/// Whether `/query` definitely refused a read (HTTP 4xx other than 408 and
+/// 429): the server evaluated nothing it could answer, so a different read may
+/// succeed. A 429 is load shedding, not a refusal: it is [`busy_error`].
 fn is_query_refusal(e: &SdError) -> bool {
     e.message.starts_with("quipu /query failed (HTTP 4")
+        && e.details.as_ref().map(|d| d["http_status"].as_u64()) != Some(Some(429))
+}
+
+/// The most a single HTTP 429 `Retry-After` makes a read wait.
+const BUSY_WAIT_CAP: Duration = Duration::from_secs(5);
+/// How many times a read answered HTTP 429 is asked again.
+const BUSY_RETRIES: usize = 2;
+
+/// How long a 429's `Retry-After` (delta seconds or an HTTP-date) asks a
+/// reader to wait, capped at [`BUSY_WAIT_CAP`]. Absent or unreadable is 1s.
+fn retry_after(value: Option<&str>, now: std::time::SystemTime) -> Duration {
+    let Some(value) = value.map(str::trim) else {
+        return Duration::from_secs(1);
+    };
+    let wait = if let Ok(seconds) = value.parse::<u64>() {
+        Duration::from_secs(seconds)
+    } else if let Some(at) = http_date(value) {
+        at.duration_since(now).unwrap_or(Duration::ZERO)
+    } else {
+        Duration::from_secs(1)
+    };
+    wait.min(BUSY_WAIT_CAP)
+}
+
+/// An IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 9110 5.6.7), the
+/// form a `Retry-After` HTTP-date is sent in.
+fn http_date(value: &str) -> Option<std::time::SystemTime> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    let [_, day, month, year, clock, "GMT"] = parts.as_slice() else {
+        return None;
+    };
+    let day: i64 = day.parse().ok()?;
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| m == month)? as i64
+        + 1;
+    let year: i64 = year.parse().ok()?;
+    let hms: Vec<i64> = clock
+        .split(':')
+        .map(|n| n.parse().ok())
+        .collect::<Option<_>>()?;
+    let [h, m, sec] = hms.as_slice() else {
+        return None;
+    };
+    if !(1..=31).contains(&day) || *h > 23 || *m > 59 || *sec > 60 {
+        return None;
+    }
+    // Days from 1970-01-01 to the civil date (proleptic Gregorian).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = u64::try_from(days * 86400 + h * 3600 + m * 60 + sec).ok()?;
+    Some(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+}
+
+/// The error for a read quipu still shed with HTTP 429 after
+/// [`BUSY_RETRIES`] waits: in the [`QUERY_TIMEOUT`] class, so a caller that
+/// asks again for less on a timeout does so here too.
+fn busy_error(what: &str, response: ureq::Response) -> SdError {
+    let wait = retry_after(response.header("Retry-After"), std::time::SystemTime::now());
+    let body: String = response
+        .into_string()
+        .unwrap_or_default()
+        .chars()
+        .take(500)
+        .collect();
+    SdError::failed(format!(
+        "{QUERY_TIMEOUT}: quipu {what} is busy (HTTP 429) after {BUSY_RETRIES} retries: {body}"
+    ))
+    .with_details(json!({"http_status": 429, "retry_after_s": wait.as_secs()}))
+}
+
+/// [`status_error`] for a read: a 429 that outlasted its retries is
+/// [`busy_error`], never a refusal.
+fn read_status_error(what: &str, code: u16, response: ureq::Response) -> SdError {
+    if code == 429 {
+        return busy_error(what, response);
+    }
+    status_error(what, code, &response.into_string().unwrap_or_default())
 }
 
 fn status_error(what: &str, code: u16, body: &str) -> SdError {
@@ -497,19 +583,29 @@ fn attestation_verdict(code: u16, body: &str) -> Option<(String, Option<String>)
     Some((verdict, reason))
 }
 
-/// Retry only explicit transient gateway responses to idempotent reads.
-/// Never replay a write or a transport/408 failure with an unknown cause.
+/// Retry only explicit transient responses to idempotent reads: a gateway
+/// 502/503, and a 429 (load shedding) after its `Retry-After`, capped at
+/// [`BUSY_WAIT_CAP`] and at most [`BUSY_RETRIES`] times. Never replay a write
+/// or a transport/408 failure with an unknown cause.
 fn retry_read(
     mut request: impl FnMut() -> std::result::Result<ureq::Response, Box<ureq::Error>>,
 ) -> std::result::Result<ureq::Response, Box<ureq::Error>> {
     let delays = [1, 2, 4, 8];
     let mut attempt = 0;
+    let mut busy = 0;
     loop {
         let result = request();
         match result.as_ref().map_err(|error| error.as_ref()) {
             Err(ureq::Error::Status(502 | 503, _)) if attempt < delays.len() => {
                 std::thread::sleep(Duration::from_secs(delays[attempt]));
                 attempt += 1;
+            }
+            Err(ureq::Error::Status(429, r)) if busy < BUSY_RETRIES => {
+                std::thread::sleep(retry_after(
+                    r.header("Retry-After"),
+                    std::time::SystemTime::now(),
+                ));
+                busy += 1;
             }
             _ => return result,
         }
@@ -587,11 +683,7 @@ impl RemoteBackend {
                 Ok(b)
             }
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
-            Err(ureq::Error::Status(code, r)) => Err(status_error(
-                "health check",
-                code,
-                &r.into_string().unwrap_or_default(),
-            )),
+            Err(ureq::Error::Status(code, r)) => Err(read_status_error("health check", code, r)),
         }
     }
 
@@ -821,6 +913,13 @@ impl RemoteBackend {
                     r.into_string().unwrap_or_default()
                 )).with_details(json!({"http_status": 408})),
             )),
+            // Load shedding on a read, still 429 after its retries: definite
+            // (nothing was evaluated) and in the timeout class.
+            Err(ureq::Error::Status(429, r)) if path == "/query" && !auth && self.signer.is_none() => {
+                Err((false, busy_error(path, r)))
+            }
+            // A write is never replayed blindly; a 429 stays a definite
+            // refusal carrying its status (status_error's details).
             Err(ureq::Error::Status(code, r)) => Err((
                 code >= 500,
                 status_error(path, code, &r.into_string().unwrap_or_default()),
@@ -2307,11 +2406,9 @@ impl Backend for RemoteBackend {
         })
         .map_err(|e| match *e {
             ureq::Error::Transport(t) => transport(&self.base, &t),
-            ureq::Error::Status(code, r) => status_error(
-                "history transaction lookup",
-                code,
-                &r.into_string().unwrap_or_default(),
-            ),
+            ureq::Error::Status(code, r) => {
+                read_status_error("history transaction lookup", code, r)
+            }
         })?;
         // One metadata row only. Never accept an ignored limit or a truncated
         // body as an empty feed, and never hydrate source transaction payloads.
@@ -3827,6 +3924,177 @@ mod tests {
             .read_subjects("urn:g", &[&lone], None, &mut Facts::new())
             .unwrap_err();
         assert!(is_query_timeout(&e), "{}", e.message);
+    }
+
+    /// A one-thread HTTP server: `/health` is 200, and the n-th request to
+    /// any other path (from 0) is answered by `reply(n)` as (status line,
+    /// extra header lines, body). Returns the base URL and that count.
+    fn scripted_server(
+        reply: impl Fn(usize) -> (&'static str, String, String) + Send + 'static,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&count);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut first = String::new();
+                if reader.read_line(&mut first).is_err() {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let _ = reader.read_exact(&mut vec![0u8; length]);
+                let (status, headers, body) = if first.contains("/health") {
+                    ("200 OK", String::new(), r#"{"status":"ok"}"#.to_string())
+                } else {
+                    reply(seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+                };
+                let mut stream = reader.into_inner();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (base, count)
+    }
+
+    const EMPTY_SELECT: &str = r#"{"results":{"bindings":[]}}"#;
+
+    fn shed(retry_after: &str) -> (&'static str, String, String) {
+        (
+            "429 Too Many Requests",
+            format!("Retry-After: {retry_after}\r\n"),
+            r#"{"error":"busy"}"#.to_string(),
+        )
+    }
+
+    #[test]
+    fn a_read_shed_with_429_is_asked_again_after_retry_after() {
+        let (base, count) = scripted_server(|n| match n {
+            0 => shed("1"),
+            _ => ("200 OK", String::new(), EMPTY_SELECT.to_string()),
+        });
+        let remote = RemoteBackend::connect(&base, "urn:g", None, None, &[]).unwrap();
+        let start = std::time::Instant::now();
+        let rows = remote.select("SELECT * WHERE { ?s ?p ?o }", None).unwrap();
+        let took = start.elapsed();
+        assert!(rows.is_empty());
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(
+            took >= Duration::from_millis(900) && took < Duration::from_secs(4),
+            "waited the 1s Retry-After: {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_read_always_shed_is_a_bounded_busy_error_not_a_refusal() {
+        let (base, count) = scripted_server(|_| shed("1"));
+        let remote = RemoteBackend::connect(&base, "urn:g", None, None, &[]).unwrap();
+        let start = std::time::Instant::now();
+        let e = remote
+            .select("SELECT * WHERE { ?s ?p ?o }", None)
+            .unwrap_err();
+        let took = start.elapsed();
+        // One request, then exactly BUSY_RETRIES more.
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(took <= Duration::from_secs(10), "{took:?}");
+        assert!(is_query_timeout(&e), "{}", e.message);
+        assert!(!is_query_refusal(&e), "{}", e.message);
+        assert_eq!(
+            e.details,
+            Some(json!({"http_status": 429, "retry_after_s": 1}))
+        );
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates_capped() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(784_111_777); // Sun, 06 Nov 1994 08:49:37 GMT
+        assert_eq!(
+            http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(now),
+            "IMF-fixdate parsed"
+        );
+        assert_eq!(
+            retry_after(Some("Sun, 06 Nov 1994 08:49:40 GMT"), now),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            retry_after(Some("Sun, 06 Nov 1994 08:49:30 GMT"), now),
+            Duration::ZERO,
+            "a past date waits nothing"
+        );
+        assert_eq!(
+            retry_after(Some("Mon, 07 Nov 1994 08:49:37 GMT"), now),
+            BUSY_WAIT_CAP
+        );
+        assert_eq!(retry_after(Some("2"), now), Duration::from_secs(2));
+        assert_eq!(retry_after(Some("3600"), now), BUSY_WAIT_CAP);
+        assert_eq!(retry_after(None, now), Duration::from_secs(1));
+        assert_eq!(retry_after(Some("soon"), now), Duration::from_secs(1));
+        assert_eq!(http_date("Sun, 06 Foo 1994 08:49:37 GMT"), None);
+    }
+
+    #[test]
+    fn a_read_with_an_http_date_retry_after_is_asked_again() {
+        let (base, count) = scripted_server(|n| match n {
+            // A date already past: ask again without waiting.
+            0 => shed("Sun, 06 Nov 1994 08:49:37 GMT"),
+            _ => ("200 OK", String::new(), EMPTY_SELECT.to_string()),
+        });
+        let remote = RemoteBackend::connect(&base, "urn:g", None, None, &[]).unwrap();
+        let start = std::time::Instant::now();
+        remote.select("SELECT * WHERE { ?s ?p ?o }", None).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_write_shed_with_429_is_not_replayed() {
+        let (base, count) = scripted_server(|_| shed("1"));
+        let remote = RemoteBackend::connect(&base, "urn:g", None, None, &[]).unwrap();
+        let (unknown, e) = remote
+            .send(
+                "/update",
+                "application/sparql-update",
+                "INSERT DATA {}",
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!unknown, "a 429 is definite: nothing was written");
+        assert!(!is_query_timeout(&e), "{}", e.message);
+        assert_eq!(e.details, Some(json!({"http_status": 429})));
+    }
+
+    #[test]
+    fn a_read_answered_408_is_not_retried() {
+        let (base, count) = scripted_server(|_| {
+            (
+                "408 Request Timeout",
+                String::new(),
+                r#"{"error":"query timeout"}"#.to_string(),
+            )
+        });
+        let remote = RemoteBackend::connect(&base, "urn:g", None, None, &[]).unwrap();
+        let e = remote
+            .select("SELECT * WHERE { ?s ?p ?o }", None)
+            .unwrap_err();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(is_query_timeout(&e), "{}", e.message);
+        assert_eq!(e.details, Some(json!({"http_status": 408})));
     }
 
     #[test]

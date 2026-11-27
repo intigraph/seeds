@@ -846,6 +846,9 @@ impl RemoteBackend {
             ))?,
             ..Stats::default()
         };
+        let (lapsed, unchecked) = crate::engine::blocked_condition_counts_scoped(self, &ctx.now)?;
+        stats.blocked_lapsed = Some(lapsed);
+        stats.blocked_unchecked = Some(unchecked);
         let live = self.status_fields() + " FILTER(?status != \"tombstone\")";
         stats.ops = self.aggregate_number(&format!(
             "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",

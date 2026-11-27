@@ -65,3 +65,50 @@ unreadable targets and duplicate declarations refuse execution of the entire
 batch. Execution is one validated revision-checked transaction, not a sequence
 of per-item writes. It preserves other notes and records normal write provenance.
 Review the plan before executing through your governed migration lane.
+
+## Gates: typed blocks that lapse
+
+A `blocked:*` label is a one-time claim: nothing rechecks it and nothing
+expires it, so a seed stays hidden from ready work after its blocker clears.
+seeds refuses to write one (`blocked:human` stays, as the ASK visibility
+class). A block must carry a condition seeds can check:
+
+- a dependency edge to another seed (`sd dep add`);
+- an external prerequisite that `sd blockers reconcile` observes (above); or
+- a **gate**: who must act, what is awaited and a `recheck_at` instant.
+
+```bash
+sd blockers gate <id> --who <who> --reason <what> [--recheck-at 2026-12-03]
+sd blockers ungate <id>
+```
+
+`recheck_at` defaults to seven days from now (`P7D`) and must be in the future.
+A gate with no one named or nothing awaited is a usage error.
+
+**Lapse is computed, never remembered.** Once every gate on a seed is past its
+`recheck_at`, the seed is lapsed: it is listed by `sd ready` again without any
+write, while its status stays `blocked` so `sd blocked --lapsed` lists it until
+someone re-gates, ungates or works it. There is no polling loop: the next
+`sd blockers reconcile` records one durable event for the lapse on the existing
+`sd blockers events` stream (acknowledged with `sd blockers ack`), exactly once
+per gate episode. Re-gating replaces lapsed gates and starts a new episode.
+
+`sd stats` reports `blocked_lapsed_issues` and `blocked_unchecked_issues`
+(status `blocked` with no open dependency, external prerequisite or gate);
+both are `null` where the backend does not compute them.
+
+### Migrating existing labels
+
+```bash
+sd blockers migrate --labels            # print the plan (the default)
+sd blockers migrate --labels --execute  # commit it in one transaction
+```
+
+Every non-closed seed carrying a `blocked:*` label gets a row. A seed with an
+open dependency keeps that edge as its condition. Any other gets a gate whose
+`who` is the label's suffix and whose `recheck_at` is the latest ISO date its
+notes name, or the migration instant when they name none, so a seed whose
+stated resume date has passed is lapsed at once and back in ready. The labels
+are removed (`blocked:human` is kept). The summary counts dependency rows, gates
+dated from notes, gates dated at migration, and lapsed rows; a row seeds cannot
+read is refused and nothing is written.

@@ -2,23 +2,19 @@
 
 # seeds
 
-**seeds is an issue tracker for AI coding agents that stores each work item as
-facts in a [quipu](https://github.com/scbrown/quipu) knowledge graph instead of
-rows in a versioned database. It is a CLI that answers the `bd`/`br` verbs
-agents already type (`create`, `show`, `ready`, `close`, …) with `--json` in the
-same shape, and it is the beads replacement for the quipu stack.** The
+**seeds is a drop-in replacement for [beads](https://github.com/gastownhall/beads):
+an issue tracker for AI coding agents that answers the `bd` verbs they already
+type (`create`, `show`, `list`, `ready`, `update`, `close`, `dep`, `comments`),
+with `--json` in bd's output shape. Install it, import your bd board, keep
+typing the same verbs. Underneath, each work item is a set of facts in a
+[quipu](https://github.com/scbrown/quipu) knowledge graph rather than rows in a
+Dolt database, and that is where seeds does more than beads.** The
 name comes from the counting board: a *quipucamayoc* moved seeds across a
 *yupana* to count, then knotted the result into the quipu.
 
 <p align="center"><img src="docs/demos/terminal/demo.svg" width="1000" alt="Create work, then read the ready queue: native commands and their complete output."/></p>
 
 This 20-second recording runs native sd 0.8.0 in a new, isolated local Quipu store. Every command names the public fixture graph and actor; the local fixture configuration sets the demo prefix. It creates one work item, reads the ready queue, then reports counts. No server, sync or production tracker is used. [Reproduce the recording](docs/demos/terminal.md).
-
-## Why you would want it
-
-- **Share a work queue:** read ready work and claim it with conflict checks.
-- **Keep history with each fact:** inspect earlier revisions of a work item.
-- **Choose where work lives:** use a local file, a committed pendant or a shared server.
 
 ## Install
 
@@ -34,6 +30,64 @@ Published targets: Linux and macOS, x86_64 and arm64.
 Set `STACK_INSTALL_ROOT` on the receiving shell for another prefix.
 Pinned releases, alternatives, configuration and removal are in the
 [installation and usage reference](docs/installation-reference.md).
+
+## Coming from beads
+
+Export the board with bd, then rehearse and import it. Ids, statuses,
+priorities, types, labels, assignees, dependencies, comments, close reasons and
+timestamps come across unchanged; every other field is carried and given back
+by `sd cutover export`. Measured against bd 1.0.5 (Dolt backend).
+
+```bash
+bd export -o issues.jsonl                     # in the bd workspace
+G="--store .seeds/seeds.db --graph https://seeds.local/project/myproject"
+sd $G cutover verify --file issues.jsonl      # in-memory rehearsal: expect "losses": 0
+sd $G cutover import --file issues.jsonl --dry-run
+sd $G cutover import --file issues.jsonl      # re-running writes nothing
+```
+
+The verbs agents emit from training:
+
+| bd | sd |
+|---|---|
+| `bd create "T" -p 1 -t task -d D -l a,b -a NAME --parent ID` | same |
+| `bd show ID --json` | same |
+| `bd list -s open -t task -p 1 -l L --json` | same |
+| `bd ready --json` | same |
+| `bd update ID --claim` / `--status in_progress` / `--add-label L` | same |
+| `bd close ID -r "why"` | same |
+| `bd reopen ID -r "why"` | same |
+| `bd dep add A B` / `bd dep remove A B` | same |
+| `bd comments add ID "text"` | same |
+| `bd blocked`, `bd stats`, `bd search Q` | same |
+
+Known differences, following `br` where bd and br disagree: `-a` on `list` is
+`--all` (use `--assignee`); no `-n` (use `--limit`) or `ready -u` (use
+`--unassigned`); `bd comments ID` is `sd comments list ID`; `bd dep tree` is
+`sd graph`; `--as-of` is `--at <tx>`. The full audit, field mapping and what
+is not imported are in [Moving from beads](https://intigraph.github.io/seeds/from-beads.html).
+
+## More than beads
+
+- **Work items are facts in a graph.** Query the board with SPARQL next to
+  everything else quipu knows, and shapes (SHACL) check every seed
+  ([storage model](https://intigraph.github.io/seeds/storage.html)).
+- **History per fact, not per database.** Every write is one quipu
+  transaction; `sd show ID --at <tx>` reads a seed as it stood then and
+  `sd history ID` lists its changes
+  ([pinning](https://intigraph.github.io/seeds/pinning.html)).
+- **Signed writes and provenance.** `sd key init` signs writes to a quipu
+  server so no bearer goes on the wire; each write records its actor
+  ([signed writes](https://intigraph.github.io/seeds/config.html#signed-writes-no-bearer-on-the-wire)).
+- **Pendants and three-way sync.** Commit the ledger to git as a pendant,
+  merge it with a field-level merge driver, or `sd sync` against a shared
+  server; conflicts are reported, never resolved by picking a side
+  ([storage modes](https://intigraph.github.io/seeds/storage-modes.html)).
+- **Links from work to knowledge.** A seed can wait on an external blocker in
+  another graph and link to the workflow run that produced it
+  ([external blockers](https://intigraph.github.io/seeds/external-blockers.html)).
+- **Choose where work lives:** a local file, a committed pendant or a shared
+  server, with the same verbs.
 
 ## First success in three commands
 

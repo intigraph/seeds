@@ -2656,6 +2656,95 @@ fn cutover_roundtrip_sync_dry_run_and_conflict_are_observable() {
     );
 }
 
+/// A board exported by upstream bd 1.0.5 (Dolt backend, `bd export`) imports
+/// with its ids, fields, labels, dependencies, comments and close reasons;
+/// dry-run writes nothing, a re-run writes nothing, verify reports no loss,
+/// and `bd export --all` records that are not issues are refused, not dropped.
+#[test]
+fn bd_dolt_export_imports_losslessly_and_idempotently() {
+    let sb = Sandbox::new("bd-dolt-import");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bd-1.0.5-export.jsonl");
+    let text = std::fs::read_to_string(&fixture).unwrap();
+    std::fs::write(sb.work().join("issues.jsonl"), &text).unwrap();
+    let g = [
+        "--store",
+        "local.db",
+        "--graph",
+        "https://example.org/bd-import",
+    ];
+    let call = |args: &[&str]| {
+        let mut a = g.to_vec();
+        a.extend_from_slice(args);
+        a.push("--json");
+        sb.run(&a)
+    };
+    let ok = |args: &[&str]| {
+        let o = call(args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<Value>(&o.stdout).unwrap()
+    };
+    let all = serde_json::json!(["fx-431", "fx-bwi", "fx-d83", "fx-r08"]);
+    let dry = ok(&["cutover", "import", "--file", "issues.jsonl", "--dry-run"]);
+    assert_eq!(dry["created"], all);
+    assert!(!sb.work().join("local.db").exists());
+    assert_eq!(
+        ok(&["cutover", "verify", "--file", "issues.jsonl"])["losses"],
+        0
+    );
+    assert_eq!(
+        ok(&["cutover", "import", "--file", "issues.jsonl"])["created"],
+        all
+    );
+    let again = ok(&["cutover", "import", "--file", "issues.jsonl"]);
+    assert_eq!(again["wrote"], false);
+    assert_eq!(again["created"], serde_json::json!([]));
+    assert_eq!(again["updated"], serde_json::json!([]));
+
+    let parser = &ok(&["show", "fx-431"])[0];
+    assert_eq!(parser["issue_type"], "feature");
+    assert_eq!(parser["priority"], 1);
+    assert_eq!(parser["assignee"], "alice");
+    assert_eq!(parser["labels"], serde_json::json!(["core", "parser"]));
+    assert_eq!(parser["created_at"], "2026-11-27T03:03:16Z");
+    assert_eq!(parser["dependencies"][0]["id"], "fx-bwi");
+    assert_eq!(parser["dependencies"][0]["dependency_type"], "parent-child");
+    let texts: Vec<_> = parser["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["text"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(texts, ["First note", "Second note"]);
+    let blocked = &ok(&["show", "fx-d83"])[0];
+    assert_eq!(blocked["status"], "in_progress");
+    assert_eq!(blocked["dependencies"][0]["dependency_type"], "blocks");
+    let closed = &ok(&["show", "fx-r08"])[0];
+    assert_eq!(closed["status"], "closed");
+    assert_eq!(closed["close_reason"], "Superseded");
+    assert_eq!(closed["closed_at"], "2026-11-27T03:03:32Z");
+    assert_eq!(ids(&ok(&["ready"])), ["fx-bwi", "fx-431"]);
+
+    // Export gives back the same records, value for value.
+    ok(&["cutover", "export", "--file", "out.jsonl"]);
+    let parse = |t: &str| -> std::collections::BTreeMap<String, Value> {
+        t.lines()
+            .map(|l| {
+                let v: Value = serde_json::from_str(l).unwrap();
+                (v["id"].as_str().unwrap().to_string(), v)
+            })
+            .collect()
+    };
+    let out = std::fs::read_to_string(sb.work().join("out.jsonl")).unwrap();
+    assert_eq!(parse(&out), parse(&text));
+
+    let with_memory = format!("{text}{}\n", r#"{"_type":"memory","key":"k","value":"v"}"#);
+    std::fs::write(sb.work().join("all.jsonl"), with_memory).unwrap();
+    let refused = call(&["cutover", "import", "--file", "all.jsonl"]);
+    assert_eq!(code(&refused), 2);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("_type \"memory\""));
+}
+
 #[test]
 fn cutover_repeated_peer_edits_replace_only_the_owned_json_shadow() {
     let sb = Sandbox::new("cutover-shadow-replacement");

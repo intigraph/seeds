@@ -597,6 +597,20 @@ pub trait Backend {
     /// of `at`. Filters and the defer date are applied by the caller.
     fn ready_ids(&self, at: Option<u64>) -> Result<Vec<String>>;
 
+    /// The lane caps the project file sets (`[lanes]` in
+    /// `.seeds/config.toml`), handed to the backend by the native layer
+    /// (aegis-8dda.3). Empty = none set there.
+    fn lane_cap_config(&self) -> crate::model::LaneCapSettings {
+        Default::default()
+    }
+
+    /// The lane caps stored as `seeds:laneCap` facts on the project graph's
+    /// board node ([`crate::vocab::board_iri`]). A failed read is an error,
+    /// never an empty answer.
+    fn lane_cap_graph(&self) -> Result<crate::model::LaneCapSettings> {
+        Ok(Default::default())
+    }
+
     /// Optional indexed readiness narrowed to a superset of this filter's matches.
     fn ready_ids_where(&self, _query: &SeedQuery) -> Result<Option<Vec<String>>> {
         Ok(None)

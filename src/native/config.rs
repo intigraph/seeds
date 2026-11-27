@@ -79,6 +79,11 @@ pub struct FileConfig {
     /// `[msg]`: crew mail settings (message expiry).
     #[serde(default)]
     pub msg: MsgSection,
+    /// `[lanes]`: lane caps (aegis-8dda.3), e.g. `later = 150`,
+    /// `now_per_assignee = 2`; `0` = uncapped. The project graph's board node
+    /// is the other source; the two must agree ([`crate::model::LaneCaps`]).
+    #[serde(default)]
+    pub lanes: crate::model::LaneCapSettings,
 }
 
 /// `[msg]`: `ttl` is how long a message stays live (`7d`, `36h`, `0` = never
@@ -205,6 +210,8 @@ pub struct Resolved {
     pub ca_sha256: Option<String>,
     pub read_stream_config: Option<PathBuf>,
     pub spec_byte_cap: usize,
+    /// `[lanes]` caps: the project file's, then the user file's, per key.
+    pub lane_caps: crate::model::LaneCapSettings,
     pub due_priority_days: Option<[u32; 5]>,
     /// Message time-to-live in seconds; `None` means messages never expire.
     /// `SEEDS_MSG_TTL`, then user `[msg] ttl`, then project `[msg] ttl`,
@@ -740,6 +747,22 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
     if !(1..=65536).contains(&spec_byte_cap) {
         return Err(config_error("[specs] byte_cap must be 1..65536".into()));
     }
+    let mut lane_caps = user.as_ref().map(|c| c.lanes.clone()).unwrap_or_default();
+    lane_caps.extend(
+        project
+            .as_ref()
+            .map(|c| c.lanes.clone())
+            .unwrap_or_default(),
+    );
+    if let Some(key) = lane_caps
+        .keys()
+        .find(|k| !crate::model::LANE_CAP_KEYS.contains(&k.as_str()))
+    {
+        return Err(config_error(format!(
+            "[lanes] {key} is not a lane cap; expected one of {}",
+            crate::model::LANE_CAP_KEYS.join(", ")
+        )));
+    }
     let ca_file = user.as_ref().and_then(|u| u.quipu.ca_file.as_ref());
     let ca_sha256 = user.as_ref().and_then(|u| u.quipu.ca_sha256.clone());
     if ca_file.is_some_and(|p| p.trim().is_empty())
@@ -764,6 +787,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             .and_then(|u| u.quipu.read_stream_config.as_ref())
             .map(|p| expand(p, &user_base, home)),
         spec_byte_cap,
+        lane_caps,
         due_priority_days,
         msg_ttl_secs,
         location,
@@ -1122,6 +1146,28 @@ mod tests {
         let r = resolve(&inputs).unwrap();
         assert!(matches!(r.location, Location::Url(_)));
         assert!(r.pendant.is_none());
+    }
+
+    #[test]
+    fn lane_caps_take_the_project_file_per_key_over_the_user_file() {
+        let s = Sandbox::new("lane-caps");
+        s.user_toml("[lanes]\nlater = 90\nnow = 7\n");
+        s.project_toml("[lanes]\nlater = 150\nnext = 30\n");
+        let r = resolve(&s.inputs()).unwrap();
+        let caps: Vec<(&str, usize)> = r.lane_caps.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(caps, [("later", 150), ("next", 30), ("now", 7)]);
+    }
+
+    #[test]
+    fn an_unknown_lane_cap_key_is_a_configuration_error() {
+        let s = Sandbox::new("lane-caps-unknown");
+        s.project_toml("[lanes]\nlater = 150\nsomeday = 3\n");
+        let e = resolve(&s.inputs()).unwrap_err();
+        assert!(e.to_string().contains("someday"), "{e}");
+        assert_ne!(e.kind, crate::error::ErrorKind::Usage);
+        let s = Sandbox::new("lane-caps-unknown-user");
+        s.user_toml("[lanes]\nicebox = 3\n");
+        assert!(resolve(&s.inputs()).is_err());
     }
 
     #[test]

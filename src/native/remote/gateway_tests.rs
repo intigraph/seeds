@@ -678,3 +678,38 @@ fn signed_reads_declare_source_and_operation_but_never_the_actor() {
         assert!(!request.contains("authorization:"), "{request}");
     }
 }
+
+#[test]
+fn remote_lane_cap_graph_refuses_a_truncated_or_oversized_read() {
+    // aegis-8dda.3: caps are never judged from a partial set of board facts.
+    let fact = |v: &str| format!(r#"{{"v":{{"type":"literal","value":"{v}"}}}}"#);
+    let many = (0..=crate::model::LANE_CAP_FACTS_MAX)
+        .map(|i| fact(&format!("later.k{i}=1")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let oversized: &'static str =
+        Box::leak(format!(r#"{{"results":{{"bindings":[{many}]}}}}"#).into_boxed_str());
+    for body in [
+        r#"{"results":{"bindings":[{"v":{"type":"literal","value":"later=150"}}]},"truncated":true}"#,
+        oversized,
+    ] {
+        let (base, worker) = server(vec![(200, "ok"), (200, body)]);
+        let backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
+        let error = backend.lane_cap_graph().unwrap_err();
+        assert!(error.message.contains("not read completely"), "{error:?}");
+        let requests = worker.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].contains("laneCap"));
+    }
+    let (base, worker) = server(vec![
+        (200, "ok"),
+        (
+            200,
+            r#"{"results":{"bindings":[{"v":{"type":"literal","value":"later=150"}}]}}"#,
+        ),
+    ]);
+    let backend = RemoteBackend::connect(&base, "urn:test", None, None, &[]).unwrap();
+    let caps = backend.lane_cap_graph().unwrap();
+    assert_eq!(caps.get("later"), Some(&150));
+    worker.join().unwrap();
+}

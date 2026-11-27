@@ -340,6 +340,8 @@ pub struct RemoteBackend {
     audience: Option<String>,
     agent: ureq::Agent,
     graph_registered: bool,
+    /// The project file's `[lanes]` caps (aegis-8dda.3).
+    lane_caps: crate::model::LaneCapSettings,
     /// Only the explicitly admitted native settler keeps audit in the project.
     project_provenance: bool,
     ephemeral_registered: bool,
@@ -613,6 +615,11 @@ fn retry_read(
 }
 
 impl RemoteBackend {
+    /// Hand the backend the project file's `[lanes]` caps (aegis-8dda.3).
+    pub fn set_lane_cap_config(&mut self, caps: crate::model::LaneCapSettings) {
+        self.lane_caps = caps;
+    }
+
     /// Connect to the quipu server at `base` (checked with `GET /health`).
     /// `plain_http_ok` is the user's `allow_plain_http_hosts`: hosts a token
     /// may reach over plain http.
@@ -651,6 +658,7 @@ impl RemoteBackend {
             audience: None,
             agent,
             graph_registered: false,
+            lane_caps: Default::default(),
             project_provenance: false,
             ephemeral_registered: false,
             ephemeral_seen: std::cell::Cell::new(false),
@@ -2249,6 +2257,31 @@ impl Backend for RemoteBackend {
             }
         }
         message_listing::collect_unread(windows, recipient, since, |q| self.select_marked(q, None))
+    }
+
+    fn lane_cap_config(&self) -> crate::model::LaneCapSettings {
+        self.lane_caps.clone()
+    }
+
+    fn lane_cap_graph(&self) -> Result<crate::model::LaneCapSettings> {
+        let q = format!(
+            "SELECT ?v WHERE {{ GRAPH <{}> {{ <{}> <{}> ?v }} }} LIMIT {}",
+            self.graph,
+            vocab::board_iri(&self.graph),
+            term::lane_cap(),
+            crate::model::LANE_CAP_FACTS_MAX + 1
+        );
+        let (rows, truncated) = self.select_marked(&q, None)?;
+        if truncated || rows.len() > crate::model::LANE_CAP_FACTS_MAX {
+            return Err(crate::model::lane_cap_facts_truncated());
+        }
+        let mut out = crate::model::LaneCapSettings::new();
+        for row in rows {
+            if let Some(Obj::Str(v)) = row.get("v") {
+                crate::model::insert_lane_cap_fact(&mut out, v)?;
+            }
+        }
+        Ok(out)
     }
 
     fn spec_change_ids(&self) -> Result<Vec<String>> {

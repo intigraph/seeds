@@ -45,6 +45,8 @@ pub const SEED: &[(&str, Kind)] = &[
     ("due_at", Kind::OptStr),
     ("rank", Kind::OptStr),
     ("lane", Kind::OptStr),
+    ("icebox_reason", Kind::OptStr),
+    ("icebox_review", Kind::OptStr),
     ("unblocks", Kind::OptStr),
     ("default", Kind::OptStr),
     ("expires_at", Kind::OptStr),

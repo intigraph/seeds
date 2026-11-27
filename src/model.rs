@@ -86,15 +86,161 @@ pub fn parse_priority(s: &str) -> Result<u8> {
     }
 }
 
-/// Work lanes, in serving order (aegis-6vto.4).
-pub const LANES: [&str; 3] = ["now", "next", "later"];
-/// How many live items a lane may hold; `None` = uncapped.
-pub fn lane_cap(lane: &str) -> Option<usize> {
-    match lane {
-        "now" => Some(10),
-        "next" => Some(40),
-        _ => None,
+/// Work lanes, in serving order (aegis-6vto.4, aegis-8dda.3): `now` (in
+/// sprint), `next` (ready), `later` (refined), `triage` (unrefined intake)
+/// and `icebox` (parked with a reason and a review date or event, never
+/// counted).
+pub const LANES: [&str; 5] = ["now", "next", "later", "triage", "icebox"];
+
+/// The lane that parks work: excluded from every cap and count.
+pub const ICEBOX: &str = "icebox";
+
+/// The configurable cap keys, as `[lanes]` in `.seeds/config.toml` and as
+/// `seeds:laneCap` facts on the project's board node spell them.
+pub const LANE_CAP_KEYS: [&str; 5] = ["now", "now_per_assignee", "next", "later", "triage"];
+
+/// How many live items each lane may hold (aegis-8dda.3). `None` = uncapped.
+/// Icebox has no cap: it is excluded from counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneCaps {
+    /// Now, across the whole board.
+    pub now: Option<usize>,
+    /// Now, per assignee (WIP per crew member).
+    pub now_per_assignee: Option<usize>,
+    /// Next: about two weeks of throughput.
+    pub next: Option<usize>,
+    /// Later: refined, epic-assigned work.
+    pub later: Option<usize>,
+    /// Triage: unrefined intake, emptied by refinement.
+    pub triage: Option<usize>,
+}
+
+impl Default for LaneCaps {
+    fn default() -> Self {
+        LaneCaps {
+            now: Some(10),
+            now_per_assignee: Some(2),
+            next: Some(40),
+            later: Some(150),
+            triage: None,
+        }
     }
+}
+
+/// One source's cap settings: key to value, where `0` means uncapped.
+pub type LaneCapSettings = std::collections::BTreeMap<String, usize>;
+
+impl LaneCaps {
+    /// The whole-lane cap for `lane`.
+    pub fn get(&self, lane: &str) -> Option<usize> {
+        match lane {
+            "now" => self.now,
+            "next" => self.next,
+            "later" => self.later,
+            "triage" => self.triage,
+            _ => None,
+        }
+    }
+
+    /// Resolve the caps from the two sources (aegis-8dda.3): the project's
+    /// `.seeds/config.toml` `[lanes]` table and the `seeds:laneCap` facts on
+    /// the project graph's board node. A key set in one source takes that
+    /// value; a key set in both to different values is a conflict, reported
+    /// and never resolved by picking a side; unset keys keep the default.
+    /// `0` means uncapped.
+    pub fn resolve(toml: &LaneCapSettings, graph: &LaneCapSettings) -> Result<LaneCaps> {
+        let mut caps = LaneCaps::default();
+        let mut conflicts = Vec::new();
+        for (source, settings) in [("config", toml), ("graph", graph)] {
+            for key in settings.keys() {
+                if !LANE_CAP_KEYS.contains(&key.as_str()) {
+                    // Bad stored or configured data, not a caller usage error.
+                    return Err(SdError::failed(format!(
+                        "unknown lane cap {key:?} in the {source} source; \
+                         expected one of {}",
+                        LANE_CAP_KEYS.join(", ")
+                    )));
+                }
+            }
+        }
+        for key in LANE_CAP_KEYS {
+            let value = match (toml.get(key), graph.get(key)) {
+                (Some(a), Some(b)) if a != b => {
+                    conflicts.push(serde_json::json!({"key": key, "config": a, "graph": b}));
+                    continue;
+                }
+                (Some(v), _) | (None, Some(v)) => *v,
+                (None, None) => continue,
+            };
+            let cap = (value > 0).then_some(value);
+            match key {
+                "now" => caps.now = cap,
+                "now_per_assignee" => caps.now_per_assignee = cap,
+                "next" => caps.next = cap,
+                "later" => caps.later = cap,
+                _ => caps.triage = cap,
+            }
+        }
+        if conflicts.is_empty() {
+            return Ok(caps);
+        }
+        let keys: Vec<&str> = conflicts.iter().filter_map(|c| c["key"].as_str()).collect();
+        Err(SdError::conflict(format!(
+            "lane caps disagree between .seeds/config.toml [lanes] and the \
+             project graph: {}; nothing written. Make the two sources agree, \
+             or remove the key from one of them",
+            keys.join(", ")
+        ))
+        .with_details(serde_json::json!({
+            "schema": "seed-lane-cap-conflict/v1", "conflicts": conflicts,
+        })))
+    }
+}
+
+/// The most `seeds:laneCap` facts a board node may hold; a read that finds
+/// more is refused, never answered from a partial set.
+pub const LANE_CAP_FACTS_MAX: usize = 64;
+
+/// The refusal for a board node whose lane cap read was cut short.
+pub fn lane_cap_facts_truncated() -> SdError {
+    SdError::failed(format!(
+        "the board node's lane caps were not read completely (more than \
+         {LANE_CAP_FACTS_MAX} seeds:laneCap facts, or a truncated answer); \
+         refusing to judge caps from a partial set"
+    ))
+}
+
+/// Parse one `seeds:laneCap` literal (`key=value`) from the board node.
+pub fn parse_lane_cap_fact(s: &str) -> Result<(String, usize)> {
+    s.split_once('=')
+        .and_then(|(k, v)| Some((k.trim().to_string(), v.trim().parse().ok()?)))
+        .ok_or_else(|| {
+            SdError::failed(format!(
+                "invalid lane cap fact {s:?} on the board node: expected key=number"
+            ))
+        })
+}
+
+/// Add one board-node lane cap literal to `out`; two facts that set one key
+/// to different values are a conflict, never resolved by picking one.
+pub fn insert_lane_cap_fact(out: &mut LaneCapSettings, fact: &str) -> Result<()> {
+    let (k, n) = parse_lane_cap_fact(fact)?;
+    match out.get(&k) {
+        Some(prev) if *prev != n => Err(SdError::conflict(format!(
+            "the board node sets lane cap {k:?} twice ({prev} and {n}); \
+             remove one of the seeds:laneCap facts"
+        ))),
+        _ => {
+            out.insert(k, n);
+            Ok(())
+        }
+    }
+}
+
+/// How many live items a lane may hold under the default caps; `None` =
+/// uncapped. Configured caps come from [`LaneCaps::resolve`].
+pub fn lane_cap(lane: &str) -> Option<usize> {
+    LaneCaps::default().get(lane)
 }
 
 /// Validate a lane name (case-insensitive input, lowercase stored).
@@ -104,7 +250,7 @@ pub fn parse_lane(s: &str) -> Result<String> {
         Ok(t)
     } else {
         Err(SdError::usage(format!(
-            "lane must be now, next or later, got {s:?}"
+            "lane must be now, next, later, triage or icebox, got {s:?}"
         )))
     }
 }
@@ -146,8 +292,13 @@ pub struct Seed {
     pub due_at: Option<String>,
     /// Exact decimal ordering key within a priority; absent sorts last.
     pub rank: Option<String>,
-    /// Work lane: `now`, `next` or `later` ([`LANES`]); absent = unassigned.
+    /// Work lane ([`LANES`]); absent = unassigned.
     pub lane: Option<String>,
+    /// Why the item is iceboxed (required in the icebox lane).
+    pub icebox_reason: Option<String>,
+    /// When to review an iceboxed item: a date or an event (required in the
+    /// icebox lane).
+    pub icebox_review: Option<String>,
     /// Item or epic awaiting this overseer decision (id).
     pub unblocks: Option<String>,
     /// Declared fallback; expiry does not automatically execute it.
@@ -349,6 +500,8 @@ impl Seed {
         opt(&mut f, term::external_ref(), &self.external_ref);
         opt(&mut f, term::rank(), &self.rank);
         opt(&mut f, term::lane(), &self.lane);
+        opt(&mut f, term::icebox_reason(), &self.icebox_reason);
+        opt(&mut f, term::icebox_review(), &self.icebox_review);
         if let Some(id) = &self.unblocks {
             f.push((term::unblocks(), Obj::Iri(vocab::item_iri(id))));
         }
@@ -446,6 +599,8 @@ impl Seed {
                 due_at: some("2026-01-01"),
                 rank: some("1"),
                 lane: some("next"),
+                icebox_reason: some("r"),
+                icebox_review: some("2027-01-01"),
                 unblocks: some("y"),
                 default: some("Wait"),
                 expires_at: some("2026-01-01T00:00:00Z"),
@@ -565,6 +720,8 @@ impl Seed {
             due_at: t(term::due_at()),
             rank: s(term::rank()),
             lane: s(term::lane()),
+            icebox_reason: s(term::icebox_reason()),
+            icebox_review: s(term::icebox_review()),
             unblocks: ids(term::unblocks()).into_iter().next(),
             default: s(term::ask_default()),
             expires_at: t(term::expires_at()),
@@ -832,6 +989,8 @@ impl Seed {
             "due_at": self.due_at,
             "rank": self.rank,
             "lane": self.lane,
+            "icebox_reason": self.icebox_reason,
+            "icebox_review": self.icebox_review,
             "unblocks": self.unblocks,
             "default": self.default,
             "expires_at": self.expires_at,

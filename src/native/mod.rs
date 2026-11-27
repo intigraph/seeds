@@ -1729,6 +1729,7 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    remote.set_lane_cap_config(cfg.lane_caps.clone());
     // Every outcome after the connect, an identity or vocabulary refusal
     // included, says when the server is a read replica.
     let replica = remote.replica().cloned();
@@ -2036,6 +2037,7 @@ fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Re
     if transfer::selected(&cli.command) {
         if cli.command.writes() {
             let mut h = store::open_for_write(path, cfg.graph())?;
+            h.backend.set_lane_cap_config(cfg.lane_caps.clone());
             refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
             let notes = if let Some(dir) = &cfg.pendant {
                 store::hydrate(&mut h.backend, path, dir, ctx)?
@@ -2080,6 +2082,7 @@ fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Re
         }
         Command::Import(a) => {
             let mut h = store::open_for_write(path, cfg.graph())?;
+            h.backend.set_lane_cap_config(cfg.lane_caps.clone());
             refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
             let o = import_into(cli, ctx, &mut h.backend, a)?;
             if let Some(dir) = &cfg.pendant {
@@ -2093,6 +2096,7 @@ fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Re
     if let Some(dir) = &cfg.pendant {
         // Mode 1: reconcile with the pendant, run, export.
         let mut h = store::open_for_write(path, cfg.graph())?;
+        h.backend.set_lane_cap_config(cfg.lane_caps.clone());
         if !matches!(&cli.command, Command::Doctor(_)) {
             refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
         }
@@ -2105,6 +2109,7 @@ fn run_local(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &std::path::Path) -> Re
     }
     if cli.command.writes() {
         let mut h = store::open_for_write(path, cfg.graph())?;
+        h.backend.set_lane_cap_config(cfg.lane_caps.clone());
         return dispatch(cli, cfg, ctx, &mut h.backend);
     }
     match store::open_for_read(path, cfg.graph())? {
@@ -2153,6 +2158,7 @@ fn run_sync(
     )?
     .with_max_write_bytes(cfg.max_write_bytes)
     .with_max_write_clauses(cfg.max_write_clauses);
+    remote.set_lane_cap_config(cfg.lane_caps.clone());
     // A sync writes to its remote, which a read replica refuses: say so before
     // the local store is opened or hydrated, so nothing local changes either.
     if let Some(r) = remote.replica() {
@@ -2164,6 +2170,7 @@ fn run_sync(
     // Only now touch the local store: the replica refusal above opened,
     // hydrated and wrote nothing.
     let mut h = store::open_for_write(path, cfg.graph())?;
+    h.backend.set_lane_cap_config(cfg.lane_caps.clone());
     refuse_old_vocabulary(&ledger_label(cfg), &h.backend)?;
     let mut notes = Vec::new();
     if let Some(dir) = &cfg.pendant {
@@ -3511,6 +3518,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 if_revision: a.if_revision,
                 rank: a.rank.clone(),
                 lane: a.lane.clone(),
+                icebox_reason: a.icebox_reason.clone(),
+                icebox_review: a.icebox_review.clone(),
                 before: a.before.clone(),
                 after: a.after.clone(),
                 estimate: a.estimate.clone(),

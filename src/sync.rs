@@ -417,6 +417,24 @@ fn merge_seed(base: Option<&Seed>, l: &Seed, r: &Seed, sides: Sides) -> (Seed, V
             s.outcome.clone(),
         )
     };
+    // A lane and its icebox reason and review move together: one side's
+    // icebox fields never land on the other side's lane (aegis-8dda.3).
+    let lane_group = |s: &Seed| {
+        (
+            s.lane.clone(),
+            s.icebox_reason.clone(),
+            s.icebox_review.clone(),
+        )
+    };
+    let (lane, icebox_reason, icebox_review) = pick(
+        "lane",
+        base.map(lane_group).as_ref(),
+        &lane_group(l),
+        &lane_group(r),
+        &mut c,
+        sides,
+        dbg,
+    );
     let (status, closed_at, close_reason, outcome) = pick(
         "status",
         base.map(status_group).as_ref(),
@@ -530,15 +548,9 @@ fn merge_seed(base: Option<&Seed>, l: &Seed, r: &Seed, sides: Sides) -> (Seed, V
             sides,
             dbg,
         ),
-        lane: pick(
-            "lane",
-            base.map(|b| &b.lane),
-            &l.lane,
-            &r.lane,
-            &mut c,
-            sides,
-            dbg,
-        ),
+        lane,
+        icebox_reason,
+        icebox_review,
         due_at: pick(
             "due_at",
             base.map(|b| &b.due_at),

@@ -158,6 +158,7 @@ impl Fixture {
             actor: context().actor,
             now: context().now,
             max_ms: 5000,
+            park_ms: None,
         }
     }
 }
@@ -361,6 +362,7 @@ fn projection_query_preserves_rows_and_refuses_uncovered_scope() {
         actor: "reader".into(),
         now: context().now,
         max_ms: 5000,
+        park_ms: None,
     };
     let result = render(&mut f.board, &f.config, &f.cfg, request, 11).unwrap();
     let value: Value = serde_json::from_str(&result.result.stdout).unwrap();
@@ -978,5 +980,84 @@ fn memory_line_reads_the_proc_status_fields_and_marks_missing_ones() {
     assert_eq!(
         memory_line("VmRSSx:\t1 kB\nVmSwap:\tbad kB\n"),
         "rss_kb=? data_kb=? swap_kb=?"
+    );
+}
+
+/// aegis-az3d.2: a bounded closed-inclusive list goes to the primary; an
+/// open-scope read, a show, or an unbounded page stays on the reader.
+#[test]
+fn bounded_closed_inclusive_lists_are_primary_scope() {
+    let scope = |args: &[&str]| primary_scope(&Cli::try_parse_from(args).unwrap().command);
+    assert!(scope(&["sd", "list", "--all"]));
+    assert!(scope(&["sd", "list", "--all", "--limit", "200"]));
+    assert!(scope(&["sd", "list", "-a"]));
+    assert!(scope(&["sd", "list", "--status", "closed"]));
+    assert!(scope(&["sd", "list", "--status", "open,Closed"]));
+    assert!(!scope(&["sd", "list"]));
+    assert!(!scope(&["sd", "list", "--limit", "200"]));
+    assert!(!scope(&["sd", "list", "--status", "open"]));
+    assert!(!scope(&["sd", "list", "--all", "--limit", "0"]));
+    assert!(!scope(&["sd", "ready"]));
+    assert!(!scope(&["sd", "show", "sd-1"]));
+}
+
+/// aegis-az3d.2: time parked is not staleness of the cut answered after it.
+/// The client charges the reader's bound plus only the round trip the reader
+/// did not hold; an older reader (held 0) is charged the whole trip.
+#[test]
+fn end_to_end_freshness_charges_transit_not_the_park() {
+    // Parked 3 s, a fresh 400 ms cut rendered, 20 ms of IPC on top.
+    assert_eq!(end_to_end_ms(400, 3_000, 3_020), 420);
+    // Older reader: no held time, the whole round trip is charged.
+    assert_eq!(end_to_end_ms(400, 0, 3_020), 3_420);
+    assert_eq!(end_to_end_ms(u64::MAX, 0, 1), u64::MAX);
+}
+
+/// aegis-az3d.2: the reader honours a shorter caller wait but never extends
+/// its own; the client waits for the park plus the ordinary IO timeout.
+#[test]
+fn park_deadline_is_the_shorter_of_caller_and_reader() {
+    let f = Fixture::new();
+    let mut r = f.request(&["sd", "list"]);
+    assert_eq!(
+        f.cfg.read_park_ms,
+        super::super::config::DEFAULT_READ_PARK_MS
+    );
+    assert_eq!(park_ms(&r, &f.cfg), 5_000);
+    r.park_ms = Some(1_000);
+    assert_eq!(park_ms(&r, &f.cfg), 1_000);
+    r.park_ms = Some(9_000);
+    assert_eq!(park_ms(&r, &f.cfg), 5_000);
+    assert_eq!(reply_timeout(5_000), Duration::from_millis(7_000));
+    // The default wait is not sent, so an older reader still decodes it.
+    let r = f.request(&["sd", "list"]);
+    assert!(!String::from_utf8(encode(&r).unwrap())
+        .unwrap()
+        .contains("park_ms"));
+    // An older reader's reply has no held_ms; it decodes as 0.
+    let old: Reply = serde_json::from_value(json!({
+        "version":1,"primary_url":"u","graph":"g","principal":"p","store_id":"s",
+        "log_epoch":"e","scope_digest":"d","policy_digest":"q","source_tx":1,
+        "local_tx":1,"bound_ms":10,"result":{"stdout":"","stderr":"","code":0}
+    }))
+    .unwrap();
+    assert_eq!(old.held_ms, 0);
+}
+
+/// A refusal after a wait names the replica's state, never a bare UNKNOWN.
+#[test]
+fn lag_line_names_bound_frame_age_and_cursors() {
+    let mut f = Fixture::new();
+    let line = f.board.lag(1);
+    assert!(line.contains("staleness bound UNKNOWN"), "{line}");
+    f.prove(1, 10);
+    let line = f.board.lag(11);
+    assert!(
+        line.contains("staleness bound ") && !line.contains("bound UNKNOWN"),
+        "{line}"
+    );
+    assert!(
+        line.contains("source tx ") && line.contains("local tx "),
+        "{line}"
     );
 }

@@ -82,6 +82,28 @@ proof still refuses UNKNOWN rather than proving absence. The local client charge
 against the proof budget. Configured head reads do not silently fall back to
 primary polling. Other board bindings refuse rather than reuse this projection.
 
+### Waiting for freshness
+
+A read that arrives without freshness headroom waits for a new proof instead
+of being refused at once. Under a write burst the proof arrives behind the
+writes, and the replica catches up in seconds rather than in under one. The
+wait is bounded: `SEEDS_READ_PARK_MS`, then user `[quipu] read_park_ms`,
+default 5000 ms, at most 10000 ms, `0` for no wait. A parked read is
+re-checked when the replica applies a frame, when the stream drops, and at
+its deadline, and the reader keeps issuing rate-limited challenges while
+reads wait. At the deadline the read is answered as before and refuses if it
+is still not fresh, naming the wait, the staleness bound, the last frame's age
+and the source and local cursors. Time spent parked is not staleness of the
+cut answered after it: the reader reports how long it held the request, and
+the client charges its bound plus only the rest of its round trip against
+`max_freshness_ms` (aegis-az3d.2).
+
+A bounded closed-inclusive list (`sd list --all`, `sd list --status closed`,
+any `--limit` but 0) is served by the primary, not the reader. Its render on a
+production board outran the client's IO timeout, so every such read was
+refused, and it ran on the loop that applies frames, stalling every other
+read. `--limit 0` stays on the reader and refuses there.
+
 The socket is create-only. The consumer never removes or adopts a pre-existing
 socket, and retains its socket after termination. Recovery must stop the old
 consumer and deliberately retire its socket through the normal supervised

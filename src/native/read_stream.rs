@@ -48,13 +48,17 @@ pub(super) const QUERY_DEADLINE_MS: u64 = 1_000;
 /// trip again, so a deadline-length query costs it twice, plus IPC margin
 /// (aegis-ygz: a 0.84 s owner-plate read was refused in ~20% of cycles).
 const READ_HEADROOM_MS: u64 = 2 * QUERY_DEADLINE_MS + 500;
-/// Longest a read is parked waiting for an on-demand proof. With a
-/// deadline-length render after it, the reply still beats the client's
-/// IO_TIMEOUT.
-const PARK_MAX_MS: u64 = 800;
-/// Reads parked at once; past this a read is answered without waiting.
-const MAX_PARKED: usize = 16;
-const _: () = assert!(PARK_MAX_MS + QUERY_DEADLINE_MS < IO_TIMEOUT_MS);
+/// Measured delivery of a proof on the stream when the source is not
+/// bursting (~800 ms measured in production, 2026-11-26).
+const PROOF_DELIVERY_MS: u64 = 800;
+/// Reads parked at once; past this a read is answered without waiting. At the
+/// observed 4.5 reads/s a 5 s park holds ~23, so this leaves headroom.
+const MAX_PARKED: usize = 64;
+/// How long the client waits for its reply: the park deadline, then a render
+/// and the IPC write within the ordinary IO timeout.
+fn reply_timeout(park_ms: u64) -> Duration {
+    Duration::from_millis(park_ms.saturating_add(IO_TIMEOUT_MS))
+}
 const _: () = assert!(READ_HEADROOM_MS < MAX_FRESH_MS);
 
 fn unknown(reason: &str) -> SdError {
@@ -243,6 +247,25 @@ pub fn eligible(command: &Command) -> bool {
         Command::List(_) | Command::Ready(_) | Command::Blocked(_) | Command::Show(_)
     )
 }
+/// A bounded closed-inclusive list (`sd list --all`, `--status closed`) is
+/// served by the primary, not the reader (aegis-az3d.2). The reader renders
+/// it in more than the client's IO timeout on a production board (every one
+/// refused 'local transport or pinned input unavailable'), and that render
+/// runs on the loop that applies frames, so it also stalls every other read.
+/// An unbounded page (`--limit 0`) stays on the reader and is refused there.
+pub fn primary_scope(command: &Command) -> bool {
+    match command {
+        Command::List(a) => {
+            let closed = a.all
+                || a.status.as_deref().is_some_and(|s| {
+                    s.split(',')
+                        .any(|x| x.trim().eq_ignore_ascii_case("closed"))
+                });
+            closed && a.limit != Some(0)
+        }
+        _ => false,
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -257,6 +280,10 @@ struct Request {
     actor: String,
     now: String,
     max_ms: u64,
+    /// The caller's freshness wait when it is not the reader's default; an
+    /// older reader never sees the field (aegis-az3d.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    park_ms: Option<u64>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -272,6 +299,12 @@ struct Reply {
     source_tx: u64,
     local_tx: u64,
     bound_ms: u64,
+    /// Time the reader held the request, accept to reply (parked plus render).
+    /// The client charges only the rest of its round trip on top of
+    /// `bound_ms`, which already covers the render. An older reader sends
+    /// none: 0 charges the whole round trip, as before (aegis-az3d.2).
+    #[serde(default)]
+    held_ms: u64,
     result: Outcome,
 }
 fn send<T: Serialize>(stream: &mut UnixStream, value: &T, limit: usize) -> Result<()> {
@@ -324,6 +357,7 @@ pub fn read(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &Path) -> Result<Outcome
     let started = Instant::now();
     let mut stream = io(UnixStream::connect(&c.socket))?;
     timeout(&stream)?;
+    io(stream.set_read_timeout(Some(reply_timeout(cfg.read_park_ms))))?;
     send(
         &mut stream,
         &Request {
@@ -338,6 +372,8 @@ pub fn read(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &Path) -> Result<Outcome
             actor: ctx.actor.clone(),
             now: ctx.now.clone(),
             max_ms: c.max_freshness_ms,
+            park_ms: (cfg.read_park_ms != super::config::DEFAULT_READ_PARK_MS)
+                .then_some(cfg.read_park_ms),
         },
         MAX_REQUEST,
     )?;
@@ -352,21 +388,35 @@ pub fn read(cli: &Cli, cfg: &Resolved, ctx: &Ctx, path: &Path) -> Result<Outcome
         || reply.log_epoch != c.log_epoch
         || reply.scope_digest != c.scope_digest
         || reply.policy_digest != c.policy_digest
-        || reply.bound_ms.saturating_add(elapsed) > c.max_freshness_ms
+        // Two processes' millisecond truncations may each lose up to 1 ms.
+        || reply.held_ms > elapsed.saturating_add(2)
     {
         return Err(unknown("IPC binding or end-to-end freshness mismatch"));
     }
+    let end_to_end = end_to_end_ms(reply.bound_ms, reply.held_ms, elapsed);
+    if end_to_end > c.max_freshness_ms {
+        return Err(unknown(&format!(
+            "end-to-end freshness {end_to_end} ms exceeds {} ms (reader bound {} ms, \
+             waited {} ms, source tx {}, local tx {})",
+            c.max_freshness_ms, reply.bound_ms, reply.held_ms, reply.source_tx, reply.local_tx
+        )));
+    }
     let notice = format!(
         "sd: push read source tx {}, local tx {}, freshness bound <= {} ms",
-        reply.source_tx,
-        reply.local_tx,
-        reply.bound_ms.saturating_add(elapsed)
+        reply.source_tx, reply.local_tx, end_to_end
     );
     if !reply.result.stderr.is_empty() {
         reply.result.stderr.push('\n');
     }
     reply.result.stderr.push_str(&notice);
     Ok(reply.result)
+}
+
+/// The answer's staleness when the client has it: the reader's bound at its
+/// reply (render included) plus the part of the round trip the reader did not
+/// hold. Time a read spent parked is not staleness of the cut it was given.
+fn end_to_end_ms(bound_ms: u64, held_ms: u64, elapsed: u64) -> u64 {
+    bound_ms.saturating_add(elapsed.saturating_sub(held_ms))
 }
 
 fn render(
@@ -404,6 +454,7 @@ fn render(
             source_tx: p.source_tx,
             local_tx: p.local_tx,
             bound_ms: bound,
+            held_ms: 0,
             result: Outcome {
                 stdout: serde_json::to_string(&value)
                     .map_err(|_| unknown("query encoding failed"))?,
@@ -478,6 +529,7 @@ fn render(
         source_tx: p.source_tx,
         local_tx: p.local_tx,
         bound_ms: bound,
+        held_ms: 0,
         result,
     })
 }
@@ -605,7 +657,7 @@ const CHALLENGE_RTT_HEADROOM_MS: u64 = 1_000;
 const _: () = assert!(CHALLENGE_INTERVAL_MS + CHALLENGE_RTT_HEADROOM_MS <= MAX_FRESH_MS);
 // The scheduled peak (interval + a park-length proof delivery) stays inside
 // the window in which a read still has its full headroom.
-const _: () = assert!(CHALLENGE_INTERVAL_MS + PARK_MAX_MS <= MAX_FRESH_MS - READ_HEADROOM_MS);
+const _: () = assert!(CHALLENGE_INTERVAL_MS + PROOF_DELIVERY_MS <= MAX_FRESH_MS - READ_HEADROOM_MS);
 /// Reconnect backoff after the stream drops: exponential, capped, jittered.
 const RECONNECT_INITIAL_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 60_000;
@@ -826,7 +878,8 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
     });
     let mut clock = Clock::new();
     let mut live = Liveness::new();
-    let mut parked: Vec<(UnixStream, Request, u64)> = Vec::new();
+    // (stream, request, accepted at, deadline)
+    let mut parked: Vec<(UnixStream, Request, u64, u64)> = Vec::new();
     let mut parked_total: u64 = 0;
     let mut stats_at: u64 = 0;
     loop {
@@ -846,12 +899,14 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
             }
         }
         let mut dropped = false;
+        let mut applied = false;
         if let Some(stream) = incoming.as_ref() {
             for _ in 0..64 {
                 match stream.try_recv() {
                     Ok(Ok((event, data))) => {
                         if board.apply_frame(&event, &data, now).is_ok() {
                             live.frame_applied(now);
+                            applied = true;
                         } else {
                             dropped = true;
                             break;
@@ -884,16 +939,41 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
             incoming = None; // close the dead stream now, not at the next reconnect
             live.disconnected(now, jitter_permille());
         }
-        // Parked reads go as soon as a fresh proof gives them headroom, or once
-        // they have waited PARK_MAX_MS (answered as before, possibly refused).
-        let mut i = 0;
-        while i < parked.len() {
-            let waited = now.saturating_sub(parked[i].2);
-            if has_headroom(&board, now) || waited >= PARK_MAX_MS || !live.connected() {
-                let (mut stream, request, _) = parked.swap_remove(i);
-                answer(&mut stream, request, &mut board, &c, cfg, &mut clock, now);
-            } else {
-                i += 1;
+        // Parked reads are re-checked when the replica moves (a frame applied,
+        // which is how a proof arrives), when the stream drops, or when one
+        // reaches its deadline; never on a timer of their own (aegis-az3d.2).
+        // They go as soon as a fresh proof gives them headroom, and at the
+        // deadline are answered as before: fail-closed if still not fresh.
+        if !parked.is_empty() {
+            let headroom = has_headroom(&board, now);
+            let mut i = 0;
+            while i < parked.len() {
+                if ((applied || dropped) && headroom) || now >= parked[i].3 || !live.connected() {
+                    let (mut stream, request, since, _) = parked.swap_remove(i);
+                    let waited = now.saturating_sub(since);
+                    answer(
+                        &mut stream,
+                        request,
+                        &mut board,
+                        &c,
+                        cfg,
+                        &mut clock,
+                        since,
+                        waited,
+                    );
+                } else {
+                    i += 1;
+                }
+            }
+            // A long park outlives one proof: keep asking, inside the
+            // Liveness rate limit, so a proof delayed behind a write burst is
+            // not the last chance the read gets.
+            if !parked.is_empty() && !headroom && !dropped && live.on_demand_due(now) {
+                if let Some(true) =
+                    issue_challenge(&mut board, &remote, &challenges, live.generation(), now)?
+                {
+                    live.on_demand_sent(now);
+                }
             }
         }
         if now.saturating_sub(stats_at) >= STATS_EVERY_MS {
@@ -924,7 +1004,10 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         // already in flight, or one on-demand challenge
                         // (rate-limited inside Liveness).
                         let mut wait = false;
-                        if !has_headroom(&board, now) && parked.len() < MAX_PARKED {
+                        if !has_headroom(&board, now)
+                            && parked.len() < MAX_PARKED
+                            && park_ms(&request, cfg) > 0
+                        {
                             if live.in_flight(now) {
                                 wait = true;
                             } else if live.on_demand_due(now) {
@@ -946,9 +1029,19 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         }
                         if wait {
                             parked_total += 1;
-                            parked.push((stream, request, now));
+                            let park = park_ms(&request, cfg);
+                            parked.push((stream, request, now, now.saturating_add(park)));
                         } else {
-                            answer(&mut stream, request, &mut board, &c, cfg, &mut clock, now);
+                            answer(
+                                &mut stream,
+                                request,
+                                &mut board,
+                                &c,
+                                cfg,
+                                &mut clock,
+                                now,
+                                0,
+                            );
                         }
                     }
                 }
@@ -1020,8 +1113,19 @@ fn issue_challenge(
     })
 }
 
-/// Render one read and reply. Rendering time from `since` is charged to the
-/// bound: an old capture is never certified.
+/// A request's freshness wait: the caller's, never past the reader's own.
+fn park_ms(request: &Request, cfg: &Resolved) -> u64 {
+    request
+        .park_ms
+        .map_or(cfg.read_park_ms, |p| p.min(cfg.read_park_ms))
+}
+
+/// Render one read and reply. The bound is the cut's staleness when the
+/// render starts, plus the render: an old capture is never certified. Time
+/// parked before it is reported as `held_ms`, not charged to a cut taken
+/// after it. A read refused after waiting names the wait and the replica's
+/// state, so a refusal under a write burst reads as one.
+#[allow(clippy::too_many_arguments)]
 fn answer(
     stream: &mut UnixStream,
     request: Request,
@@ -1030,6 +1134,7 @@ fn answer(
     cfg: &Resolved,
     clock: &mut Clock,
     since: u64,
+    waited: u64,
 ) {
     let (now, changed) = clock.sample();
     if changed {
@@ -1043,13 +1148,27 @@ fn answer(
     }
     let result = result
         .and_then(|mut r| {
-            r.bound_ms = r.bound_ms.saturating_add(after.saturating_sub(since));
+            r.bound_ms = r.bound_ms.saturating_add(after.saturating_sub(now));
+            r.held_ms = after.saturating_sub(since);
             if changed || r.bound_ms > budget {
-                return Err(unknown("read exceeded proof budget"));
+                return Err(unknown(&format!(
+                    "read exceeded proof budget (bound {} ms, cap {budget} ms)",
+                    r.bound_ms
+                )));
             }
             Ok(r)
         })
-        .map_err(|e| refusal_reason(&e.message));
+        .map_err(|e| {
+            if waited == 0 {
+                refusal_reason(&e.message)
+            } else {
+                refusal_reason(&format!(
+                    "{} after waiting {waited} ms ({})",
+                    e.message,
+                    board.lag(after)
+                ))
+            }
+        });
     let _ = send(stream, &result, MAX_REPLY);
 }
 

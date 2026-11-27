@@ -22,8 +22,10 @@ sd list --lane next
 
 Every write that puts an item INTO a capped lane is checked: a new lane, a
 closed item reopened inside one, or (for Now's per-assignee cap) an item
-reassigned to someone else inside Now. Editing or reranking an item already in
-its lane is never refused. When the lane is full the write is refused (exit
+reassigned to someone else inside Now. A reassignment inside Now is held only
+to the per-assignee cap, never to the whole-lane cap, so lowering a cap below
+the current occupancy never blocks handing work over. Editing or reranking an
+item already in its lane is never refused. When the lane is full the write is refused (exit
 code of a refusal, nothing written) and the message names what could leave and
 the only ways out, the dispositions:
 
@@ -41,9 +43,16 @@ the only ways out, the dispositions:
 
 The icebox parks work without deciding it away. Moving an item there needs
 both `--icebox-reason` and `--icebox-review` (a date or an event, as text);
-without them the write is a usage error. Iceboxed items hold no lane slot, so
-parking a Now item frees its slot. Moving an item out of the icebox clears its
-reason and review.
+without them the write is a usage error. The reason and review live only in
+the icebox: moving an item out clears them, and setting either on an item
+outside the icebox (or together with a move out of it) is a usage error,
+nothing written. `sd sync` merges a lane and its reason and review as one
+value, so one side's reason never lands on the other side's lane.
+
+Iceboxed items hold no lane slot, so parking a Now item frees its slot, and
+they are never ready: `sd ready` leaves them out unless asked for with
+`--lane icebox`. `sd list`, `sd count` and `sd stats` still show them, by lane
+like any other item; filter with `--lane` to see one column.
 
 ## Caps are data, from two sources
 
@@ -64,14 +73,20 @@ places:
 
 - **the project graph**: `seeds:laneCap` literals on the board node, the
   project graph's IRI followed by `#board`, each `key=value`
-  (`"later=150"`). These travel with the graph, so every checkout and every
-  server reads the same caps.
+  (`"later=150"`). Every client of one store or server reads the same caps.
+  The board node is not part of a seed, so a pendant (storage mode 1) and
+  `sd sync` do not carry it to another checkout: a ledger shared through git
+  sets its caps in the committed `.seeds/config.toml` instead.
 
 A key set in only one source takes that value. A key set in both must agree:
 two different values are a conflict, reported with schema
 `seed-lane-cap-conflict/v1` and nothing written, never resolved by picking a
 side. The keys are `now`, `now_per_assignee`, `next`, `later` and `triage`;
-any other key is refused.
+any other key is refused: in the config file as a configuration error, on the
+board node as a failure (bad stored data, never a usage error). A board node
+read that is cut short (more than 64 `seeds:laneCap` facts, or a truncated
+answer from a server) refuses the write rather than judging caps from part of
+the set.
 
 The core reads the caps through the `Backend` (`lane_cap_config`,
 `lane_cap_graph`) and resolves them with `model::LaneCaps::resolve`, so the

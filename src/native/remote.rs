@@ -2265,13 +2265,18 @@ impl Backend for RemoteBackend {
 
     fn lane_cap_graph(&self) -> Result<crate::model::LaneCapSettings> {
         let q = format!(
-            "SELECT ?v WHERE {{ GRAPH <{}> {{ <{}> <{}> ?v }} }} LIMIT 64",
+            "SELECT ?v WHERE {{ GRAPH <{}> {{ <{}> <{}> ?v }} }} LIMIT {}",
             self.graph,
             vocab::board_iri(&self.graph),
-            term::lane_cap()
+            term::lane_cap(),
+            crate::model::LANE_CAP_FACTS_MAX + 1
         );
+        let (rows, truncated) = self.select_marked(&q, None)?;
+        if truncated || rows.len() > crate::model::LANE_CAP_FACTS_MAX {
+            return Err(crate::model::lane_cap_facts_truncated());
+        }
         let mut out = crate::model::LaneCapSettings::new();
-        for row in self.select(&q, None)? {
+        for row in rows {
             if let Some(Obj::Str(v)) = row.get("v") {
                 crate::model::insert_lane_cap_fact(&mut out, v)?;
             }

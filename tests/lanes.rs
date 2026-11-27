@@ -477,3 +477,122 @@ fn caps_come_from_config_and_must_agree_with_the_graph() {
     assert!(err.to_string().contains("now_per_assignee"), "{err}");
     assert_eq!(stored_lane(&b, &a), None, "nothing written");
 }
+
+fn ready_ids(b: &QuipuBackend, lane: Option<&str>) -> Vec<String> {
+    let req = engine::ReadyReq {
+        filter: Filter {
+            lane: lane.map(str::to_string),
+            ..Filter::default()
+        },
+        ..Default::default()
+    };
+    engine::ready(b, &ctx(900), &req, None)
+        .unwrap()
+        .issues
+        .iter()
+        .map(|s| s.id.clone())
+        .collect()
+}
+
+#[test]
+fn iceboxed_work_is_never_ready_unless_asked_for_by_lane() {
+    let mut b = backend();
+    let parked = mk(&mut b, "parked", 1);
+    let live = mk(&mut b, "live", 2);
+    ice(&mut b, &parked, "waits on v3", "when v3 ships", 3).unwrap();
+    assert_eq!(ready_ids(&b, None), vec![live.clone()]);
+    assert_eq!(ready_ids(&b, Some("icebox")), vec![parked.clone()]);
+    // Back out of the icebox, it is ready again.
+    lane(&mut b, &parked, "later", 4).unwrap();
+    assert!(ready_ids(&b, None).contains(&parked));
+}
+
+#[test]
+fn icebox_fields_outside_the_icebox_are_refused_and_never_kept() {
+    let mut b = backend();
+    let id = mk(&mut b, "x", 1);
+    lane(&mut b, &id, "later", 2).unwrap();
+    // A reason-only edit on a Later item is refused, nothing written.
+    let reason_only = UpdateReq {
+        icebox_reason: Some("stale".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        set(&mut b, &id, reason_only, 3).unwrap_err().kind,
+        ErrorKind::Usage
+    );
+    // Leaving the icebox with a reason is refused too.
+    ice(&mut b, &id, "why", "2027-01-01", 4).unwrap();
+    let leave_with_reason = UpdateReq {
+        lane: Some("later".into()),
+        icebox_reason: Some("x".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        set(&mut b, &id, leave_with_reason, 5).unwrap_err().kind,
+        ErrorKind::Usage
+    );
+    let s = b.snapshot(None).unwrap().get(&id).unwrap().clone();
+    assert_eq!(s.lane.as_deref(), Some("icebox"), "nothing written");
+    assert_eq!(s.icebox_reason.as_deref(), Some("why"));
+    // Editing the reason inside the icebox is allowed.
+    let edit = UpdateReq {
+        icebox_reason: Some("why, revised".into()),
+        ..Default::default()
+    };
+    set(&mut b, &id, edit, 6).unwrap();
+    let s = b.snapshot(None).unwrap().get(&id).unwrap().clone();
+    assert_eq!(s.icebox_reason.as_deref(), Some("why, revised"));
+}
+
+#[test]
+fn reassigning_within_now_is_not_held_to_a_lowered_whole_lane_cap() {
+    let mut b = backend();
+    let a = mk(&mut b, "a", 1);
+    let c = mk(&mut b, "c", 2);
+    assign(&mut b, &a, "wu", "now", 3).unwrap();
+    assign(&mut b, &c, "wu", "now", 4).unwrap();
+    // Lower the whole-lane cap below occupancy.
+    board_caps(&mut b, &["now=1"]);
+    set(
+        &mut b,
+        &a,
+        UpdateReq {
+            assignee: Some("ian".into()),
+            ..Default::default()
+        },
+        5,
+    )
+    .unwrap();
+    // A new entry is still held to it.
+    let d = mk(&mut b, "d", 6);
+    assert_eq!(
+        assign(&mut b, &d, "kim", "now", 7).unwrap_err().kind,
+        ErrorKind::Refused
+    );
+}
+
+#[test]
+fn bad_stored_lane_caps_are_a_failure_not_a_usage_error() {
+    let mut b = backend();
+    board_caps(&mut b, &["sideways=3"]);
+    let id = mk(&mut b, "x", 1);
+    let err = lane(&mut b, &id, "later", 2).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Failed, "{err}");
+    assert_eq!(stored_lane(&b, &id), None, "nothing written");
+}
+
+#[test]
+fn a_board_node_with_too_many_cap_facts_is_refused_not_read_partially() {
+    let mut b = backend();
+    let facts: Vec<String> = (0..=seeds::model::LANE_CAP_FACTS_MAX)
+        .map(|i| format!("later={}", 100 + i))
+        .collect();
+    let refs: Vec<&str> = facts.iter().map(String::as_str).collect();
+    board_caps(&mut b, &refs);
+    let id = mk(&mut b, "x", 1);
+    assert_eq!(
+        lane(&mut b, &id, "later", 2).unwrap_err().kind,
+        ErrorKind::Failed
+    );
+}

@@ -154,7 +154,8 @@ impl LaneCaps {
         for (source, settings) in [("config", toml), ("graph", graph)] {
             for key in settings.keys() {
                 if !LANE_CAP_KEYS.contains(&key.as_str()) {
-                    return Err(SdError::usage(format!(
+                    // Bad stored or configured data, not a caller usage error.
+                    return Err(SdError::failed(format!(
                         "unknown lane cap {key:?} in the {source} source; \
                          expected one of {}",
                         LANE_CAP_KEYS.join(", ")
@@ -194,6 +195,19 @@ impl LaneCaps {
             "schema": "seed-lane-cap-conflict/v1", "conflicts": conflicts,
         })))
     }
+}
+
+/// The most `seeds:laneCap` facts a board node may hold; a read that finds
+/// more is refused, never answered from a partial set.
+pub const LANE_CAP_FACTS_MAX: usize = 64;
+
+/// The refusal for a board node whose lane cap read was cut short.
+pub fn lane_cap_facts_truncated() -> SdError {
+    SdError::failed(format!(
+        "the board node's lane caps were not read completely (more than \
+         {LANE_CAP_FACTS_MAX} seeds:laneCap facts, or a truncated answer); \
+         refusing to judge caps from a partial set"
+    ))
 }
 
 /// Parse one `seeds:laneCap` literal (`key=value`) from the board node.

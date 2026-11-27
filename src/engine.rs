@@ -2450,6 +2450,10 @@ pub fn ready(b: &dyn Backend, ctx: &Ctx, req: &ReadyReq, at: Option<u64>) -> Res
         .iter()
         .filter_map(|id| snap.seeds.get(id))
         .filter(|s| s.is_board_work())
+        // Iceboxed work is parked, never ready, unless asked for by lane.
+        .filter(|s| {
+            s.lane.as_deref() != Some(model::ICEBOX) || f.lane.as_deref() == Some(model::ICEBOX)
+        })
         .filter(|s| req.include_deferred || !is_deferred(s, &ctx.now))
         .filter(|s| under.as_ref().is_none_or(|u| u.contains(&s.id)))
         .filter(|s| f.matches(s))
@@ -3053,11 +3057,25 @@ pub fn update(
             s.lane = l.clone();
         }
         let text = |v: &str| (!v.trim().is_empty()).then(|| v.trim().to_string());
-        if let Some(v) = &req.icebox_reason {
-            s.icebox_reason = text(v);
-        }
-        if let Some(v) = &req.icebox_review {
-            s.icebox_review = text(v);
+        if s.lane.as_deref() == Some(model::ICEBOX) {
+            if let Some(v) = &req.icebox_reason {
+                s.icebox_reason = text(v);
+            }
+            if let Some(v) = &req.icebox_review {
+                s.icebox_review = text(v);
+            }
+        } else {
+            // Icebox fields live only in the icebox: setting one outside it is
+            // refused, and an item outside it never keeps stale ones.
+            let given = |v: &Option<String>| v.as_deref().is_some_and(|t| !t.trim().is_empty());
+            if given(&req.icebox_reason) || given(&req.icebox_review) {
+                return Err(SdError::usage(format!(
+                    "{id}: --icebox-reason and --icebox-review apply only in the icebox \
+                     (add --lane icebox); nothing written"
+                )));
+            }
+            s.icebox_reason = None;
+            s.icebox_review = None;
         }
         if let Some(m) = &req.estimate {
             s.estimated_minutes = Some(parse_estimate(m)?);
@@ -3337,7 +3355,18 @@ fn check_lane_caps(b: &dyn Backend, snap: &Snapshot, writes: &[SeedWrite]) -> Re
                 (key(a).is_none(), key(a), &a.id).cmp(&(key(b).is_none(), key(b), &b.id))
             });
         }
-        if let Some(cap) = cap {
+        // A reassignment within Now takes no new whole-lane slot: only items
+        // entering the lane itself are held to the whole-lane cap.
+        let lane_entering: Vec<&Seed> = entering
+            .iter()
+            .copied()
+            .filter(|s| {
+                snap.get(&s.id).map_or(true, |before| {
+                    before.lane.as_deref() != Some(lane) || !occupies_lane(before)
+                })
+            })
+            .collect();
+        if let (Some(cap), false) = (cap, lane_entering.is_empty()) {
             // Staying members that are also written keep their slot.
             let total = members.len() + in_lane.len();
             if total > cap {
@@ -3346,7 +3375,7 @@ fn check_lane_caps(b: &dyn Backend, snap: &Snapshot, writes: &[SeedWrite]) -> Re
                     lane,
                     cap,
                     total,
-                    &entering,
+                    &lane_entering,
                     &members,
                 ));
             }

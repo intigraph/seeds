@@ -856,12 +856,18 @@ impl Backend for QuipuBackend {
     fn lane_cap_graph(&self) -> Result<crate::model::LaneCapSettings> {
         let g = &self.graph_iri;
         let q = format!(
-            "SELECT ?v WHERE {{ GRAPH <{g}> {{ <{}> <{}> ?v }} }} LIMIT 64",
+            "SELECT ?v WHERE {{ GRAPH <{g}> {{ <{}> <{}> ?v }} }} LIMIT {}",
             vocab::board_iri(g),
-            term::lane_cap()
+            term::lane_cap(),
+            crate::model::LANE_CAP_FACTS_MAX + 1
         );
         let mut out = crate::model::LaneCapSettings::new();
-        for row in query_temporal(&self.store, &q, &Self::ctx(None)?)?.rows() {
+        let result = query_temporal(&self.store, &q, &Self::ctx(None)?)?;
+        let rows = result.rows();
+        if rows.len() > crate::model::LANE_CAP_FACTS_MAX {
+            return Err(crate::model::lane_cap_facts_truncated());
+        }
+        for row in rows {
             if let Some(Value::Str(v)) = row.get("v") {
                 crate::model::insert_lane_cap_fact(&mut out, v)?;
             }

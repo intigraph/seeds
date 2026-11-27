@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.31.1] - 2026-11-27
+
+### Perf
+
+- *(intake)* Read open seeds without their bodies for the duplicate gate (#350) ([55378ca](https://github.com/scbrown/seeds/commit/55378cad37303ba99643eec8b2a6d007e0b7ce8c))
+- *(remote)* Send the connect health check unsigned (#352) ([416c46c](https://github.com/scbrown/seeds/commit/416c46c243317af33d770070b05b02aa43bd9de9))
+
 ## [0.31.0] - 2026-11-27
 
 ### Fixed

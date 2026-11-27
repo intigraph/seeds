@@ -109,9 +109,11 @@ A served reader reaches its working size within its first twenty minutes and
 stays there. On one host, with swap off for the service and a bootstrap cut
 about a week old, the service manager's recorded memory peak per run did not
 follow uptime: 4.9 GB after 20 minutes, 4.6 GB after 24 minutes, 4.8 GB
-after 5 h 45 min, 5.1 GB after 21 h 31 min. A run 12 h old held 4.76 GB
-resident, 11 MB below its own high-water mark. A leak of hundreds of MB per
-hour would have reached the service's memory cap inside a day. When the
+after 5 h 45 min, 4.9 GB after 17 h 16 min, 5.1 GB after 21 h 31 min. A
+run 12 h old held 4.76 GB resident, 11 MB below its own high-water mark, and
+a later 55-minute run's own stats line held `rss_kb` between 3 756 624 and
+3 760 884. A leak of hundreds of MB per hour would have reached the service's
+memory cap inside a day. When the
 reader's pages land in swap and reads slow down, the cause is host swap
 pressure, so keep the service out of swap and size its memory cap for the
 replica held resident. Refreshing an aged bootstrap cut shortens the replay

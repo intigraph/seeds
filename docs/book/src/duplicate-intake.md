@@ -68,15 +68,25 @@ with id, status, score and title, and recorded on the new seed:
 
 If the resolver fails (a timeout, for example), the state is `unknown` and the
 warning says UNKNOWN. That is never reported as "no duplicates". In hint mode
-the failure no longer refuses `sd create`. Quick and bulk creates, which have
-no hint mode, still refuse.
+the failure no longer refuses `sd create`; this is the item's acceptance test
+("a Quipu timeout leaves the hint UNKNOWN and the create proceeds with a
+warning"). The resolver call is shared, so the failure also skips the remote
+(embedding) half of the refusal gate, and the warning says so in those words.
+The local canonical-name gate (0.99) is unaffected. Use `--strict` to keep
+the create fail-closed. Quick and bulk creates, which have no hint mode,
+still refuse.
+
+The closed half of the corpus is read with a bounded query (seeds closed at
+or after the window start), never a snapshot of every closed seed. Remote
+canonical-name candidates are floored at 0.90, the same as local ones.
 
 - `--strict` refuses (exit 5) when there is any hint or the state is UNKNOWN.
-- `--distinct-from <id>` (repeatable) records `quipu:distinctFrom` on the new
+- `--distinct-from <id>` (repeatable; each id must exist) records `quipu:distinctFrom` on the new
   seed. That pair is never hinted again, whichever side carries it.
 - A title or description edit (`sd update`) re-runs the hints and replaces
   the recorded hint facts. The edit is already written, so a failure is only
-  a warning.
+  a warning. Closed seeds, inbox pointers, ephemeral seeds and machine
+  records are not re-hinted.
 
 `seeds:possibleDuplicateOf` and `seeds:duplicateHintState` are seeds' stopgap
 terms, like `seeds:workflowRun`. They are to be proposed to camayoc.
@@ -85,7 +95,9 @@ terms, like `seeds:workflowRun`. They are to be proposed to camayoc.
 
 `sd dupes` lists the open hint pairs: the hinted seed is not closed, and
 neither side records `distinctFrom`. `--json` returns an array of
-`{id, title, status, duplicate_of, duplicate_of_title, duplicate_of_status}`.
+`{id, title, status, duplicate_of, duplicate_of_title, duplicate_of_status}`
+(pinned in `tests/json_schema.rs`; the last two are `null`, never absent, when
+the target is unreadable).
 
 ```sh
 sd dupes resolve <id> <of> --duplicate  # close <id>, outcome superseded, reason "duplicate of <of>"

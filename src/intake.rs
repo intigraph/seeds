@@ -277,15 +277,26 @@ pub struct HintPair {
 }
 
 /// Every unresolved hint: the hinted seed is not closed and the pair has no
-/// `distinctFrom` on either side.
+/// `distinctFrom` on either side. One pass collects every `distinctFrom`
+/// pair, so this is linear in the facts, not quadratic in the seeds.
 pub fn open_hint_pairs(snap: &crate::model::Snapshot) -> Vec<HintPair> {
     let pred = possible_duplicate_of();
+    let mut distinct = std::collections::BTreeSet::new();
+    for seed in snap.seeds.values() {
+        for (p, o) in &seed.extra {
+            if let (true, crate::model::Obj::Iri(target)) = (p == DISTINCT_FROM, o) {
+                if let Some(t) = crate::vocab::item_id(target) {
+                    distinct.insert((seed.id.clone(), t.clone()));
+                    distinct.insert((t, seed.id.clone()));
+                }
+            }
+        }
+    }
     let mut out = Vec::new();
     for seed in snap.seeds.values() {
         if matches!(seed.status.as_str(), "closed" | "tombstone") {
             continue;
         }
-        let distinct = distinct_partners(snap.seeds.values(), &seed.id);
         for (p, o) in &seed.extra {
             let (true, crate::model::Obj::Iri(target)) = (p == &pred, o) else {
                 continue;
@@ -293,7 +304,7 @@ pub fn open_hint_pairs(snap: &crate::model::Snapshot) -> Vec<HintPair> {
             let Some(of) = crate::vocab::item_id(target) else {
                 continue;
             };
-            if distinct.contains(&of) {
+            if distinct.contains(&(seed.id.clone(), of.clone())) {
                 continue;
             }
             let other = snap.seeds.get(&of);

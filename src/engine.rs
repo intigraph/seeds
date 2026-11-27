@@ -3898,7 +3898,6 @@ pub fn parse_estimate(value: &str) -> Result<u32> {
 
 /// A stored date (`YYYY-MM-DD`, read as its first instant, UTC) or RFC 3339
 /// instant, as epoch seconds.
-/// Epoch seconds of a date or RFC 3339 instant.
 pub(crate) fn epoch_of(v: &str) -> Option<i64> {
     if v.len() == 10 {
         parse_date(v).map(|d| d * 86_400)
@@ -3948,7 +3947,7 @@ fn parse_instant(t: &str) -> Option<i64> {
     Some(parse_date(&t[..10])? * 86_400 + h * 3600 + mi * 60 + s)
 }
 
-fn format_instant(t: i64) -> String {
+pub(crate) fn format_instant(t: i64) -> String {
     let (days, secs) = (t.div_euclid(86_400), t.rem_euclid(86_400));
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -4802,7 +4801,6 @@ pub fn comment_add(
     }
 }
 
-/// `sd comments list <id>`, as of `at`.
 /// Replace a seed's unmodelled facts in one revision-checked write: drop
 /// every fact `remove` matches, then add `add` (duplicate hints and
 /// `distinctFrom`, aegis-8dda.12). Returns the new seed and transaction.
@@ -4838,6 +4836,7 @@ pub fn amend_extra(
     Ok((s, tx))
 }
 
+/// `sd comments list <id>`, as of `at`.
 pub fn comment_list(b: &dyn Backend, id: &str, at: Option<u64>) -> Result<Vec<Comment>> {
     // Exact-ID comment reads need neither unrelated seeds nor their comments.
     // Keep historical pins on the transaction snapshot, as `show` does.

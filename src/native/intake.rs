@@ -1,6 +1,12 @@
 //! Native create admission: the refusal gate, plus advisory duplicate hints
-//! (aegis-8dda.12). Without hint mode a resolver failure refuses; in hint mode
-//! it is recorded as UNKNOWN, never as "no duplicates".
+//! (aegis-8dda.12). Without hint mode (`sd q`, bulk creates) a resolver
+//! failure refuses. In hint mode it is recorded as UNKNOWN, never as "no
+//! duplicates", and the create proceeds with a warning that names what was
+//! not checked: the remote (embedding) half of the refusal gate as well as
+//! the hints. The local canonical-name gate (0.99) still applies, and
+//! `--strict` restores fail-closed. That degraded path is the item's own
+//! acceptance test ("a Quipu timeout leaves the hint UNKNOWN and the create
+//! proceeds with a warning"); see `docs/book/src/duplicate-intake.md`.
 use super::cli::DupesCommand;
 use crate::backend::{Backend, Ctx, SeedQuery};
 use crate::engine::CreateReq;
@@ -45,15 +51,21 @@ pub(super) fn admit(
     reason: Option<&str>,
     hint: Option<&HintMode>,
 ) -> Result<Option<HintResult>> {
-    let mut statuses: BTreeSet<String> = ACTIVE.into_iter().map(str::to_string).collect();
-    if hint.is_some() {
-        statuses.insert("closed".into());
-    }
     let query = SeedQuery {
-        statuses: Some(statuses),
+        statuses: Some(ACTIVE.into_iter().map(str::to_string).collect()),
         ..Default::default()
     };
-    let snap = b.snapshot_where(&query)?;
+    let mut snap = b.snapshot_where(&query)?;
+    // Hint mode also reads seeds closed inside the window, bounded in the
+    // query (never every closed seed); the window is re-applied below.
+    let now = hint.and_then(|h| crate::engine::epoch_of(h.now));
+    if let Some(now) = now {
+        let cutoff = crate::engine::format_instant(now - crate::intake::HINT_CLOSED_DAYS * 86_400);
+        let closed = b.snapshot_closed_since(Some(&cutoff[..10]))?;
+        for (id, seed) in closed.seeds {
+            snap.seeds.entry(id).or_insert(seed);
+        }
+    }
     let active: BTreeMap<_, _> = snap
         .seeds
         .values()
@@ -77,7 +89,10 @@ pub(super) fn admit(
     let remote = match b.creation_resolution(&req.title, req.description.as_deref()) {
         Ok(remote) => remote.unwrap_or_default(),
         Err(e) if hint.is_some() => {
-            unknown = Some(e.message);
+            unknown = Some(format!(
+                "{}; the embedding refusal gate was not applied, only the local name gate",
+                e.message
+            ));
             vec![]
         }
         Err(e) => return Err(e),
@@ -140,11 +155,12 @@ pub(super) fn admit(
     let Some(hint) = hint else {
         return Ok(None);
     };
-    let now = crate::engine::epoch_of(hint.now);
     let corpus: BTreeMap<_, _> = snap
         .seeds
         .values()
-        .filter(|s| query.matches(s) && hint_eligible(s, now))
+        .filter(|s| {
+            (ACTIVE.contains(&s.status.as_str()) || s.status == "closed") && hint_eligible(s, now)
+        })
         .map(|s| (vocab::item_iri(&s.id), s))
         .collect();
     // Never hint a pair already judged: overridden gate candidates (now
@@ -161,7 +177,13 @@ pub(super) fn admit(
         req.description.as_deref(),
         crate::intake::HINT_NAME_THRESHOLD,
     )?;
-    found.extend(remote.into_iter().filter(|c| corpus.contains_key(&c.iri)));
+    // Remote name matches get the same hint floor as local ones; embedding
+    // candidates are already at Quipu's resolver threshold.
+    found.extend(remote.into_iter().filter(|c| {
+        corpus.contains_key(&c.iri)
+            && (!c.matched_on.starts_with("canonical_name:")
+                || c.score >= crate::intake::HINT_NAME_THRESHOLD)
+    }));
     found.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.iri.cmp(&b.iri)));
     let mut seen = BTreeSet::new();
     found.retain(|c| seen.insert(c.iri.clone()));
@@ -180,6 +202,13 @@ pub(super) fn admit(
             }
         })
         .collect();
+    if !hint.distinct_from.is_empty() {
+        // Each --distinct-from must name a seed that exists.
+        let known = b.snapshot_items(hint.distinct_from)?;
+        for id in hint.distinct_from {
+            known.get(id)?;
+        }
+    }
     if hint.strict && (unknown.is_some() || !hints.is_empty()) {
         let lines = crate::intake::hint_lines(&hints, unknown.as_deref()).join("\n");
         return Err(SdError::refused(format!(
@@ -200,7 +229,9 @@ pub(super) fn admit(
 /// Re-run duplicate hints for an edited seed and replace its recorded hint
 /// facts (aegis-8dda.12). Returns the stderr lines.
 pub(super) fn rehint(b: &mut dyn Backend, ctx: &Ctx, seed: &Seed) -> Result<Vec<String>> {
-    if !hint_eligible(seed, None) && seed.status != "closed" {
+    // Only live work is re-hinted: never a closed seed (`sd dupes` does not
+    // list it), an inbox pointer, an ephemeral seed or a machine record.
+    if seed.status == "closed" || !hint_eligible(seed, None) {
         return Ok(vec![]);
     }
     let mut req = CreateReq {
@@ -384,6 +415,9 @@ mod tests {
     struct Remote {
         inner: QuipuBackend,
         candidate: String,
+        /// Answer a remote canonical-name match at this score instead of
+        /// an embedding match.
+        name_score: Option<f64>,
         fail: bool,
     }
     impl Backend for Remote {
@@ -408,10 +442,17 @@ mod tests {
             if self.fail {
                 return Err(SdError::refused("resolver unavailable"));
             }
-            Ok(Some(vec![EntityCandidate {
-                iri: self.candidate.clone(),
-                score: 0.96,
-                matched_on: "embedding:0.96".into(),
+            Ok(Some(vec![match self.name_score {
+                Some(score) => EntityCandidate {
+                    iri: self.candidate.clone(),
+                    score,
+                    matched_on: format!("canonical_name:jaro_winkler:{score:.2}"),
+                },
+                None => EntityCandidate {
+                    iri: self.candidate.clone(),
+                    score: 0.96,
+                    matched_on: "embedding:0.96".into(),
+                },
             }]))
         }
     }
@@ -434,6 +475,7 @@ mod tests {
         )
         .unwrap();
         let mut remote = Remote {
+            name_score: None,
             inner: b,
             candidate: vocab::item_iri(&existing.id),
             fail: false,
@@ -595,6 +637,7 @@ mod tests {
         let (b, ids) = board(&[OLD]);
         let error = hinted(&b, &[], true).unwrap_err();
         assert!(error.message.contains("--strict") && error.message.contains(&ids[0]));
+        assert_eq!(error.exit_code(), 5, "--strict is a refusal (exit 5)");
         assert!(hinted(&b, std::slice::from_ref(&ids[0]), true).is_ok());
     }
 
@@ -602,6 +645,7 @@ mod tests {
     fn a_resolver_timeout_is_unknown_and_the_create_proceeds_with_a_warning() {
         let (inner, _) = board(&[]);
         let remote = Remote {
+            name_score: None,
             inner,
             candidate: String::new(),
             fail: true,
@@ -623,5 +667,39 @@ mod tests {
         assert!(lines[0].contains("UNKNOWN"));
         let mut strict = req.clone();
         assert!(admit(&remote, &mut strict, &[], None, Some(&mode(&[], true))).is_err());
+    }
+
+    #[test]
+    fn a_remote_name_match_below_the_hint_floor_is_not_a_hint() {
+        let (inner, ids) = board(&["Requests hang under load"]);
+        let req = || CreateReq {
+            title: "Rotate the backup keys".into(),
+            description: Some("same underlying problem".into()),
+            ..Default::default()
+        };
+        let mut remote = Remote {
+            inner,
+            candidate: vocab::item_iri(&ids[0]),
+            name_score: Some(0.80),
+            fail: false,
+        };
+        let (hints, _) = admit(&remote, &mut req(), &[], None, Some(&mode(&[], false)))
+            .unwrap()
+            .unwrap();
+        assert!(
+            hints.is_empty(),
+            "a 0.80 remote name match is noise: {hints:?}"
+        );
+        remote.name_score = Some(0.95);
+        let (hints, _) = admit(&remote, &mut req(), &[], None, Some(&mode(&[], false)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(hints.len(), 1, "{hints:?}");
+    }
+
+    #[test]
+    fn distinct_from_must_name_an_existing_seed() {
+        let (b, _) = board(&[OLD]);
+        assert!(hinted(&b, &["fixture-nope".into()], false).is_err());
     }
 }

@@ -101,7 +101,7 @@
       "source": "docs/book/src/reference.md",
       "subject": "http://aegis.gastown.local/ontology/doc/seeds/docs%2Fbook%2Fsrc%2Freference.md",
       "summary": "Read the sd global options, verbs, JSON and exit-code contracts before changing a caller-facing behavior.",
-      "source_sha256": "56479ed904f59fb2ee839ce011a792a1df245963fc8c6a626bec7ff23b569935",
+      "source_sha256": "2ad6f05dc892a2639e0f64877d3caed7656640d34291341c4c741b9992ff45eb",
       "properties": {
         "startHereOrder": 2
       }

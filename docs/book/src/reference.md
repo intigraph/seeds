@@ -22,7 +22,7 @@ Accepted on every verb.
 | verb | flags (a br-compatible subset) |
 |---|---|
 | [`prime`](agent-primer.md) | `--static`, `--brief`, `--section <prefix>`; shared stack JSON |
-| [`create [TITLE]`](verbs/create.md) | `--title`, `-t/--type`, `-p/--priority`, `-d/--description`, `--description-file`, `-a/--assignee`, `-l/--labels`, `--parent`, `--deps`, `--dry-run`, `--silent` |
+| [`create [TITLE]`](verbs/create.md) | `--title`, `-t/--type`, `-p/--priority`, `-d/--description`, `--description-file`, `-a/--assignee`, `-l/--labels`, `--parent`, `--deps`, `--dry-run`, `--silent`, `--strict`, `--distinct-from <ID>` ([duplicate hints](duplicate-intake.md#hint-mode)) |
 | [`show <ID>...`](verbs/show.md) | |
 | [`list`](verbs/list.md) | `-s/--status`, `-t/--type`, `--assignee`, `--unassigned`, `-l/--label`, `-p/--priority`, `-a/--all`, `--limit` (default 50, 0 = all), `--sort` |
 | [`ready`](verbs/ready.md) | `--limit` (default: none), `--assignee [NAME]`, `--unassigned`, `-l/--label`, `-t/--type`, `-p/--priority`, `--parent` |
@@ -34,6 +34,8 @@ Accepted on every verb.
 | [`dep list <ID>`](verbs/dep.md) | `--direction down\|up` |
 | [`comments add <ID> [TEXT]...`](verbs/comments.md) | `-f/--file`, `-m/--message` (alias `--content`), `--author` |
 | [`comments list <ID>`](verbs/comments.md) | |
+| [`dupes`](duplicate-intake.md#grooming-sd-dupes) | lists open duplicate hint pairs; `--json` rows are `{id, title, status, duplicate_of, duplicate_of_title, duplicate_of_status}` (the last two `null` when unreadable) |
+| [`dupes resolve <ID> <OF>`](duplicate-intake.md#grooming-sd-dupes) | `--duplicate` (close `<ID>`, outcome `superseded`; `--json` is the `close` array) or `--distinct` (record `quipu:distinctFrom`; `--json` is the seed with `tx`) |
 | [`export`](verbs/sync.md#sd-export) | `--to <DIR>` |
 | [`import <DIR>`](verbs/sync.md#sd-import) | `--prefer pendant\|store`, `--replace` |
 | [`sync`](verbs/sync.md#sd-sync) | `--remote <URL>`, `--allow-remote-deletes`, `--dry-run`, `--status` |

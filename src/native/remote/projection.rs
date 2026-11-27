@@ -108,9 +108,6 @@ impl RemoteBackend {
         if !matches!(by, "status" | "priority" | "type" | "assignee") {
             return Ok(None);
         }
-        if self.any_iceboxed()? {
-            return Ok(None);
-        }
         let Some(list) = self.projection_read(json!({"action":"list"}))? else {
             return Ok(None);
         };
@@ -303,6 +300,11 @@ impl RemoteBackend {
         }
         if projected_total != after_total || (!keys.is_empty() && after_total != expected_total) {
             return Err(invalid());
+        }
+        // The board projection counts by status alone and cannot leave the
+        // icebox out (aegis-8dda.3): fall back to SPARQL while one exists.
+        if self.any_iceboxed()? {
+            return Ok(None);
         }
         Ok(Some(Count {
             total: if keys.is_empty() { 0 } else { after_total },

@@ -1485,3 +1485,45 @@ fn changelog_reads_aliases_and_reopened_ephemeral_shadows() {
         assert_eq!(engine::changelog(&remote, since, None).unwrap(), expected);
     }
 }
+
+// aegis-10m: the intake gate's brief read decodes every open seed exactly as
+// the full read does, apart from the bodies it leaves out.
+#[test]
+fn a_brief_intake_read_matches_the_full_read_apart_from_bodies() {
+    let Some(server) = quipu_server() else {
+        eprintln!("SKIPPED: set SEEDS_TEST_QUIPU_SERVER to a quipu-server binary to run this");
+        return;
+    };
+    let (snap, _) = corpus();
+    let a = load(&server.base, "https://seeds.local/project/brief-a", &snap);
+    let q = crate::backend::SeedQuery {
+        statuses: Some(
+            ["open", "hooked", "in_progress", "blocked", "deferred"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ),
+        ..Default::default()
+    };
+    let full = a.snapshot_where(&q).unwrap();
+    let brief = a.snapshot_where_brief(&q).unwrap();
+    assert!(
+        full.seeds.values().any(|s| s.description.is_some()),
+        "the corpus must carry bodies for this row to mean anything"
+    );
+    let beads = vocab::seeds("beadsJson");
+    let mut expected = full.seeds.clone();
+    for s in expected.values_mut() {
+        s.description = None;
+        s.notes = None;
+        s.design = None;
+        s.acceptance_criteria = None;
+        s.extra.retain(|(p, _)| p != &beads);
+    }
+    assert_eq!(format!("{:?}", brief.seeds), format!("{expected:?}"));
+    assert!(
+        brief.seeds.len() > 5,
+        "only {} active seeds",
+        brief.seeds.len()
+    );
+}

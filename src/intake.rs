@@ -75,6 +75,241 @@ fn graph_error(error: quipu::error::Error) -> SdError {
     SdError::failed(format!("duplicate intake resolver: {error}"))
 }
 
+// ------------------------------------------------- duplicate hints (8dda.12)
+
+/// Hint-mode canonical-name floor: below the 0.99 refusal gate, a near-copy
+/// title is reported and recorded, never refused (unless `--strict`).
+pub const HINT_NAME_THRESHOLD: f64 = 0.90;
+/// How many candidates a create prints and records.
+pub const HINT_TOP: usize = 3;
+/// Closed seeds stay hint candidates for this many days after closing.
+pub const HINT_CLOSED_DAYS: i64 = 30;
+/// Quipu's durable "these are not the same" edge; quipu's resolver honours
+/// it in both directions, and so do seeds' hints.
+pub const DISTINCT_FROM: &str = "https://quipu.dev/ontology/distinctFrom";
+
+/// `seeds:possibleDuplicateOf`: an unresolved duplicate hint (stopgap term,
+/// to be proposed for camayoc like `seeds:workflowRun`).
+pub fn possible_duplicate_of() -> String {
+    crate::vocab::seeds("possibleDuplicateOf")
+}
+/// `seeds:duplicateHintState`: `hinted`, `none` or `unknown` (the resolver
+/// failed: absence of hints is not established).
+pub fn hint_state() -> String {
+    crate::vocab::seeds("duplicateHintState")
+}
+/// `seeds:duplicateHint`: JSON detail of the recorded candidates
+/// (Quipu's `resolution_hints` shape: iri, score, matched_on).
+pub fn hint_detail() -> String {
+    crate::vocab::seeds("duplicateHint")
+}
+
+/// One duplicate candidate as printed and recorded.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Hint {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub score: f64,
+    pub matched_on: String,
+}
+
+/// Inbox pointers and delivery records are never duplicate candidates.
+pub fn is_inbox_pointer(seed: &Seed) -> bool {
+    crate::engine::deadline_message(seed)
+}
+
+/// Whether `seed` belongs to the hint corpus at `now` (epoch seconds):
+/// open-ish work, or closed within [`HINT_CLOSED_DAYS`]; never inbox
+/// pointers, ephemeral seeds or machine records (ops, ask job reports).
+pub fn hint_eligible(seed: &Seed, now: Option<i64>) -> bool {
+    if is_inbox_pointer(seed)
+        || !wants_directive_hint(Some(&seed.issue_type), seed.ephemeral)
+        || seed.status == "tombstone"
+    {
+        return false;
+    }
+    if seed.status != "closed" {
+        return true;
+    }
+    match (
+        now,
+        seed.closed_at.as_deref().and_then(crate::engine::epoch_of),
+    ) {
+        (Some(now), Some(closed)) => now - closed <= HINT_CLOSED_DAYS * 86_400,
+        _ => false,
+    }
+}
+
+/// The `distinctFrom` partners recorded on either side of `id`.
+pub fn distinct_partners<'a>(
+    seeds: impl IntoIterator<Item = &'a Seed>,
+    id: &str,
+) -> std::collections::BTreeSet<String> {
+    let me = crate::vocab::item_iri(id);
+    let mut out = std::collections::BTreeSet::new();
+    for seed in seeds {
+        for (p, o) in &seed.extra {
+            if p != DISTINCT_FROM {
+                continue;
+            }
+            if let crate::model::Obj::Iri(target) = o {
+                if seed.id == id {
+                    if let Some(t) = crate::vocab::item_id(target) {
+                        out.insert(t);
+                    }
+                } else if target == &me {
+                    out.insert(seed.id.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Canonical-name candidates (Quipu's resolver, Jaro-Winkler included) at
+/// `threshold` over exactly the supplied seeds, whatever their status.
+pub fn name_candidates_at<'a>(
+    seeds: impl IntoIterator<Item = &'a Seed>,
+    title: &str,
+    description: Option<&str>,
+    threshold: f64,
+) -> Result<Vec<EntityCandidate>> {
+    let mut store = Store::open_in_memory().map_err(graph_error)?;
+    let label = store
+        .intern(crate::vocab::RDFS_LABEL)
+        .map_err(graph_error)?;
+    let mut facts = Vec::new();
+    for seed in seeds {
+        facts.push(Datum {
+            entity: store
+                .intern(&crate::vocab::item_iri(&seed.id))
+                .map_err(graph_error)?,
+            attribute: label,
+            value: Value::Str(seed.title.clone()),
+            valid_from: "1970-01-01T00:00:00Z".into(),
+            valid_to: None,
+            op: Op::Assert,
+        });
+    }
+    if facts.is_empty() {
+        return Ok(vec![]);
+    }
+    store
+        .transact(
+            &facts,
+            "1970-01-01T00:00:00Z",
+            None,
+            Some("seeds:hint-preview"),
+        )
+        .map_err(graph_error)?;
+    let properties = description
+        .map(|d| vec![("description".into(), d.into())])
+        .unwrap_or_default();
+    let result = quipu::resolve_entity(&store, title.trim(), &properties, threshold, CANDIDATE_CAP)
+        .map_err(graph_error)?;
+    Ok(result.candidates)
+}
+
+/// The facts a hint result records on the seed: the state, one
+/// `possibleDuplicateOf` edge per candidate, and the JSON detail.
+pub fn hint_facts(hints: &[Hint], unknown: Option<&str>) -> Vec<(String, crate::model::Obj)> {
+    use crate::model::Obj;
+    let state = match (unknown, hints.is_empty()) {
+        (Some(_), _) => "unknown",
+        (None, false) => "hinted",
+        (None, true) => "none",
+    };
+    let mut out = vec![(hint_state(), Obj::Str(state.into()))];
+    out.extend(hints.iter().map(|h| {
+        (
+            possible_duplicate_of(),
+            Obj::Iri(crate::vocab::item_iri(&h.id)),
+        )
+    }));
+    let detail = serde_json::json!({
+        "threshold": HINT_NAME_THRESHOLD,
+        "unknown": unknown,
+        "candidates": hints.iter().map(|h| serde_json::json!({
+            "iri": crate::vocab::item_iri(&h.id), "score": h.score, "matched_on": h.matched_on,
+        })).collect::<Vec<_>>(),
+    });
+    out.push((hint_detail(), Obj::Str(detail.to_string())));
+    out
+}
+
+/// Whether a predicate is one [`hint_facts`] writes (replaced on re-hint).
+pub fn is_hint_predicate(p: &str) -> bool {
+    p == hint_state() || p == possible_duplicate_of() || p == hint_detail()
+}
+
+/// The stderr lines for a hint result. UNKNOWN is never "no duplicates".
+pub fn hint_lines(hints: &[Hint], unknown: Option<&str>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(why) = unknown {
+        lines.push(format!(
+            "duplicate hints UNKNOWN ({why}); the create was not affected, run `sd dupes` later"
+        ));
+    }
+    if !hints.is_empty() {
+        lines.push(
+            "possible duplicates (comment there instead, or `sd dupes resolve <new> <id> --distinct`):"
+                .into(),
+        );
+        lines.extend(
+            hints
+                .iter()
+                .map(|h| format!("  {} [{}] {:.2} {}", h.id, h.status, h.score, h.title)),
+        );
+    }
+    lines
+}
+
+/// An open hint pair for grooming: `seed` may duplicate `of`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct HintPair {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub duplicate_of: String,
+    pub duplicate_of_title: Option<String>,
+    pub duplicate_of_status: Option<String>,
+}
+
+/// Every unresolved hint: the hinted seed is not closed and the pair has no
+/// `distinctFrom` on either side.
+pub fn open_hint_pairs(snap: &crate::model::Snapshot) -> Vec<HintPair> {
+    let pred = possible_duplicate_of();
+    let mut out = Vec::new();
+    for seed in snap.seeds.values() {
+        if matches!(seed.status.as_str(), "closed" | "tombstone") {
+            continue;
+        }
+        let distinct = distinct_partners(snap.seeds.values(), &seed.id);
+        for (p, o) in &seed.extra {
+            let (true, crate::model::Obj::Iri(target)) = (p == &pred, o) else {
+                continue;
+            };
+            let Some(of) = crate::vocab::item_id(target) else {
+                continue;
+            };
+            if distinct.contains(&of) {
+                continue;
+            }
+            let other = snap.seeds.get(&of);
+            out.push(HintPair {
+                id: seed.id.clone(),
+                title: seed.title.clone(),
+                status: seed.status.clone(),
+                duplicate_of: of,
+                duplicate_of_title: other.map(|s| s.title.clone()),
+                duplicate_of_status: other.map(|s| s.status.clone()),
+            });
+        }
+    }
+    out
+}
+
 /// How many directive hints a new seed gets (aegis-8dda.9).
 pub const DIRECTIVE_HINTS: usize = 3;
 /// The name prefix of operator Directives (the operator's own words), as

@@ -837,30 +837,48 @@ predicate="https://schema.org/agent"
             assert_eq!(requests.len(), 4);
             assert!(requests[3].contains("\"where\":{\"key\":[]}"));
         }
-        let mut replies = vec![
-            (200, "ok".to_string()),
-            (200, LIST.into()),
-            (200, BEFORE.into()),
-            (200, EMPTY.into()),
-            (200, r#"{"boolean":false}"#.into()),
-        ];
-        replies.extend(scope_responses(true));
-        replies.push((200, BEFORE.into()));
-        let refs = replies
-            .into_iter()
-            .map(|(code, body)| (code, &*Box::leak(body.into_boxed_str())))
-            .collect();
-        let (base, worker) = super::super::gateway_tests::server(refs);
-        let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
-        assert_eq!(remote.projection_count(&req).unwrap().unwrap().total, 1);
-        let requests = worker.join().unwrap();
-        assert_eq!(requests.len(), 14);
-        let body: Json = serde_json::from_str(requests[13].split_once("\r\n").unwrap().1).unwrap();
-        assert_eq!(body["where"]["priority"], json!([1]));
-        assert_eq!(
-            body["where"]["assignee"],
-            json!(["reader", {"iri":vocab::principal_iri("reader")} ])
-        );
+        for iceboxed in [0, 1] {
+            let mut replies = vec![
+                (200, "ok".to_string()),
+                (200, LIST.into()),
+                (200, BEFORE.into()),
+                (200, EMPTY.into()),
+                (200, r#"{"boolean":false}"#.into()),
+            ];
+            replies.extend(scope_responses(true));
+            replies.push((200, BEFORE.into()));
+            // The icebox probe: with none iceboxed the projection answer
+            // stands; with one, the count falls back to SPARQL (aegis-8dda.3).
+            replies.push((
+                200,
+                format!(r#"{{"results":{{"bindings":[{{"n":{{"type":"literal","value":"{iceboxed}"}}}}]}}}}"#),
+            ));
+            let refs = replies
+                .into_iter()
+                .map(|(code, body)| (code, &*Box::leak(body.into_boxed_str())))
+                .collect();
+            let (base, worker) = super::super::gateway_tests::server(refs);
+            let remote = RemoteBackend::connect(&base, "urn:projection", None, None, &[]).unwrap();
+            let count = remote.projection_count(&req).unwrap();
+            if iceboxed == 0 {
+                assert_eq!(count.unwrap().total, 1);
+            } else {
+                assert!(
+                    count.is_none(),
+                    "an iceboxed seed must force the SPARQL count"
+                );
+            }
+            let requests = worker.join().unwrap();
+            assert_eq!(requests.len(), 15);
+            assert!(requests[14].contains("COUNT"));
+            let body: Json =
+                serde_json::from_str(requests[13].split_once("\r\n").unwrap().1).unwrap();
+            assert_eq!(body["where"]["priority"], json!([1]));
+            assert_eq!(
+                body["where"]["assignee"],
+                json!(["reader", {"iri":vocab::principal_iri("reader")} ])
+            );
+        }
     }
 
     #[test]

@@ -376,6 +376,79 @@ fn the_icebox_is_excluded_from_counts() {
         let id = mk(&mut b, &format!("ice {i}"), 400 + i as u32);
         ice(&mut b, &id, "parked", "2027-03-01", 500 + i as u32).unwrap();
     }
+    // sd count and sd stats leave the icebox out; --lane icebox opts in.
+    let iced = now_cap() + 6;
+    let live = now_cap(); // the Now lane, full again with `extra`
+    let count = |lane: Option<&str>| {
+        engine::count(
+            &b,
+            &engine::CountReq {
+                filter: Filter {
+                    lane: lane.map(str::to_string),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+        .total
+    };
+    assert_eq!(count(None), live);
+    assert_eq!(count(Some("icebox")), iced);
+    assert_eq!(count(Some("now")), now_cap());
+    let stats = engine::stats(&b, &ctx(900), engine::StatsReq::default(), None).unwrap();
+    assert_eq!((stats.total, stats.open), (live, live));
+}
+
+#[test]
+fn a_stored_iceboxed_item_without_reason_or_review_is_a_failure_not_usage() {
+    let mut b = backend();
+    let id = mk(&mut b, "x", 1);
+    ice(&mut b, &id, "why", "2027-01-15", 2).unwrap();
+    // Bad data reaching the write path (as an import or sync would carry
+    // it): an iceboxed item stored without its review.
+    let snap = b.snapshot(None).unwrap();
+    let mut s = snap.get(&id).unwrap().clone();
+    let revision = s.revision;
+    s.icebox_review = None;
+    b.commit(
+        &seeds::backend::WriteBatch {
+            seeds: vec![seeds::backend::SeedWrite {
+                seed: s,
+                expected_revision: Some(revision),
+            }],
+            source: "seeds:test".into(),
+            ..Default::default()
+        },
+        &ctx(3),
+    )
+    .unwrap();
+    // A write that touches it without asking for the icebox meets bad data:
+    // a failure, never the caller's usage error (exit 2).
+    let err = set(
+        &mut b,
+        &id,
+        UpdateReq {
+            title: Some("renamed".into()),
+            ..Default::default()
+        },
+        4,
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Failed, "{err}");
+    // Asking for the icebox without a review is still the caller's usage error.
+    let err = set(
+        &mut b,
+        &id,
+        UpdateReq {
+            icebox_reason: Some("still why".into()),
+            ..Default::default()
+        },
+        5,
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Usage, "{err}");
 }
 
 #[test]

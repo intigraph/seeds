@@ -1545,6 +1545,8 @@ fn stats_live(b: &dyn Backend, ctx: &Ctx, req: StatsReq, at: Option<u64>) -> Res
         .seeds
         .values()
         .filter(|s| !s.is_tombstone() && s.is_board_work())
+        // The icebox is parked work, excluded from every count (aegis-8dda.3).
+        .filter(|s| s.lane.as_deref() != Some(model::ICEBOX))
         .collect();
     let count = |st: &str| seeds.iter().filter(|s| s.status == st).count();
     let lead: Vec<f64> = seeds
@@ -2611,6 +2613,10 @@ pub fn count(b: &dyn Backend, req: &CountReq, at: Option<u64>) -> Result<Count> 
                 || (!s.is_tombstone() && (req.include_closed || s.status != "closed"))
         })
         .filter(|s| f.issue_type.is_some() || s.is_board_work())
+        // The icebox is excluded from counts unless asked for by lane.
+        .filter(|s| {
+            s.lane.as_deref() != Some(model::ICEBOX) || f.lane.as_deref() == Some(model::ICEBOX)
+        })
         .filter(|s| f.matches(s))
         .collect();
     let groups = match req.by.as_deref() {
@@ -3064,6 +3070,17 @@ pub fn update(
             if let Some(v) = &req.icebox_review {
                 s.icebox_review = text(v);
             }
+            // The caller asked for the icebox without what it needs: a usage
+            // error here, before the write-path check that judges stored and
+            // incoming data (import, sync) as a failure.
+            let asked =
+                lane.is_some() || req.icebox_reason.is_some() || req.icebox_review.is_some();
+            if asked && (s.icebox_reason.is_none() || s.icebox_review.is_none()) {
+                return Err(SdError::usage(format!(
+                    "{id}: the icebox needs a reason and a review date or event \
+                     (--icebox-reason and --icebox-review); nothing written"
+                )));
+            }
         } else {
             // Icebox fields live only in the icebox: setting one outside it is
             // refused, and an item outside it never keeps stale ones.
@@ -3232,7 +3249,9 @@ const DISPOSITIONS: [&str; 5] = [
 ];
 
 /// Refuse a write that parks an item in the icebox without both a reason and
-/// a review date or event (aegis-8dda.3).
+/// a review date or event. Flags are judged as usage in `update`; reaching
+/// this check means the write carries bad data (an import, a sync, a stored
+/// item), so it is a failure, never a usage error (exit 2 is the caller's).
 fn check_icebox(writes: &[SeedWrite]) -> Result<()> {
     for s in writes.iter().map(|w| &w.seed) {
         if s.lane.as_deref() != Some(model::ICEBOX) || s.is_tombstone() {
@@ -3240,9 +3259,9 @@ fn check_icebox(writes: &[SeedWrite]) -> Result<()> {
         }
         let blank = |v: &Option<String>| v.as_deref().is_none_or(|t| t.trim().is_empty());
         if blank(&s.icebox_reason) || blank(&s.icebox_review) {
-            return Err(SdError::usage(format!(
-                "{}: the icebox needs a reason and a review date or event \
-                 (--icebox-reason and --icebox-review); nothing written",
+            return Err(SdError::failed(format!(
+                "{}: an iceboxed item needs an icebox reason and review \
+                 (seeds:iceboxReason, seeds:iceboxReview); nothing written",
                 s.id
             )));
         }

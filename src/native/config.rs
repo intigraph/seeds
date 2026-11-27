@@ -1149,6 +1149,28 @@ mod tests {
     }
 
     #[test]
+    fn lane_caps_take_the_project_file_per_key_over_the_user_file() {
+        let s = Sandbox::new("lane-caps");
+        s.user_toml("[lanes]\nlater = 90\nnow = 7\n");
+        s.project_toml("[lanes]\nlater = 150\nnext = 30\n");
+        let r = resolve(&s.inputs()).unwrap();
+        let caps: Vec<(&str, usize)> = r.lane_caps.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(caps, [("later", 150), ("next", 30), ("now", 7)]);
+    }
+
+    #[test]
+    fn an_unknown_lane_cap_key_is_a_configuration_error() {
+        let s = Sandbox::new("lane-caps-unknown");
+        s.project_toml("[lanes]\nlater = 150\nsomeday = 3\n");
+        let e = resolve(&s.inputs()).unwrap_err();
+        assert!(e.to_string().contains("someday"), "{e}");
+        assert_ne!(e.kind, crate::error::ErrorKind::Usage);
+        let s = Sandbox::new("lane-caps-unknown-user");
+        s.user_toml("[lanes]\nicebox = 3\n");
+        assert!(resolve(&s.inputs()).is_err());
+    }
+
+    #[test]
     fn custom_ca_is_user_config_only_and_relative_to_that_file() {
         let s = Sandbox::new("custom-ca");
         let pin = "a".repeat(64);

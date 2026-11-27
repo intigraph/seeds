@@ -767,6 +767,20 @@ impl RemoteBackend {
         })
     }
 
+    /// Whether any seed sits in the icebox. The board projection counts by
+    /// status alone and cannot leave the icebox out, so a count falls back to
+    /// SPARQL while one exists (aegis-8dda.3).
+    pub(super) fn any_iceboxed(&self) -> Result<bool> {
+        let n = self.aggregate_number(&format!(
+            "SELECT (COUNT(DISTINCT ?id) AS ?n) WHERE {{ {} }}",
+            self.effective_normalized(
+                &(self.status_fields()
+                    + &format!(" ?s <{}> \"{}\" .", term::lane(), crate::model::ICEBOX))
+            )
+        ))?;
+        Ok(n > 0)
+    }
+
     pub(super) fn count_summary(&self, req: &CountReq) -> Result<Count> {
         self.count_summary_with_source(req).map(|(count, _)| count)
     }
@@ -784,6 +798,9 @@ impl RemoteBackend {
 
     pub(super) fn sparql_count_summary(&self, req: &CountReq) -> Result<Count> {
         let (drive, mut fields) = self.filter_parts(&req.filter)?;
+        if !asks_for_icebox(&req.filter) {
+            fields += &icebox_excluded();
+        }
         if req.filter.status.is_none() {
             fields += " FILTER(?status != \"tombstone\")";
             if !req.include_closed {
@@ -813,9 +830,10 @@ impl RemoteBackend {
 
     pub(super) fn stats_summary(&self, ctx: &Ctx, req: StatsReq) -> Result<Stats> {
         let work = format!(
-            " FILTER NOT EXISTS {{ ?s <{}> \"ops\" }} FILTER NOT EXISTS {{ ?s <{}> \"ask\" }}",
+            " FILTER NOT EXISTS {{ ?s <{}> \"ops\" }} FILTER NOT EXISTS {{ ?s <{}> \"ask\" }}{}",
             term::issue_type(),
-            term::issue_type()
+            term::issue_type(),
+            icebox_excluded()
         );
         let statuses = self.grouped(
             &self.effective_normalized(&(self.status_fields() + &work)),
@@ -970,4 +988,21 @@ impl RemoteBackend {
         }
         Ok(stats)
     }
+}
+
+/// Whether a count filter asks for the icebox by lane; otherwise iceboxed
+/// work is excluded from counts and stats, as the core does (aegis-8dda.3).
+pub(super) fn asks_for_icebox(f: &crate::engine::Filter) -> bool {
+    f.lane
+        .as_deref()
+        .is_some_and(|l| l.trim().eq_ignore_ascii_case(crate::model::ICEBOX))
+}
+
+/// The SPARQL filter that leaves iceboxed seeds (`?s`) out of a count.
+pub(super) fn icebox_excluded() -> String {
+    format!(
+        " FILTER NOT EXISTS {{ ?s <{}> \"{}\" }}",
+        term::lane(),
+        crate::model::ICEBOX
+    )
 }

@@ -108,6 +108,9 @@ impl RemoteBackend {
         if !matches!(by, "status" | "priority" | "type" | "assignee") {
             return Ok(None);
         }
+        if self.any_iceboxed()? {
+            return Ok(None);
+        }
         let Some(list) = self.projection_read(json!({"action":"list"}))? else {
             return Ok(None);
         };

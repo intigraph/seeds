@@ -49,10 +49,15 @@ outside the icebox (or together with a move out of it) is a usage error,
 nothing written. `sd sync` merges a lane and its reason and review as one
 value, so one side's reason never lands on the other side's lane.
 
-Iceboxed items hold no lane slot, so parking a Now item frees its slot, and
-they are never ready: `sd ready` leaves them out unless asked for with
-`--lane icebox`. `sd list`, `sd count` and `sd stats` still show them, by lane
-like any other item; filter with `--lane` to see one column.
+Iceboxed items are excluded from counts. They hold no lane slot, so parking a
+Now item frees its slot; they are never ready; and `sd count` and `sd stats`
+leave them out. `sd ready` and `sd count` show them only when asked for with
+`--lane icebox`. `sd list` still shows them, by lane like any other item;
+filter with `--lane` to see one column.
+
+An iceboxed item that reaches a write without its reason or review (an
+import, a sync, or bad stored data) is refused as a failure, not a usage
+error: exit 2 stays the caller's.
 
 ## Caps are data, from two sources
 
@@ -91,3 +96,9 @@ the set.
 The core reads the caps through the `Backend` (`lane_cap_config`,
 `lane_cap_graph`) and resolves them with `model::LaneCaps::resolve`, so the
 rule is the same on the embedded store, a server and wasm.
+
+## Compatibility
+
+The lanes change bumps the pendant profile (`seeds-lanes-v1`): a share
+written by this `sd` carries the new profile, and an older `sd` refuses to
+load it. Upgrade every checkout that shares a ledger together.

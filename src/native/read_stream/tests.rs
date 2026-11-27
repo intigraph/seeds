@@ -158,6 +158,7 @@ impl Fixture {
             actor: context().actor,
             now: context().now,
             max_ms: 5000,
+            park_ms: None,
         }
     }
 }
@@ -361,6 +362,7 @@ fn projection_query_preserves_rows_and_refuses_uncovered_scope() {
         actor: "reader".into(),
         now: context().now,
         max_ms: 5000,
+        park_ms: None,
     };
     let result = render(&mut f.board, &f.config, &f.cfg, request, 11).unwrap();
     let value: Value = serde_json::from_str(&result.result.stdout).unwrap();
@@ -979,4 +981,245 @@ fn memory_line_reads_the_proc_status_fields_and_marks_missing_ones() {
         memory_line("VmRSSx:\t1 kB\nVmSwap:\tbad kB\n"),
         "rss_kb=? data_kb=? swap_kb=?"
     );
+}
+
+/// aegis-az3d.2: a bounded closed-inclusive list goes to the primary; an
+/// open-scope read, a show, or an unbounded page stays on the reader.
+#[test]
+fn bounded_closed_inclusive_lists_are_primary_scope() {
+    let scope = |args: &[&str]| primary_scope(&Cli::try_parse_from(args).unwrap().command);
+    assert!(scope(&["sd", "list", "--all"]));
+    assert!(scope(&["sd", "list", "--all", "--limit", "200"]));
+    assert!(scope(&["sd", "list", "-a"]));
+    assert!(scope(&["sd", "list", "--status", "closed"]));
+    assert!(scope(&["sd", "list", "--status", "open,Closed"]));
+    assert!(!scope(&["sd", "list"]));
+    assert!(!scope(&["sd", "list", "--limit", "200"]));
+    assert!(!scope(&["sd", "list", "--status", "open"]));
+    assert!(!scope(&["sd", "list", "--all", "--limit", "0"]));
+    assert!(!scope(&["sd", "ready"]));
+    assert!(!scope(&["sd", "show", "sd-1"]));
+}
+
+/// aegis-az3d.2: time parked is not staleness of the cut answered after it.
+/// The client charges the reader's bound plus only the round trip the reader
+/// did not hold; an older reader (held 0) is charged the whole trip.
+#[test]
+fn end_to_end_freshness_charges_transit_not_the_park() {
+    // Parked 3 s, a fresh 400 ms cut rendered, 20 ms of IPC on top.
+    assert_eq!(end_to_end_ms(400, 3_000, 3_020), 420);
+    // Older reader: no held time, the whole round trip is charged.
+    assert_eq!(end_to_end_ms(400, 0, 3_020), 3_420);
+    assert_eq!(end_to_end_ms(u64::MAX, 0, 1), u64::MAX);
+}
+
+/// aegis-az3d.2: the reader honours a shorter caller wait but never extends
+/// its own; the client waits for the park plus the ordinary IO timeout.
+#[test]
+fn park_deadline_is_the_shorter_of_caller_and_reader() {
+    let f = Fixture::new();
+    let mut r = f.request(&["sd", "list"]);
+    assert_eq!(
+        f.cfg.read_park_ms,
+        super::super::config::DEFAULT_READ_PARK_MS
+    );
+    assert_eq!(park_ms(&r, &f.cfg), 5_000);
+    r.park_ms = Some(1_000);
+    assert_eq!(park_ms(&r, &f.cfg), 1_000);
+    r.park_ms = Some(9_000);
+    assert_eq!(park_ms(&r, &f.cfg), 5_000);
+    assert_eq!(reply_timeout(5_000), Duration::from_millis(7_000));
+    // A reader configured longer than the default never parks a default
+    // caller (which sends no park_ms) past that caller's 7 s reply timeout.
+    let mut long = f.cfg.clone();
+    long.read_park_ms = super::super::config::MAX_READ_PARK_MS;
+    r.park_ms = None;
+    assert_eq!(park_ms(&r, &long), 5_000);
+    r.park_ms = Some(9_000);
+    assert_eq!(park_ms(&r, &long), 9_000);
+    // The default wait is not sent, so an older reader still decodes it.
+    let r = f.request(&["sd", "list"]);
+    assert!(!String::from_utf8(encode(&r).unwrap())
+        .unwrap()
+        .contains("park_ms"));
+    // An older reader's reply has no held_ms; it decodes as 0.
+    let old: Reply = serde_json::from_value(json!({
+        "version":1,"primary_url":"u","graph":"g","principal":"p","store_id":"s",
+        "log_epoch":"e","scope_digest":"d","policy_digest":"q","source_tx":1,
+        "local_tx":1,"bound_ms":10,"result":{"stdout":"","stderr":"","code":0}
+    }))
+    .unwrap();
+    assert_eq!(old.held_ms, 0);
+}
+
+/// A refusal after a wait names the replica's state, never a bare UNKNOWN.
+#[test]
+fn lag_line_names_bound_frame_age_and_cursors() {
+    let mut f = Fixture::new();
+    let line = f.board.lag(1);
+    assert!(line.contains("staleness bound UNKNOWN"), "{line}");
+    f.prove(1, 10);
+    let line = f.board.lag(11);
+    assert!(
+        line.contains("staleness bound ") && !line.contains("bound UNKNOWN"),
+        "{line}"
+    );
+    assert!(
+        line.contains("source tx ") && line.contains("local tx "),
+        "{line}"
+    );
+}
+
+/// The `Reply` an older client decodes: no `held_ms`, unknown fields denied.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct OldReply {
+    version: u32,
+    primary_url: String,
+    graph: String,
+    principal: String,
+    store_id: String,
+    log_epoch: String,
+    scope_digest: String,
+    policy_digest: String,
+    source_tx: u64,
+    local_tx: u64,
+    bound_ms: u64,
+    result: Outcome,
+}
+
+/// aegis-az3d.2 review: a read that did not park sends no `held_ms`, so an
+/// older client still decodes the reply; a parked read reports its hold from
+/// the `since` it was accepted at, never longer than the time since then.
+#[test]
+fn unparked_reply_decodes_with_an_older_client_and_parked_hold_starts_at_accept() {
+    let mut f = Fixture::new();
+    let mut clock = Clock::new();
+    let (now, _) = clock.sample();
+    f.prove(1, now);
+    let (mut server, mut client) = UnixStream::pair().unwrap();
+    let request = f.request(&["sd", "list"]);
+    answer(
+        &mut server,
+        request,
+        &mut f.board,
+        &f.config,
+        &f.cfg,
+        &mut clock,
+        now,
+        0,
+    );
+    let mut header = [0; 4];
+    client.read_exact(&mut header).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+    client.read_exact(&mut bytes).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("held_ms"));
+    let old: std::result::Result<OldReply, String> = decode(&bytes).unwrap();
+    assert!(old.is_ok());
+
+    // Parked: accepted at `since`, released `waited` ms later.
+    let started = Instant::now();
+    let (since, _) = clock.sample();
+    thread::sleep(Duration::from_millis(30));
+    let (released, _) = clock.sample();
+    f.prove(2, released);
+    let request = f.request(&["sd", "list"]);
+    answer(
+        &mut server,
+        request,
+        &mut f.board,
+        &f.config,
+        &f.cfg,
+        &mut clock,
+        since,
+        released - since,
+    );
+    let reply: std::result::Result<Reply, String> = receive(&mut client, MAX_REPLY).unwrap();
+    let held = reply.unwrap().held_ms;
+    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap();
+    assert!(held >= 30, "held {held} ms");
+    assert!(held <= elapsed + 2, "held {held} ms past {elapsed} ms");
+}
+
+/// One loop pass as `run` does it: apply a frame, observe, then release at
+/// most `RELEASE_PER_PASS` reads. Returns the reads released per pass.
+fn passes(q: &mut ParkQueue<u32>, frames: &mut u32, mut now: u64, connected: bool) -> Vec<usize> {
+    let mut out = Vec::new();
+    while !q.is_empty() && out.len() < 100 {
+        *frames += 1; // the pass applies its frames before any render
+        q.observe(true, true);
+        let mut n = 0;
+        while n < RELEASE_PER_PASS {
+            if q.next(now, connected).is_none() {
+                break;
+            }
+            n += 1;
+        }
+        out.push(n);
+        now += 10;
+    }
+    out
+}
+
+#[test]
+fn a_release_of_all_parked_reads_is_bounded_per_pass_and_apply_runs_between() {
+    let mut q = ParkQueue::default();
+    for i in 0..MAX_PARKED as u32 {
+        assert!(!q.full());
+        q.park(i, 0, 5_000);
+    }
+    assert!(q.full());
+    let mut frames = 0;
+    let per_pass = passes(&mut q, &mut frames, 100, true);
+    assert!(
+        per_pass.iter().all(|&n| n <= RELEASE_PER_PASS),
+        "{per_pass:?}"
+    );
+    assert_eq!(per_pass.iter().sum::<usize>(), MAX_PARKED);
+    assert_eq!(per_pass.len(), MAX_PARKED.div_ceil(RELEASE_PER_PASS));
+    // A frame was applied before every batch: apply kept pace with release.
+    assert_eq!(frames as usize, per_pass.len());
+}
+
+#[test]
+fn released_reads_keep_going_without_a_new_frame_until_headroom_is_lost() {
+    let mut q = ParkQueue::default();
+    for i in 0..20u32 {
+        q.park(i, 0, 5_000);
+    }
+    q.observe(true, true);
+    assert_eq!(q.next(10, true).map(|r| r.0), Some(0)); // oldest first
+    q.observe(false, true); // no frame this pass, still fresh
+    assert_eq!(q.next(20, true).map(|r| r.0), Some(1));
+    q.observe(false, false); // headroom gone: wait again
+    assert!(q.next(30, true).is_none());
+    q.observe(false, true); // fresh again but nothing moved: still waiting
+    assert!(q.next(40, true).is_none());
+    q.observe(true, true);
+    assert_eq!(q.next(50, true).map(|r| r.0), Some(2));
+}
+
+#[test]
+fn a_parked_read_goes_at_its_deadline_or_when_the_stream_drops() {
+    let mut q = ParkQueue::default();
+    q.park(1u32, 0, 5_000);
+    q.park(2u32, 100, 300);
+    q.observe(false, false);
+    assert!(q.next(299, true).is_none());
+    assert_eq!(q.next(300, true), Some((2, 100))); // deadline, out of order
+    assert!(q.next(301, true).is_none());
+    assert_eq!(q.next(302, false), Some((1, 0))); // stream down
+    assert!(q.is_empty());
+}
+
+#[test]
+fn a_zero_park_never_waits() {
+    let f = Fixture::new();
+    let mut r = f.request(&["sd", "list"]);
+    let mut off = f.cfg.clone();
+    off.read_park_ms = 0;
+    assert_eq!(park_ms(&r, &off), 0);
+    r.park_ms = Some(0);
+    assert_eq!(park_ms(&r, &f.cfg), 0);
 }

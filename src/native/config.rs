@@ -136,6 +136,9 @@ pub struct QuipuSection {
     pub ca_sha256: Option<String>,
     /// Operator-owned push read packet; USER config only, never a project redirect.
     pub read_stream_config: Option<String>,
+    /// Longest a push read waits for the replica to reach its freshness bound
+    /// before it is refused, in ms (default 5000, at most 10000).
+    pub read_park_ms: Option<u64>,
     /// A local store file. Relative paths resolve against the directory that
     /// holds `.seeds/` (project file) or the user config directory (user file).
     pub store: Option<String>,
@@ -209,6 +212,9 @@ pub struct Resolved {
     pub ca_file: Option<PathBuf>,
     pub ca_sha256: Option<String>,
     pub read_stream_config: Option<PathBuf>,
+    /// Push read freshness wait deadline in ms (`SEEDS_READ_PARK_MS`, then
+    /// user `[quipu] read_park_ms`, default 5000, at most 10000; aegis-az3d.2).
+    pub read_park_ms: u64,
     pub spec_byte_cap: usize,
     /// `[lanes]` caps: the project file's, then the user file's, per key.
     pub lane_caps: crate::model::LaneCapSettings,
@@ -259,6 +265,11 @@ pub struct Resolved {
     pub max_write_clauses: usize,
 }
 
+/// Default push read freshness wait (aegis-az3d.2): under a write burst the
+/// replica catches up in seconds, and a slower read beats a refused one.
+pub const DEFAULT_READ_PARK_MS: u64 = 5_000;
+/// Ceiling on that wait, so a misconfiguration cannot hang a caller.
+pub const MAX_READ_PARK_MS: u64 = 10_000;
 /// The default write request cap: under quipu's 64 MiB `/update` body
 /// limit, with room for a proxy's own headers.
 pub const DEFAULT_MAX_WRITE_BYTES: usize = 48 * 1024 * 1024;
@@ -336,6 +347,8 @@ pub struct Inputs {
     pub env_max_write_clauses: Option<String>,
     /// `SEEDS_MSG_TTL`.
     pub env_msg_ttl: Option<String>,
+    /// `SEEDS_READ_PARK_MS`.
+    pub env_read_park_ms: Option<String>,
     /// `--store`.
     pub flag_store: Option<String>,
     /// `--quipu`.
@@ -395,6 +408,7 @@ impl Inputs {
             env_max_write_bytes: var("SEEDS_MAX_WRITE_BYTES"),
             env_max_write_clauses: var("SEEDS_MAX_WRITE_CLAUSES"),
             env_msg_ttl: var("SEEDS_MSG_TTL"),
+            env_read_park_ms: var("SEEDS_READ_PARK_MS"),
             flag_store,
             flag_url,
             flag_graph,
@@ -708,6 +722,23 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
         "SEEDS_MAX_WRITE_CLAUSES",
         DEFAULT_MAX_WRITE_CLAUSES,
     )?;
+    let read_park_ms = match inputs
+        .env_read_park_ms
+        .as_deref()
+        .map(|v| ("SEEDS_READ_PARK_MS", v.trim().parse::<u64>().ok()))
+        .or_else(|| {
+            user.as_ref()
+                .and_then(|c| c.quipu.read_park_ms)
+                .map(|v| ("user [quipu] read_park_ms", Some(v)))
+        }) {
+        None => DEFAULT_READ_PARK_MS,
+        Some((_, Some(n))) if n <= MAX_READ_PARK_MS => n,
+        Some((origin, _)) => {
+            return Err(config_error(format!(
+                "{origin} must be a whole number of milliseconds from 0 to {MAX_READ_PARK_MS}"
+            )))
+        }
+    };
     let msg_ttl_secs = match inputs
         .env_msg_ttl
         .clone()
@@ -786,6 +817,7 @@ pub fn resolve(inputs: &Inputs) -> Result<Resolved> {
             .as_ref()
             .and_then(|u| u.quipu.read_stream_config.as_ref())
             .map(|p| expand(p, &user_base, home)),
+        read_park_ms,
         spec_byte_cap,
         lane_caps,
         due_priority_days,
@@ -1486,6 +1518,28 @@ mod tests {
         let mut i = sb.inputs();
         i.env_url = Some("https://evil.example.org".into());
         assert!(!resolve(&i).unwrap().location_from_project);
+    }
+
+    #[test]
+    fn read_park_defaults_to_five_seconds_env_beats_user_and_is_capped() {
+        let s = Sandbox::new("read-park");
+        assert_eq!(
+            resolve(&s.inputs()).unwrap().read_park_ms,
+            DEFAULT_READ_PARK_MS
+        );
+        s.user_toml("[quipu]\nread_park_ms = 2500\n");
+        assert_eq!(resolve(&s.inputs()).unwrap().read_park_ms, 2_500);
+        let mut i = s.inputs();
+        i.env_read_park_ms = Some("0".into());
+        assert_eq!(resolve(&i).unwrap().read_park_ms, 0, "0 = never wait");
+        for bad in ["10001", "soon", "-1"] {
+            i.env_read_park_ms = Some(bad.into());
+            let err = resolve(&i).unwrap_err().to_string();
+            assert!(err.contains("SEEDS_READ_PARK_MS"), "{err}");
+        }
+        s.user_toml("[quipu]\nread_park_ms = 60000\n");
+        let err = resolve(&s.inputs()).unwrap_err().to_string();
+        assert!(err.contains("read_park_ms"), "{err}");
     }
 
     #[test]

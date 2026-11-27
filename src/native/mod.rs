@@ -1692,7 +1692,10 @@ fn run_remote(cli: &Cli, cfg: &Resolved, ctx: &Ctx, url: &str) -> Result<Outcome
         ));
     }
     #[cfg(unix)]
-    if cli.at.is_none() && read_stream::eligible(&cli.command) {
+    if cli.at.is_none()
+        && read_stream::eligible(&cli.command)
+        && !read_stream::primary_scope(&cli.command)
+    {
         if let Some(path) = &cfg.read_stream_config {
             return read_stream::read(cli, cfg, ctx, path);
         }

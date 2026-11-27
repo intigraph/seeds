@@ -197,6 +197,28 @@ impl StreamBoard {
         self.applier.freshness(now_ms).staleness_bound_ms
     }
 
+    /// One line on where the replica stands, for a refusal after a wait:
+    /// the staleness bound, the last frame's age and both cursors, each
+    /// UNKNOWN when it is not known (aegis-az3d.2).
+    pub(crate) fn lag(&self, now_ms: u64) -> String {
+        let fresh = self.applier.freshness(now_ms);
+        let ms = |v: Option<u64>| v.map_or("UNKNOWN".to_owned(), |v| format!("{v} ms"));
+        let source_tx = self
+            .applier
+            .progress()
+            .map_or("UNKNOWN".to_owned(), |p| p.source_tx.to_string());
+        let local_tx = self
+            .backend
+            .store()
+            .transaction_head()
+            .map_or("UNKNOWN".to_owned(), |t| t.to_string());
+        format!(
+            "staleness bound {}, last frame {} ago, source tx {source_tx}, local tx {local_tx}",
+            ms(fresh.staleness_bound_ms),
+            ms(fresh.last_frame_age_ms),
+        )
+    }
+
     fn progress(&self, now_ms: u64, max_ms: u64) -> Result<(AppliedProgress, u64)> {
         let fresh = self.applier.freshness(now_ms);
         if !self.bootstrapped || max_ms == 0 || !fresh.within(max_ms) {

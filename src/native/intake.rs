@@ -59,11 +59,32 @@ pub(super) fn admit(
     // Hint mode also reads seeds closed inside the window, bounded in the
     // query (never every closed seed); the window is re-applied below.
     let now = hint.and_then(|h| crate::engine::epoch_of(h.now));
+    // The closed half is best effort (aegis-n0wc): over the cap, or on a
+    // failed read, it is skipped and the hint is UNKNOWN, never a refusal.
+    let mut closed_unknown = None;
     if let Some(now) = now {
         let cutoff = crate::engine::format_instant(now - crate::intake::HINT_CLOSED_DAYS * 86_400);
-        let closed = b.snapshot_closed_since(Some(&cutoff[..10]))?;
-        for (id, seed) in closed.seeds {
-            snap.seeds.entry(id).or_insert(seed);
+        match b.snapshot_closed_since_capped(Some(&cutoff[..10]), crate::intake::HINT_CLOSED_CAP) {
+            Ok(Some(closed)) => {
+                for (id, seed) in closed.seeds {
+                    snap.seeds.entry(id).or_insert(seed);
+                }
+            }
+            Ok(None) => {
+                closed_unknown = Some(format!(
+                    "{}: more than {} closed in the last {} days",
+                    crate::intake::HINT_CLOSED_PARTIAL,
+                    crate::intake::HINT_CLOSED_CAP,
+                    crate::intake::HINT_CLOSED_DAYS
+                ));
+            }
+            Err(e) => {
+                closed_unknown = Some(format!(
+                    "{}: {}",
+                    crate::intake::HINT_CLOSED_PARTIAL,
+                    e.message
+                ));
+            }
         }
     }
     let active: BTreeMap<_, _> = snap
@@ -94,6 +115,14 @@ pub(super) fn admit(
         }
         Err(e) => return Err(e),
     };
+    // A skipped closed half degrades the hint the same way (hint mode only:
+    // `closed_unknown` is set only when `now` came from a hint).
+    if let Some(closed) = closed_unknown {
+        unknown = Some(match unknown {
+            Some(resolver) => format!("{resolver}; {closed}"),
+            None => closed,
+        });
+    }
     if gate {
         candidates.extend(
             remote
@@ -437,8 +466,20 @@ mod tests {
         /// an embedding match.
         name_score: Option<f64>,
         fail: bool,
+        /// Answer the capped closed-since read as over the cap (aegis-n0wc).
+        closed_over_cap: bool,
     }
     impl Backend for Remote {
+        fn snapshot_closed_since_capped(
+            &self,
+            since: Option<&str>,
+            cap: usize,
+        ) -> Result<Option<Snapshot>> {
+            if self.closed_over_cap {
+                return Ok(None);
+            }
+            self.inner.snapshot_closed_since_capped(since, cap)
+        }
         fn ready_ids(&self, at: Option<u64>) -> Result<Vec<String>> {
             self.inner.ready_ids(at)
         }
@@ -497,6 +538,7 @@ mod tests {
             inner: b,
             candidate: vocab::item_iri(&existing.id),
             fail: false,
+            closed_over_cap: false,
         };
         let mut req = CreateReq {
             title: "Requests hang under load".into(),
@@ -660,6 +702,7 @@ mod tests {
             inner,
             candidate: vocab::item_iri(&ids[0]),
             fail: false,
+            closed_over_cap: false,
         };
         let cases = [
             CreateReq {
@@ -767,6 +810,7 @@ mod tests {
             inner,
             candidate: String::new(),
             fail: true,
+            closed_over_cap: false,
         };
         let mut req = CreateReq {
             title: "Requests hang under load".into(),
@@ -799,6 +843,68 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_corpus_over_the_cap_is_unknown_and_the_create_proceeds() {
+        // aegis-n0wc: ~380 seeds closed in 30 days were read seed by seed and
+        // cost every create ~15 s. Over the cap that half is skipped, the hint
+        // is UNKNOWN with a warning, and only --strict refuses.
+        let (inner, _) = board(&[]);
+        let remote = Remote {
+            name_score: None,
+            inner,
+            candidate: String::new(),
+            fail: false,
+            closed_over_cap: true,
+        };
+        let mut req = CreateReq {
+            title: "Requests hang under load".into(),
+            description: Some("same underlying problem".into()),
+            ..Default::default()
+        };
+        let (hints, unknown) = admit(&remote, &mut req, &[], None, Some(&mode(&[], false)))
+            .unwrap()
+            .unwrap();
+        assert!(hints.is_empty());
+        let why = unknown.as_deref().unwrap();
+        assert!(why.contains("recently closed seeds not checked"), "{why}");
+        assert!(
+            why.contains(&crate::intake::HINT_CLOSED_CAP.to_string()),
+            "{why}"
+        );
+        // The resolver ran, so the line must not claim the gate was skipped.
+        let lines = crate::intake::hint_lines(
+            &hints,
+            unknown.as_deref(),
+            crate::intake::HintContext::Create,
+        );
+        assert!(
+            lines[0].contains("PARTIAL") && lines[0].contains("refusal gate ran in full"),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("not applied"), "{lines:?}");
+        assert!(req
+            .extra
+            .contains(&(crate::intake::hint_state(), Obj::Str("unknown".into()))));
+        let mut strict = req.clone();
+        assert!(admit(&remote, &mut strict, &[], None, Some(&mode(&[], true))).is_err());
+        // Under the cap nothing changes: the same create is not UNKNOWN.
+        let (inner, _) = board(&[]);
+        let under = Remote {
+            closed_over_cap: false,
+            inner,
+            ..remote
+        };
+        let mut req = CreateReq {
+            title: "Requests hang under load".into(),
+            description: Some("same underlying problem".into()),
+            ..Default::default()
+        };
+        let (_, unknown) = admit(&under, &mut req, &[], None, Some(&mode(&[], false)))
+            .unwrap()
+            .unwrap();
+        assert!(unknown.is_none(), "{unknown:?}");
+    }
+
+    #[test]
     fn a_remote_name_match_below_the_hint_floor_is_not_a_hint() {
         let (inner, ids) = board(&["Requests hang under load"]);
         let req = || CreateReq {
@@ -811,6 +917,7 @@ mod tests {
             candidate: vocab::item_iri(&ids[0]),
             name_score: Some(0.80),
             fail: false,
+            closed_over_cap: false,
         };
         let (hints, _) = admit(&remote, &mut req(), &[], None, Some(&mode(&[], false)))
             .unwrap()

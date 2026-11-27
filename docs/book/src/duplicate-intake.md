@@ -57,6 +57,12 @@ titles, the `inbox` label), ephemeral seeds and machine records (`ops`, `ask`).
 Canonical-name matches at **0.90** (Jaro-Winkler included) and the remote
 embedding candidates become hints. Nothing is merged.
 
+The new seed must itself be eligible: an inbox pointer, an ephemeral seed or
+a machine record (`ops`, `ask`) is never hinted. It names other work by design,
+so it records no hint facts, never appears in `sd dupes`, and `--strict` does
+not refuse it for a candidate (a failed resolver still refuses under
+`--strict`, because the refusal gate is then incomplete).
+
 The create succeeds (exit 0). The top three candidates are printed on stderr
 with id, status, score and title, and recorded on the new seed:
 
@@ -71,7 +77,10 @@ warning says UNKNOWN. That is never reported as "no duplicates". In hint mode
 the failure no longer refuses `sd create`; this is the item's acceptance test
 ("a Quipu timeout leaves the hint UNKNOWN and the create proceeds with a
 warning"). The resolver call is shared, so the failure also skips the remote
-(embedding) half of the refusal gate, and the warning says so in those words.
+(embedding) half of the refusal gate. The warning names what was skipped in
+its context: on `sd create`, the hints (when the seed is eligible) and the
+embedding gate; on an `sd update` re-hint, only the hints, since the edit is
+already written and no gate applies.
 The local canonical-name gate (0.99) is unaffected. Use `--strict` to keep
 the create fail-closed. Quick and bulk creates, which have no hint mode,
 still refuse.
@@ -81,6 +90,9 @@ or after the window start), never a snapshot of every closed seed. Remote
 canonical-name candidates are floored at 0.90, the same as local ones.
 
 - `--strict` refuses (exit 5) when there is any hint or the state is UNKNOWN.
+- `--silent` drops the candidate lines, like directive hints: they are
+  still recorded and `sd dupes` lists them. An UNKNOWN warning is always
+  printed, because it means the refusal gate was incomplete.
 - `--distinct-from <id>` (repeatable; each id must exist) records `quipu:distinctFrom` on the new
   seed. That pair is never hinted again, whichever side carries it.
 - A title or description edit (`sd update`) re-runs the hints and replaces

@@ -119,6 +119,18 @@ pub fn is_inbox_pointer(seed: &Seed) -> bool {
     crate::engine::deadline_message(seed)
 }
 
+/// Whether a new seed is itself hinted (aegis-8dda.12): the same exclusions
+/// as the corpus. An inbox pointer, an ephemeral seed or a machine record
+/// (`ops`, `ask`) names other work by design, so it is never hinted.
+pub fn wants_duplicate_hint(
+    title: &str,
+    labels: &[String],
+    issue_type: Option<&str>,
+    ephemeral: bool,
+) -> bool {
+    !crate::engine::is_message_text(title, labels) && wants_directive_hint(issue_type, ephemeral)
+}
+
 /// Whether `seed` belongs to the hint corpus at `now` (epoch seconds):
 /// open-ish work, or closed within [`HINT_CLOSED_DAYS`]; never inbox
 /// pointers, ephemeral seeds or machine records (ops, ask job reports).
@@ -243,13 +255,12 @@ pub fn is_hint_predicate(p: &str) -> bool {
     p == hint_state() || p == possible_duplicate_of() || p == hint_detail()
 }
 
-/// The stderr lines for a hint result. UNKNOWN is never "no duplicates".
+/// The stderr lines for a hint result. UNKNOWN is never "no duplicates";
+/// `unknown` already says what was skipped in its context (create or edit).
 pub fn hint_lines(hints: &[Hint], unknown: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(why) = unknown {
-        lines.push(format!(
-            "duplicate hints UNKNOWN ({why}); the create was not affected, run `sd dupes` later"
-        ));
+        lines.push(format!("duplicate check UNKNOWN: {why}"));
     }
     if !hints.is_empty() {
         lines.push(

@@ -85,14 +85,11 @@ pub(super) fn admit(
     // In hint mode an unavailable resolver is UNKNOWN, never "no duplicates",
     // and the create proceeds with a warning (aegis-8dda.12); without hint
     // mode (quick and bulk creates) it still refuses.
-    let mut unknown = None;
+    let mut failure = None;
     let remote = match b.creation_resolution(&req.title, req.description.as_deref()) {
         Ok(remote) => remote.unwrap_or_default(),
         Err(e) if hint.is_some() => {
-            unknown = Some(format!(
-                "{}; the embedding refusal gate was not applied, only the local name gate",
-                e.message
-            ));
+            failure = Some(e.message);
             vec![]
         }
         Err(e) => return Err(e),
@@ -155,6 +152,16 @@ pub(super) fn admit(
     let Some(hint) = hint else {
         return Ok(None);
     };
+    // The new seed itself must be hint-eligible: an inbox pointer, an
+    // ephemeral seed or a machine record is never hinted (rehint checks the
+    // stored seed before it gets here).
+    let hinted = hint.existing.is_some()
+        || crate::intake::wants_duplicate_hint(
+            &req.title,
+            &req.labels,
+            req.issue_type.as_deref(),
+            req.ephemeral,
+        );
     let corpus: BTreeMap<_, _> = snap
         .seeds
         .values()
@@ -189,6 +196,7 @@ pub(super) fn admit(
     found.retain(|c| seen.insert(c.iri.clone()));
     let hints: Vec<Hint> = found
         .into_iter()
+        .filter(|_| hinted)
         .filter(|c| !judged.contains(&corpus[&c.iri].id))
         .take(crate::intake::HINT_TOP)
         .map(|c| {
@@ -209,14 +217,26 @@ pub(super) fn admit(
             known.get(id)?;
         }
     }
-    if hint.strict && (unknown.is_some() || !hints.is_empty()) {
-        let lines = crate::intake::hint_lines(&hints, unknown.as_deref()).join("\n");
+    if hint.strict && (failure.is_some() || !hints.is_empty()) {
+        let lines = crate::intake::hint_lines(&hints, failure.as_deref()).join("\n");
         return Err(SdError::refused(format!(
             "--strict: possible duplicate or UNKNOWN duplicate check; no create sent:\n{lines}"
         )));
     }
-    req.extra
-        .extend(crate::intake::hint_facts(&hints, unknown.as_deref()));
+    // Say what the failure skipped, in this context.
+    let unknown = failure.map(|e| match (hint.existing.is_some(), hinted) {
+        (true, _) => format!("{e}; duplicate hints were not re-checked; the edit is written"),
+        (false, true) => format!(
+            "{e}; duplicate hints were not checked and only the local name gate ran (the embedding gate did not); the create proceeds, --strict refuses instead"
+        ),
+        (false, false) => format!(
+            "{e}; only the local name gate ran (the embedding gate did not); the create proceeds, --strict refuses instead"
+        ),
+    });
+    if hinted {
+        req.extra
+            .extend(crate::intake::hint_facts(&hints, unknown.as_deref()));
+    }
     req.extra.extend(hint.distinct_from.iter().map(|id| {
         (
             crate::intake::DISTINCT_FROM.to_string(),
@@ -630,6 +650,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(hints.is_empty(), "{hints:?}");
+    }
+
+    #[test]
+    fn an_inbox_ephemeral_or_machine_create_is_never_hinted() {
+        let (mut b, _) = board(&[OLD]);
+        let creates = [
+            CreateReq {
+                title: format!("inbox: {NEW}"),
+                ..Default::default()
+            },
+            CreateReq {
+                title: format!("{NEW} (labelled inbox)"),
+                labels: vec!["inbox".into()],
+                ..Default::default()
+            },
+            CreateReq {
+                title: format!("{NEW} (ephemeral job)"),
+                ephemeral: true,
+                ..Default::default()
+            },
+            CreateReq {
+                title: format!("{NEW} (ops record)"),
+                issue_type: Some("ops".into()),
+                ..Default::default()
+            },
+        ];
+        for mut req in creates {
+            let (hints, unknown) = admit(&b, &mut req, &[], None, Some(&mode(&[], true)))
+                .unwrap()
+                .unwrap();
+            assert!(hints.is_empty() && unknown.is_none(), "{hints:?}");
+            assert!(
+                !req.extra
+                    .iter()
+                    .any(|(p, _)| crate::intake::is_hint_predicate(p)),
+                "{:?}",
+                req.extra
+            );
+            crate::engine::create(&mut b, &ctx(), &req).unwrap();
+        }
+        assert!(crate::intake::open_hint_pairs(&b.snapshot(None).unwrap()).is_empty());
     }
 
     #[test]

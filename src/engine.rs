@@ -4899,11 +4899,16 @@ fn clean_labels(labels: &[String]) -> BTreeSet<String> {
 
 /// Inbox pointers are delivery records rather than deadline-bearing work.
 pub fn deadline_message(seed: &Seed) -> bool {
-    let title = seed.title.trim_start();
+    is_message_text(&seed.title, &seed.labels)
+}
+
+/// Whether a title and labels mark a message (an inbox pointer or a delivery
+/// record) rather than work: an `inbox:`/`mail:` title or the `inbox` label.
+pub fn is_message_text(title: &str, labels: &[String]) -> bool {
+    let title = title.trim_start();
     title.starts_with("inbox:")
         || title.starts_with("mail:")
-        || seed
-            .labels
+        || labels
             .iter()
             .any(|label| label.eq_ignore_ascii_case("inbox"))
 }

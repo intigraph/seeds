@@ -2918,7 +2918,11 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             // quipu's /update returns no transaction id, aegis-xajsgn).
             let tx = (!a.dry_run && !existed && tx != 0).then_some(tx);
             let mut hints = match (&dupes, existed) {
-                (Some((found, unknown)), false) => crate::intake::hint_lines(found, unknown.as_deref()),
+                // --silent drops the candidate lines (they are recorded and
+                // listed by `sd dupes`), never an UNKNOWN check.
+                (Some((found, unknown)), false) => {
+                    crate::intake::hint_lines(if a.silent { &[] } else { found.as_slice() }, unknown.as_deref())
+                }
                 _ => vec![],
             };
             if !(existed || a.silent) { hints.extend(intake::directive_hint(b, &req)); }
@@ -3545,7 +3549,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 for s in &seeds {
                     match intake::rehint(b, ctx, s) {
                         Ok(lines) => warnings.extend(lines.into_iter().map(|l| format!("{}: {l}", s.id))),
-                        Err(e) => warnings.push(format!("{}: duplicate hints UNKNOWN ({}); the update was not affected", s.id, e.message)),
+                        Err(e) => warnings.push(format!("{}: duplicate check UNKNOWN: {}; the edit is written", s.id, e.message)),
                     }
                 }
             }

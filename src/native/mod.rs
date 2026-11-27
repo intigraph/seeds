@@ -2893,6 +2893,13 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let mut preview = req.clone();
             preview.dry_run = true;
             let validated = engine::create_outcome(b, ctx, &preview)?;
+            // Started before the duplicate gate so its /hybrid_search runs
+            // alongside /resolve (aegis-n0wc); collected after the create.
+            let directive = if validated.existed || a.silent {
+                intake::DirectiveHint::Skip
+            } else {
+                intake::start_directive_hint(b, &req)
+            };
             let mut dupes = None;
             if !validated.existed {
                 let mode = intake::HintMode {
@@ -2928,7 +2935,8 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 (Some((found, unknown)), false) => crate::intake::hint_lines(found, unknown.as_deref(), crate::intake::HintContext::Create),
                 _ => vec![],
             };
-            if !(existed || a.silent) { hints.extend(intake::directive_hint(b, &req)); }
+            let directive = intake::finish_directive_hint(b, directive);
+            if !(existed || a.silent) { hints.extend(directive); }
             Ok(ok(json, output::with_tx(seed.to_json(), tx), text, hints))
         }
         Command::Q(a) => {
@@ -2946,10 +2954,11 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let mut preview = req.clone();
             preview.dry_run = true;
             engine::create_outcome(b, ctx, &preview)?;
+            let directive = intake::start_directive_hint(b, &req);
             intake::check(b, &mut req, &[], None)?;
             let (seed, tx) = engine::create(b, ctx, &req)?;
             let value = serde_json::json!({"id": seed.id, "title": seed.title, "tx": tx});
-            let hints = intake::directive_hint(b, &req);
+            let hints = intake::finish_directive_hint(b, directive);
             Ok(ok(json, value, seed.id.clone(), hints))
         }
         Command::Show(a) => {

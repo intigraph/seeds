@@ -152,6 +152,16 @@ const SUBJECTS_PER_READ: usize = 100;
 // id-only discovery queries, which can still use 100 bound branches.
 const FACT_SUBJECTS_PER_READ: usize = 10;
 
+/// Subjects per facts read when a whole set is read in bulk
+/// ([`RemoteBackend::read_all`], e.g. the active snapshot every create's
+/// duplicate gate reads). Each read is one client round trip; the server
+/// cost barely grows with the set (aegis-n0wc, 2026-11-27, kota: 10
+/// subjects 0.02-0.03 s, 100 subjects 0.055 s / 2339 rows, 176 subjects
+/// 0.068 s / 4113 rows), while at 10 per read a ~470-seed active set took 47
+/// sequential reads, 3.9 s of an 11.9 s `sd create --dry-run`. A read quipu
+/// truncates or times out is still halved ([`RemoteBackend::read_subjects`]).
+const BULK_FACT_SUBJECTS_PER_READ: usize = 100;
+
 /// Subjects per range of a subject listing: under quipu's 10,000-row cap, so a
 /// full page is never also a truncated one.
 const SUBJECT_PAGE: usize = 5000;
@@ -372,6 +382,35 @@ pub struct RemoteBackend {
 /// Every request seeds sends to quipu names its client and carries the
 /// process's structured write provenance (`X-Quipu-Agent`, `-Harness`,
 /// `-Model`, `-Session`, `-Host`; see [`super::provenance`]).
+/// The `/hybrid_search` body for [`RemoteBackend::directive_hints`].
+fn directive_hints_input(text: &str, limit: usize) -> String {
+    let sparql = format!(
+        "SELECT ?s WHERE {{ ?s a ?t . FILTER(?t = <{}> && STRSTARTS(STR(?s), \"{}\")) }}",
+        vocab::aegis("Directive"),
+        vocab::aegis(crate::intake::OPERATOR_DIRECTIVE_PREFIX),
+    );
+    serde_json::json!({"query": text, "sparql": sparql, "limit": limit}).to_string()
+}
+
+/// (entity IRI, score) pairs from a `/hybrid_search` answer.
+fn parse_directive_hints(body: &str) -> Result<Vec<(String, f64)>> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
+    let results = value
+        .get("results")
+        .and_then(|r| r.as_array())
+        .ok_or_else(|| SdError::failed("directive hints: no results array"))?;
+    Ok(results
+        .iter()
+        .filter_map(|r| {
+            Some((
+                r.get("entity")?.as_str()?.to_string(),
+                r.get("score")?.as_f64()?,
+            ))
+        })
+        .collect())
+}
+
 fn quipu_request(req: ureq::Request) -> ureq::Request {
     super::provenance::apply(req)
 }
@@ -1276,7 +1315,7 @@ impl RemoteBackend {
     }
 
     /// The facts of every subject in `subjects`, in `graph`, as of `at`, read
-    /// [`SUBJECTS_PER_READ`] at a time.
+    /// [`BULK_FACT_SUBJECTS_PER_READ`] at a time.
     fn read_all(
         &self,
         graph: &str,
@@ -1285,7 +1324,7 @@ impl RemoteBackend {
         out: &mut Facts,
     ) -> Result<()> {
         let all: Vec<&String> = subjects.iter().collect();
-        for chunk in all.chunks(FACT_SUBJECTS_PER_READ) {
+        for chunk in all.chunks(BULK_FACT_SUBJECTS_PER_READ) {
             self.read_subjects(graph, chunk, at, out)?;
         }
         Ok(())
@@ -2717,35 +2756,51 @@ impl Backend for RemoteBackend {
     /// a:Directive (no RDFS subclass expansion, which would add rules and
     /// alert rules) whose name is an operator directive's (stiwi-...).
     fn directive_hints(&self, text: &str, limit: usize) -> Result<Option<Vec<(String, f64)>>> {
-        let sparql = format!(
-            "SELECT ?s WHERE {{ ?s a ?t . FILTER(?t = <{}> && STRSTARTS(STR(?s), \"{}\")) }}",
-            vocab::aegis("Directive"),
-            vocab::aegis(crate::intake::OPERATOR_DIRECTIVE_PREFIX),
-        );
-        let input = serde_json::json!({"query": text, "sparql": sparql, "limit": limit});
         let body = self.post(
             "/hybrid_search",
             "application/json",
-            &input.to_string(),
+            &directive_hints_input(text, limit),
             false,
         )?;
-        let value: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
-        let results = value
-            .get("results")
-            .and_then(|r| r.as_array())
-            .ok_or_else(|| SdError::failed("directive hints: no results array"))?;
-        Ok(Some(
-            results
-                .iter()
-                .filter_map(|r| {
-                    Some((
-                        r.get("entity")?.as_str()?.to_string(),
-                        r.get("score")?.as_f64()?,
-                    ))
-                })
-                .collect(),
-        ))
+        parse_directive_hints(&body).map(Some)
+    }
+
+    /// The same `/hybrid_search` request, signed or labelled here exactly as
+    /// [`RemoteBackend::send`] would, then sent from its own thread. Only the
+    /// owned request crosses the thread; this backend stays on the caller's.
+    /// Any failure (a refusal, transport error or bad body) is an error the
+    /// caller reports as UNKNOWN; hints never block a create.
+    fn spawn_directive_hints(
+        &self,
+        text: &str,
+        limit: usize,
+    ) -> Option<crate::backend::DirectiveHintsJob> {
+        let path = "/hybrid_search";
+        let content_type = "application/json";
+        let body = directive_hints_input(text, limit);
+        let request = if self.signer.is_some() {
+            match self.signed_request("POST", path, content_type, body.as_bytes()) {
+                Ok(request) => request,
+                Err(e) => return Some(std::thread::spawn(move || Err(e))),
+            }
+        } else {
+            quipu_request(self.agent.post(&format!("{}{path}", self.base)))
+        };
+        let request = request
+            .set("Content-Type", content_type)
+            .set("Accept", "application/sparql-results+json");
+        Some(std::thread::spawn(move || {
+            let response = request.send_string(&body).map_err(|e| match e {
+                ureq::Error::Status(code, _) => {
+                    SdError::failed(format!("directive hints: HTTP {code}"))
+                }
+                other => SdError::failed(format!("directive hints: {other}")),
+            })?;
+            let text = response
+                .into_string()
+                .map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
+            parse_directive_hints(&text).map(Some)
+        }))
     }
 
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {

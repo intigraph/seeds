@@ -84,6 +84,11 @@ pub const HINT_NAME_THRESHOLD: f64 = 0.90;
 pub const HINT_TOP: usize = 3;
 /// Closed seeds stay hint candidates for this many days after closing.
 pub const HINT_CLOSED_DAYS: i64 = 30;
+/// At most this many recently closed seeds are read as hint candidates
+/// (aegis-n0wc). A remote board reads them seed by seed, and ~380 closed in
+/// a 30-day window cost every create ~15 s; above the cap that half of the
+/// corpus is skipped and the hint is recorded UNKNOWN. The create proceeds.
+pub const HINT_CLOSED_CAP: usize = 40;
 /// Quipu's durable "these are not the same" edge; quipu's resolver honours
 /// it in both directions, and so do seeds' hints.
 pub const DISTINCT_FROM: &str = "https://quipu.dev/ontology/distinctFrom";

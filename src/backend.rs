@@ -567,6 +567,19 @@ pub trait Backend {
         self.snapshot(None)
     }
 
+    /// [`Backend::snapshot_closed_since`] for a best-effort reader such as
+    /// duplicate hints (aegis-n0wc): `None` means the window held more than
+    /// `cap` closed seeds and none was read, so the caller must treat that
+    /// half as UNKNOWN. Backends that answer from a whole local snapshot are
+    /// cheap at any size and never skip.
+    fn snapshot_closed_since_capped(
+        &self,
+        since: Option<&str>,
+        _cap: usize,
+    ) -> Result<Option<Snapshot>> {
+        self.snapshot_closed_since(since).map(Some)
+    }
+
     /// The current state of every seed that declares a dependency of any type
     /// (blocks, parent-child, related, discovered-from) on one of `ids`, so
     /// [`Snapshot::dependents`] answers for those ids from the result. A

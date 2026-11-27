@@ -1112,6 +1112,47 @@ impl RemoteBackend {
         Ok(Snapshot::from_graphs(&main, &eph))
     }
 
+    /// The ids of the work items closed at or after `since`, in both graphs;
+    /// `None` when a discovery read is truncated or at the row cap (the
+    /// caller then falls back, or treats the read as unbounded).
+    fn closed_since_ids(&self, since: Option<&str>) -> Result<Option<BTreeSet<String>>> {
+        let time = since.map_or_else(String::new, |since| {
+            format!("FILTER(STR(?closed) >= \"{}\") ", escape_literal(since))
+        });
+        let mut ids = BTreeSet::new();
+        for graph in self.both_graphs() {
+            let sparql = format!(
+                "SELECT ?id WHERE {{ GRAPH <{graph}> {{ ?s <{}> \"closed\" ; <{}> ?closed ; <{}> ?id ; a <{}> . {time}}} }} LIMIT {ROW_CAP}",
+                term::status(),
+                term::closed_at(),
+                term::identifier(),
+                term::work_item()
+            );
+            let (rows, truncated) = self.select_marked(&sparql, None)?;
+            if truncated || rows.len() >= ROW_CAP {
+                return Ok(None);
+            }
+            ids.extend(rows.into_iter().filter_map(|mut r| match r.remove("id") {
+                Some(Obj::Str(id)) => Some(id),
+                _ => None,
+            }));
+        }
+        Ok(Some(ids))
+    }
+
+    /// The facts of the seeds with these ids (alias and ephemeral subjects
+    /// included), no comments.
+    fn snapshot_of_ids(&self, ids: &BTreeSet<String>) -> Result<Snapshot> {
+        let all: Vec<&String> = ids.iter().collect();
+        let mut subjects = BTreeSet::new();
+        for graph in self.both_graphs() {
+            for chunk in all.chunks(SUBJECTS_PER_READ) {
+                self.subjects_with_ids(&graph, chunk, &mut subjects)?;
+            }
+        }
+        self.snapshot_of(&subjects)
+    }
+
     /// The subjects of `graph` holding a fact `?s <p> <o>` for any `p` in
     /// `predicates` and `o` in `objects`: one bound pattern per pair (an
     /// index lookup each), joined by `UNION`, at most [`SUBJECTS_PER_READ`]
@@ -2734,35 +2775,26 @@ impl Backend for RemoteBackend {
     /// The engine re-applies status and date, so a superset is harmless. A
     /// discovery answer at the row cap falls back to the whole snapshot.
     fn snapshot_closed_since(&self, since: Option<&str>) -> Result<Snapshot> {
-        let time = since.map_or_else(String::new, |since| {
-            format!("FILTER(STR(?closed) >= \"{}\") ", escape_literal(since))
-        });
-        let mut ids = BTreeSet::new();
-        for graph in self.both_graphs() {
-            let sparql = format!(
-                "SELECT ?id WHERE {{ GRAPH <{graph}> {{ ?s <{}> \"closed\" ; <{}> ?closed ; <{}> ?id ; a <{}> . {time}}} }} LIMIT {ROW_CAP}",
-                term::status(),
-                term::closed_at(),
-                term::identifier(),
-                term::work_item()
-            );
-            let (rows, truncated) = self.select_marked(&sparql, None)?;
-            if truncated || rows.len() >= ROW_CAP {
-                return self.snapshot(None);
-            }
-            ids.extend(rows.into_iter().filter_map(|mut r| match r.remove("id") {
-                Some(Obj::Str(id)) => Some(id),
-                _ => None,
-            }));
+        match self.closed_since_ids(since)? {
+            Some(ids) => self.snapshot_of_ids(&ids),
+            None => self.snapshot(None),
         }
-        let all: Vec<&String> = ids.iter().collect();
-        let mut subjects = BTreeSet::new();
-        for graph in self.both_graphs() {
-            for chunk in all.chunks(SUBJECTS_PER_READ) {
-                self.subjects_with_ids(&graph, chunk, &mut subjects)?;
-            }
+    }
+
+    /// A best-effort reader's bounded closed-since read (aegis-n0wc): the
+    /// facts are read seed by seed, so a 30-day window of a few hundred
+    /// closed seeds cost every `sd create` ~15 s. Over `cap` ids, or when
+    /// discovery itself is truncated, nothing is hydrated and the answer is
+    /// `None`; the caller records that half as UNKNOWN.
+    fn snapshot_closed_since_capped(
+        &self,
+        since: Option<&str>,
+        cap: usize,
+    ) -> Result<Option<Snapshot>> {
+        match self.closed_since_ids(since)? {
+            Some(ids) if ids.len() <= cap => self.snapshot_of_ids(&ids).map(Some),
+            _ => Ok(None),
         }
-        self.snapshot_of(&subjects)
     }
 
     /// The seeds with a dependency edge of any type on one of `ids`: bound

@@ -242,6 +242,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EpicCommand,
     },
+    /// List open duplicate hints for grooming, or resolve one
+    Dupes {
+        #[command(subcommand)]
+        command: Option<DupesCommand>,
+    },
     /// Manage dependencies
     Dep {
         #[command(subcommand)]
@@ -600,6 +605,13 @@ pub struct CreateArgs {
     /// Why a new seed is distinct; recorded atomically with the candidate IDs
     #[arg(long, requires = "new_despite")]
     pub because: Option<String>,
+    /// Refuse the create when a possible duplicate is found or the
+    /// duplicate check is UNKNOWN (default: warn, record the hint, create)
+    #[arg(long)]
+    pub strict: bool,
+    /// Record quipu:distinctFrom this seed, so the pair never re-hints (repeatable)
+    #[arg(long = "distinct-from")]
+    pub distinct_from: Vec<String>,
 
     /// Create every `## Title` item of a markdown file, in one transaction
     /// (br's bulk import; sections: Description, Notes, Design, Acceptance
@@ -1351,7 +1363,25 @@ pub enum EpicCommand {
     },
 }
 
-/// `sd dep ...`.
+/// `sd dupes ...`.
+#[derive(Debug, Subcommand)]
+pub enum DupesCommand {
+    /// Resolve a hint: close <id> as a duplicate of <of>, or record them distinct
+    Resolve {
+        /// The hinted seed
+        id: String,
+        /// The seed it may duplicate
+        of: String,
+        /// Close <id> (outcome superseded) as a duplicate of <of>
+        #[arg(long, conflicts_with = "distinct")]
+        duplicate: bool,
+        /// Record quipu:distinctFrom between them; the pair never re-hints
+        #[arg(long)]
+        distinct: bool,
+    },
+}
+
+/// `sd dep` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum DepCommand {
     /// Add a dependency: <issue> waits for <depends-on>; for epic children use create --parent
@@ -1690,6 +1720,7 @@ impl Command {
             | Command::Defer(_)
             | Command::Undefer(_) => true,
             Command::Dep { command } => !matches!(command, DepCommand::List { .. }),
+            Command::Dupes { command } => command.is_some(),
             Command::Blockers { command } => matches!(
                 command,
                 BlockersCommand::Ack { .. }
@@ -1801,6 +1832,10 @@ impl Command {
             Command::Search(_) => "search",
             Command::Count(_) => "count",
             Command::Update(_) => "update",
+            Command::Dupes { command } => match command {
+                None => "dupes",
+                Some(DupesCommand::Resolve { .. }) => "dupes resolve",
+            },
             Command::Close(_) => "close",
             Command::Reopen(_) => "reopen",
             Command::Delete(_) => "delete",
@@ -1940,6 +1975,12 @@ mod tests {
         (&["defer", "s-1", "s-2", "--until", "+1d"], "defer", true),
         (&["undefer", "s-1"], "undefer", true),
         (&["dep", "add", "s-1", "s-2"], "dep add", true),
+        (&["dupes"], "dupes", false),
+        (
+            &["dupes", "resolve", "s-1", "s-2", "--distinct"],
+            "dupes resolve",
+            true,
+        ),
         (&["epic", "status", "--eligible-only"], "epic status", false),
         (&["epic", "close-eligible"], "epic close-eligible", true),
         (

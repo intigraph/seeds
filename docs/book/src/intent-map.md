@@ -80,3 +80,11 @@ The CLI verbs cover what agents type directly: `create`, `show`, `list`,
 A new item should not fragment existing work. [Duplicate intake](duplicate-intake.md)
 reuses Quipu's entity resolver before `create`, with an explicit, recorded distinct
 work override instead of an automatic merge or a second ticket by default.
+
+Below that gate the intent is "tell me this might already exist, and let a
+groomer settle it later". On a graph store that is a typed hint edge
+(`seeds:possibleDuplicateOf`) recorded with the seed, a durable
+`quipu:distinctFrom` edge when someone rules the pair distinct, and
+`sd dupes` as the listing of hint edges with no `distinctFrom` on either side.
+There is no merge: `sd dupes resolve --duplicate` is an ordinary close with
+outcome `superseded`. See [hint mode](duplicate-intake.md#hint-mode).

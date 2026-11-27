@@ -80,7 +80,8 @@ A missing, stale, disconnected, mismatched or corrupt projection is reported as
 ordinary missing-seed exit code 3 and JSON error; lack of a valid projection
 proof still refuses UNKNOWN rather than proving absence. The local client charges IPC elapsed time
 against the proof budget. Configured head reads do not silently fall back to
-primary polling. Other board bindings refuse rather than reuse this projection.
+primary polling; the one exception is explicit and documented below
+(closed-inclusive lists go to the primary). Other board bindings refuse rather than reuse this projection.
 
 ### Waiting for freshness
 
@@ -91,7 +92,11 @@ wait is bounded: `SEEDS_READ_PARK_MS`, then user `[quipu] read_park_ms`,
 default 5000 ms, at most 10000 ms, `0` for no wait. A parked read is
 re-checked when the replica applies a frame, when the stream drops, and at
 its deadline, and the reader keeps issuing rate-limited challenges while
-reads wait. At the deadline the read is answered as before and refuses if it
+reads wait. Renders run on the loop that applies frames, so a release is
+bounded: one pass answers at most 8 parked reads or 250 ms of render time
+(at least one read), oldest first, then goes back to applying frames before
+the next batch. Up to 64 reads park at once; past that a read is answered
+without waiting. At the deadline the read is answered as before and refuses if it
 is still not fresh, naming the wait, the staleness bound, the last frame's age
 and the source and local cursors. Time spent parked is not staleness of the
 cut answered after it: the reader reports how long it held the request, and

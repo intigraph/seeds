@@ -54,6 +54,13 @@ const PROOF_DELIVERY_MS: u64 = 800;
 /// Reads parked at once; past this a read is answered without waiting. At the
 /// observed 4.5 reads/s a 5 s park holds ~23, so this leaves headroom.
 const MAX_PARKED: usize = 64;
+/// Parked reads answered in one pass before the loop goes back to applying
+/// frames. Renders run on the apply loop, so releasing all 64 at once could
+/// stall apply for up to 64 query deadlines (aegis-az3d.2).
+const RELEASE_PER_PASS: usize = 8;
+/// Render time one pass may spend on released reads; past it the rest wait
+/// for the next pass, after its frames. At least one read goes per pass.
+const RELEASE_BUDGET: Duration = Duration::from_millis(QUERY_DEADLINE_MS / 4);
 /// How long the client waits for its reply: the park deadline, then a render
 /// and the IPC write within the ordinary IO timeout.
 fn reply_timeout(park_ms: u64) -> Duration {
@@ -884,8 +891,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
     });
     let mut clock = Clock::new();
     let mut live = Liveness::new();
-    // (stream, request, accepted at, deadline)
-    let mut parked: Vec<(UnixStream, Request, u64, u64)> = Vec::new();
+    let mut parked: ParkQueue<(UnixStream, Request)> = ParkQueue::default();
     let mut parked_total: u64 = 0;
     let mut stats_at: u64 = 0;
     loop {
@@ -952,24 +958,31 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         // deadline are answered as before: fail-closed if still not fresh.
         if !parked.is_empty() {
             let headroom = has_headroom(&board, now);
-            let mut i = 0;
-            while i < parked.len() {
-                if ((applied || dropped) && headroom) || now >= parked[i].3 || !live.connected() {
-                    let (mut stream, request, since, _) = parked.swap_remove(i);
-                    let waited = now.saturating_sub(since);
-                    answer(
-                        &mut stream,
-                        request,
-                        &mut board,
-                        &c,
-                        cfg,
-                        &mut clock,
-                        since,
-                        waited,
-                    );
-                } else {
-                    i += 1;
-                }
+            parked.observe(applied || dropped, headroom);
+            // Bounded: at most RELEASE_PER_PASS reads or RELEASE_BUDGET of
+            // render time, then back to applying frames. The rest stay
+            // released and go next pass (aegis-az3d.2).
+            let started = Instant::now();
+            let mut released = 0;
+            while released < RELEASE_PER_PASS
+                && (released == 0 || started.elapsed() < RELEASE_BUDGET)
+            {
+                let Some(((mut stream, request), since)) = parked.next(now, live.connected())
+                else {
+                    break;
+                };
+                released += 1;
+                let waited = now.saturating_sub(since);
+                answer(
+                    &mut stream,
+                    request,
+                    &mut board,
+                    &c,
+                    cfg,
+                    &mut clock,
+                    since,
+                    waited,
+                );
             }
             // A long park outlives one proof: keep asking, inside the
             // Liveness rate limit, so a proof delayed behind a write burst is
@@ -1021,7 +1034,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         // (rate-limited inside Liveness).
                         let mut wait = false;
                         if !has_headroom(&board, accepted)
-                            && parked.len() < MAX_PARKED
+                            && !parked.full()
                             && park_ms(&request, cfg) > 0
                         {
                             if live.in_flight(accepted) {
@@ -1046,7 +1059,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                         if wait {
                             parked_total += 1;
                             let park = park_ms(&request, cfg);
-                            parked.push((stream, request, accepted, accepted.saturating_add(park)));
+                            parked.park((stream, request), accepted, accepted.saturating_add(park));
                         } else {
                             answer(
                                 &mut stream,
@@ -1095,6 +1108,62 @@ fn memory_line(status: &str) -> String {
         field("VmData"),
         field("VmSwap")
     )
+}
+
+/// Reads waiting for freshness, and when each may go. Kept apart from the
+/// sockets so the loop's park and release decisions are testable.
+///
+/// A frame applied (or the stream dropping) while the board has headroom
+/// releases every parked read, but the loop takes them a few per pass
+/// ([`RELEASE_PER_PASS`], [`RELEASE_BUDGET`]) and applies frames between
+/// batches, so a release never stalls apply behind all of them. A released
+/// read stays released while headroom holds; if headroom is lost first, it
+/// waits for the next frame or its deadline. A read past its deadline, or any
+/// read while the stream is down, goes regardless. Oldest first.
+struct ParkQueue<T> {
+    // (item, accepted at, deadline)
+    reads: std::collections::VecDeque<(T, u64, u64)>,
+    released: bool,
+}
+impl<T> Default for ParkQueue<T> {
+    fn default() -> Self {
+        Self {
+            reads: std::collections::VecDeque::new(),
+            released: false,
+        }
+    }
+}
+impl<T> ParkQueue<T> {
+    fn is_empty(&self) -> bool {
+        self.reads.is_empty()
+    }
+    fn full(&self) -> bool {
+        self.reads.len() >= MAX_PARKED
+    }
+    fn park(&mut self, item: T, since: u64, deadline: u64) {
+        self.reads.push_back((item, since, deadline));
+    }
+    /// Once per pass, after frames: did the replica move, and is it fresh.
+    fn observe(&mut self, moved: bool, headroom: bool) {
+        if !headroom {
+            self.released = false;
+        } else if moved {
+            self.released = true;
+        }
+    }
+    /// The next read to answer now, with when it was accepted.
+    fn next(&mut self, now: u64, connected: bool) -> Option<(T, u64)> {
+        let i = if self.released || !connected {
+            0
+        } else {
+            self.reads.iter().position(|r| now >= r.2)?
+        };
+        let (item, since, _) = self.reads.remove(i)?;
+        if self.reads.is_empty() {
+            self.released = false;
+        }
+        Some((item, since))
+    }
 }
 
 /// The board can answer a read now without it running out of freshness.

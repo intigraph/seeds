@@ -1141,3 +1141,85 @@ fn unparked_reply_decodes_with_an_older_client_and_parked_hold_starts_at_accept(
     assert!(held >= 30, "held {held} ms");
     assert!(held <= elapsed + 2, "held {held} ms past {elapsed} ms");
 }
+
+/// One loop pass as `run` does it: apply a frame, observe, then release at
+/// most `RELEASE_PER_PASS` reads. Returns the reads released per pass.
+fn passes(q: &mut ParkQueue<u32>, frames: &mut u32, mut now: u64, connected: bool) -> Vec<usize> {
+    let mut out = Vec::new();
+    while !q.is_empty() && out.len() < 100 {
+        *frames += 1; // the pass applies its frames before any render
+        q.observe(true, true);
+        let mut n = 0;
+        while n < RELEASE_PER_PASS {
+            if q.next(now, connected).is_none() {
+                break;
+            }
+            n += 1;
+        }
+        out.push(n);
+        now += 10;
+    }
+    out
+}
+
+#[test]
+fn a_release_of_all_parked_reads_is_bounded_per_pass_and_apply_runs_between() {
+    let mut q = ParkQueue::default();
+    for i in 0..MAX_PARKED as u32 {
+        assert!(!q.full());
+        q.park(i, 0, 5_000);
+    }
+    assert!(q.full());
+    let mut frames = 0;
+    let per_pass = passes(&mut q, &mut frames, 100, true);
+    assert!(
+        per_pass.iter().all(|&n| n <= RELEASE_PER_PASS),
+        "{per_pass:?}"
+    );
+    assert_eq!(per_pass.iter().sum::<usize>(), MAX_PARKED);
+    assert_eq!(per_pass.len(), MAX_PARKED.div_ceil(RELEASE_PER_PASS));
+    // A frame was applied before every batch: apply kept pace with release.
+    assert_eq!(frames as usize, per_pass.len());
+}
+
+#[test]
+fn released_reads_keep_going_without_a_new_frame_until_headroom_is_lost() {
+    let mut q = ParkQueue::default();
+    for i in 0..20u32 {
+        q.park(i, 0, 5_000);
+    }
+    q.observe(true, true);
+    assert_eq!(q.next(10, true).map(|r| r.0), Some(0)); // oldest first
+    q.observe(false, true); // no frame this pass, still fresh
+    assert_eq!(q.next(20, true).map(|r| r.0), Some(1));
+    q.observe(false, false); // headroom gone: wait again
+    assert!(q.next(30, true).is_none());
+    q.observe(false, true); // fresh again but nothing moved: still waiting
+    assert!(q.next(40, true).is_none());
+    q.observe(true, true);
+    assert_eq!(q.next(50, true).map(|r| r.0), Some(2));
+}
+
+#[test]
+fn a_parked_read_goes_at_its_deadline_or_when_the_stream_drops() {
+    let mut q = ParkQueue::default();
+    q.park(1u32, 0, 5_000);
+    q.park(2u32, 100, 300);
+    q.observe(false, false);
+    assert!(q.next(299, true).is_none());
+    assert_eq!(q.next(300, true), Some((2, 100))); // deadline, out of order
+    assert!(q.next(301, true).is_none());
+    assert_eq!(q.next(302, false), Some((1, 0))); // stream down
+    assert!(q.is_empty());
+}
+
+#[test]
+fn a_zero_park_never_waits() {
+    let f = Fixture::new();
+    let mut r = f.request(&["sd", "list"]);
+    let mut off = f.cfg.clone();
+    off.read_park_ms = 0;
+    assert_eq!(park_ms(&r, &off), 0);
+    r.park_ms = Some(0);
+    assert_eq!(park_ms(&r, &f.cfg), 0);
+}

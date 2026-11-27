@@ -234,6 +234,10 @@ impl WriteBatch {
     }
 }
 
+/// A directive-hint lookup running on its own thread
+/// ([`Backend::spawn_directive_hints`]).
+pub type DirectiveHintsJob = std::thread::JoinHandle<Result<Option<Vec<(String, f64)>>>>;
+
 /// Storage for one project.
 pub trait Backend {
     /// Remote creation resolution, including configured embeddings. Local
@@ -251,6 +255,14 @@ pub trait Backend {
     /// and return None. Advisory only: callers never block a create on it.
     fn directive_hints(&self, _text: &str, _limit: usize) -> Result<Option<Vec<(String, f64)>>> {
         Ok(None)
+    }
+
+    /// [`Backend::directive_hints`] started on its own thread, so a create
+    /// can run it alongside the duplicate gate's `/resolve` (aegis-n0wc).
+    /// `None`: this backend has no concurrent form, and the caller asks
+    /// [`Backend::directive_hints`] in line instead.
+    fn spawn_directive_hints(&self, _text: &str, _limit: usize) -> Option<DirectiveHintsJob> {
+        None
     }
 
     /// IDs carrying governed rescope metadata. Remote readers must override

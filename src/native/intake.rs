@@ -398,20 +398,46 @@ pub(super) fn dupes(
 
 /// Advisory directive hint for a new seed that names none (aegis-8dda.9,
 /// Stiwi 2026-11-22/24). Returns stderr warnings only; it never refuses.
-pub(super) fn directive_hint(b: &dyn Backend, req: &CreateReq) -> Vec<String> {
+/// A directive hint asked before the create's other reads, so its
+/// `/hybrid_search` runs alongside the duplicate gate (aegis-n0wc).
+pub(super) enum DirectiveHint {
+    /// The seed needs no hint (machine record, ephemeral, names a directive).
+    Skip,
+    /// The lookup is running on its own thread.
+    Started(crate::backend::DirectiveHintsJob),
+    /// The backend has no concurrent form; ask in line when finishing.
+    Later(String),
+}
+
+pub(super) fn start_directive_hint(b: &dyn Backend, req: &CreateReq) -> DirectiveHint {
     if !crate::intake::wants_directive_hint(req.issue_type.as_deref(), req.ephemeral)
         || crate::intake::names_directive(&req.title, req.description.as_deref())
     {
-        return vec![];
+        return DirectiveHint::Skip;
     }
     let text = format!(
         "{}\n{}",
         req.title,
         req.description.as_deref().unwrap_or_default()
     );
-    crate::intake::directive_hint_lines(
-        b.directive_hints(text.trim(), crate::intake::DIRECTIVE_HINTS),
-    )
+    let text = text.trim().to_string();
+    match b.spawn_directive_hints(&text, crate::intake::DIRECTIVE_HINTS) {
+        Some(job) => DirectiveHint::Started(job),
+        None => DirectiveHint::Later(text),
+    }
+}
+
+/// The stderr lines of a started hint. A lookup that failed or panicked is
+/// UNKNOWN and never affects the create.
+pub(super) fn finish_directive_hint(b: &dyn Backend, pending: DirectiveHint) -> Vec<String> {
+    let hints = match pending {
+        DirectiveHint::Skip => return vec![],
+        DirectiveHint::Started(job) => job
+            .join()
+            .unwrap_or_else(|_| Err(SdError::failed("directive hints: lookup thread panicked"))),
+        DirectiveHint::Later(text) => b.directive_hints(&text, crate::intake::DIRECTIVE_HINTS),
+    };
+    crate::intake::directive_hint_lines(hints)
 }
 
 /// Validate coverage before filtering global matches to active project seeds.
@@ -440,6 +466,33 @@ pub(super) fn decode_resolution(body: &str) -> Result<Vec<quipu::resolution::Ent
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_failed_or_panicked_directive_hint_thread_is_unknown_never_an_error() {
+        use super::*;
+        let b =
+            crate::quipu_backend::QuipuBackend::in_memory("https://seeds.local/project/fixture")
+                .unwrap();
+        let failed = DirectiveHint::Started(std::thread::spawn(|| {
+            Err(SdError::failed("directive hints: HTTP 503"))
+        }));
+        let lines = finish_directive_hint(&b, failed);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("directive hints UNKNOWN"), "{lines:?}");
+        assert!(lines[0].contains("HTTP 503"), "{lines:?}");
+        let panicked = DirectiveHint::Started(std::thread::spawn(|| panic!("boom")));
+        let lines = finish_directive_hint(&b, panicked);
+        assert!(lines[0].contains("lookup thread panicked"), "{lines:?}");
+        let found = DirectiveHint::Started(std::thread::spawn(|| {
+            Ok(Some(vec![("https://x/stiwi-d".to_string(), 0.5)]))
+        }));
+        let lines = finish_directive_hint(&b, found);
+        assert!(
+            lines.iter().any(|l| l.contains("stiwi-d (0.50)")),
+            "{lines:?}"
+        );
+        assert!(finish_directive_hint(&b, DirectiveHint::Skip).is_empty());
+    }
     use super::*;
     use crate::backend::{Ctx, WriteBatch};
     use crate::model::Snapshot;

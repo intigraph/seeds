@@ -382,6 +382,35 @@ pub struct RemoteBackend {
 /// Every request seeds sends to quipu names its client and carries the
 /// process's structured write provenance (`X-Quipu-Agent`, `-Harness`,
 /// `-Model`, `-Session`, `-Host`; see [`super::provenance`]).
+/// The `/hybrid_search` body for [`RemoteBackend::directive_hints`].
+fn directive_hints_input(text: &str, limit: usize) -> String {
+    let sparql = format!(
+        "SELECT ?s WHERE {{ ?s a ?t . FILTER(?t = <{}> && STRSTARTS(STR(?s), \"{}\")) }}",
+        vocab::aegis("Directive"),
+        vocab::aegis(crate::intake::OPERATOR_DIRECTIVE_PREFIX),
+    );
+    serde_json::json!({"query": text, "sparql": sparql, "limit": limit}).to_string()
+}
+
+/// (entity IRI, score) pairs from a `/hybrid_search` answer.
+fn parse_directive_hints(body: &str) -> Result<Vec<(String, f64)>> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
+    let results = value
+        .get("results")
+        .and_then(|r| r.as_array())
+        .ok_or_else(|| SdError::failed("directive hints: no results array"))?;
+    Ok(results
+        .iter()
+        .filter_map(|r| {
+            Some((
+                r.get("entity")?.as_str()?.to_string(),
+                r.get("score")?.as_f64()?,
+            ))
+        })
+        .collect())
+}
+
 fn quipu_request(req: ureq::Request) -> ureq::Request {
     super::provenance::apply(req)
 }
@@ -2727,35 +2756,51 @@ impl Backend for RemoteBackend {
     /// a:Directive (no RDFS subclass expansion, which would add rules and
     /// alert rules) whose name is an operator directive's (stiwi-...).
     fn directive_hints(&self, text: &str, limit: usize) -> Result<Option<Vec<(String, f64)>>> {
-        let sparql = format!(
-            "SELECT ?s WHERE {{ ?s a ?t . FILTER(?t = <{}> && STRSTARTS(STR(?s), \"{}\")) }}",
-            vocab::aegis("Directive"),
-            vocab::aegis(crate::intake::OPERATOR_DIRECTIVE_PREFIX),
-        );
-        let input = serde_json::json!({"query": text, "sparql": sparql, "limit": limit});
         let body = self.post(
             "/hybrid_search",
             "application/json",
-            &input.to_string(),
+            &directive_hints_input(text, limit),
             false,
         )?;
-        let value: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
-        let results = value
-            .get("results")
-            .and_then(|r| r.as_array())
-            .ok_or_else(|| SdError::failed("directive hints: no results array"))?;
-        Ok(Some(
-            results
-                .iter()
-                .filter_map(|r| {
-                    Some((
-                        r.get("entity")?.as_str()?.to_string(),
-                        r.get("score")?.as_f64()?,
-                    ))
-                })
-                .collect(),
-        ))
+        parse_directive_hints(&body).map(Some)
+    }
+
+    /// The same `/hybrid_search` request, signed or labelled here exactly as
+    /// [`RemoteBackend::send`] would, then sent from its own thread. Only the
+    /// owned request crosses the thread; this backend stays on the caller's.
+    /// Any failure (a refusal, transport error or bad body) is an error the
+    /// caller reports as UNKNOWN; hints never block a create.
+    fn spawn_directive_hints(
+        &self,
+        text: &str,
+        limit: usize,
+    ) -> Option<crate::backend::DirectiveHintsJob> {
+        let path = "/hybrid_search";
+        let content_type = "application/json";
+        let body = directive_hints_input(text, limit);
+        let request = if self.signer.is_some() {
+            match self.signed_request("POST", path, content_type, body.as_bytes()) {
+                Ok(request) => request,
+                Err(e) => return Some(std::thread::spawn(move || Err(e))),
+            }
+        } else {
+            quipu_request(self.agent.post(&format!("{}{path}", self.base)))
+        };
+        let request = request
+            .set("Content-Type", content_type)
+            .set("Accept", "application/sparql-results+json");
+        Some(std::thread::spawn(move || {
+            let response = request.send_string(&body).map_err(|e| match e {
+                ureq::Error::Status(code, _) => {
+                    SdError::failed(format!("directive hints: HTTP {code}"))
+                }
+                other => SdError::failed(format!("directive hints: {other}")),
+            })?;
+            let text = response
+                .into_string()
+                .map_err(|e| SdError::failed(format!("directive hints: {e}")))?;
+            parse_directive_hints(&text).map(Some)
+        }))
     }
 
     fn snapshot_where(&self, q: &crate::backend::SeedQuery) -> Result<Snapshot> {

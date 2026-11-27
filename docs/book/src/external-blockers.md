@@ -112,3 +112,7 @@ stated resume date has passed is lapsed at once and back in ready. The labels
 are removed (`blocked:human` is kept). The summary counts dependency rows, gates
 dated from notes, gates dated at migration, and lapsed rows; a row seeds cannot
 read is refused and nothing is written.
+
+`sd blocked` reads only seeds that are not closed, and what they depend on,
+when the backend takes scoped reads, so it answers on a large shared board
+instead of reading every closed seed first.

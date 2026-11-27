@@ -388,3 +388,58 @@ fn scoped_filtered_lists_print_what_a_whole_snapshot_prints() {
         );
     }
 }
+
+/// `sd blocked` on a scoped backend reads only seeds that are not closed and
+/// what they depend on, and prints exactly what a whole snapshot prints:
+/// dependency blocks, a gate (until and lapsed), `--lapsed`, and the
+/// dependent count a closed dependent contributes.
+#[test]
+fn scoped_blocked_prints_what_a_whole_snapshot_prints() {
+    let (mut b, ids) = board();
+    seeds::blockers::engine::gate(
+        &mut b,
+        &ctx(30),
+        &ids[0],
+        "owner",
+        "a decision",
+        Some("2026-09-30T00:59:00Z"),
+    )
+    .unwrap();
+    // A closed seed that depends on a blocked one still counts as a dependent.
+    let late = mk(&mut b, "closed dependent", 31);
+    engine::dep_add(&mut b, &ctx(32), &late, &ids[1], "related").unwrap();
+    engine::close(&mut b, &ctx(33), &[late], Some("done"), false).unwrap();
+    for now in ["2026-09-30T00:00:40Z", "2026-10-01T00:00:00Z"] {
+        for lapsed in [false, true] {
+            let req = engine::BlockedReq {
+                lapsed,
+                now: Some(now.into()),
+                limit: Some(0),
+                ..engine::BlockedReq::default()
+            };
+            let scoped = engine::blocked(&b, &req, None).unwrap();
+            let whole = engine::blocked(&b, &req, head(&b)).unwrap();
+            assert_eq!(
+                format!("{:?}", scoped.page.issues),
+                format!("{:?}", whole.page.issues),
+                "now {now} lapsed {lapsed}"
+            );
+            assert_eq!(scoped.blocked_by, whole.blocked_by);
+            assert_eq!(
+                format!("{:?}", scoped.blockers),
+                format!("{:?}", whole.blockers)
+            );
+            assert_eq!(scoped.page.dependent_counts, whole.page.dependent_counts);
+        }
+    }
+    let lapsed = engine::BlockedReq {
+        lapsed: true,
+        now: Some("2026-10-01T00:00:00Z".into()),
+        ..engine::BlockedReq::default()
+    };
+    let page = engine::blocked(&b, &lapsed, None).unwrap().page;
+    assert_eq!(
+        page.issues.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        vec![ids[0].clone()]
+    );
+}

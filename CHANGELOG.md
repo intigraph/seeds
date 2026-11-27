@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.2] - 2026-11-26
+
+### Fixed
+
+- *(read-stream)* Challenge every 1.5 s so the freshness peak stays inside read headroom ([c3833ed](https://github.com/scbrown/seeds/commit/c3833ed38a8b01add49b11427eaeb37db19e8b12))
+
 ## [0.29.1] - 2026-11-26
 
 ### Fixed

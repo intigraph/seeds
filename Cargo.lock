@@ -2665,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "seeds-ai"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "base64 0.22.1",
  "clap",

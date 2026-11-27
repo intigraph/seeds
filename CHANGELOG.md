@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.31.0] - 2026-11-27
+
+### Fixed
+
+- *(push-reads)* Wait up to 5 s for freshness, send closed-inclusive lists to the primary (#348) ([7e9e5b5](https://github.com/scbrown/seeds/commit/7e9e5b5ce2da70e974db6fa98a5f2a5d337c1be9))
+
 ## [0.30.2] - 2026-11-27
 
 ### Documentation

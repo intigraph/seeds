@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.1] - 2026-11-27
+
+### Fixed
+
+- *(intake)* Bound the recently-closed hint corpus; over the cap it is UNKNOWN, never slow ([9e8384c](https://github.com/scbrown/seeds/commit/9e8384c18b277d9d3c3747085201bff4c443741a))
+- *(intake)* A capped closed corpus says the hint is partial, not that the gate was skipped ( review) ([b79b530](https://github.com/scbrown/seeds/commit/b79b530843973dfc3c86ef6faff90d95574160d9))
+
+### Perf
+
+- *(remote)* Bulk facts reads 100 subjects per round trip ([5d5d1f9](https://github.com/scbrown/seeds/commit/5d5d1f9cecaf5b15a9204d0d554ac2c6d6ec18d0))
+- *(create)* Directive hint /hybrid_search runs alongside the duplicate gate ([7c8a549](https://github.com/scbrown/seeds/commit/7c8a549a552caf37ebfb39db6711dfe9d5faddf6))
+
+### Style
+
+- Rustfmt ([0107388](https://github.com/scbrown/seeds/commit/0107388281dccf3210bcdaf0ba85e9da964ebafd))
+
 ## [0.30.0] - 2026-11-27
 
 ### Added

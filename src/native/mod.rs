@@ -2855,6 +2855,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             };
             let mut req = engine::CreateReq {
                 intake_comment: None,
+                extra: vec![],
                 due_priority_days: cfg.due_priority_days,
                 title,
                 description,
@@ -2885,8 +2886,15 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let mut preview = req.clone();
             preview.dry_run = true;
             let validated = engine::create_outcome(b, ctx, &preview)?;
+            let mut dupes = None;
             if !validated.existed {
-                intake::check(b, &mut req, &a.new_despite, a.because.as_deref())?;
+                let mode = intake::HintMode {
+                    now: &ctx.now,
+                    strict: a.strict,
+                    distinct_from: &a.distinct_from,
+                    existing: None,
+                };
+                dupes = intake::admit(b, &mut req, &a.new_despite, a.because.as_deref(), Some(&mode))?;
             }
             let engine::Created { seed, tx, existed } = if validated.existed {
                 validated
@@ -2909,7 +2917,15 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             // keyed create whose seed already existed, or a remote store (tx 0:
             // quipu's /update returns no transaction id, aegis-xajsgn).
             let tx = (!a.dry_run && !existed && tx != 0).then_some(tx);
-            let hints = if existed || a.silent { vec![] } else { intake::directive_hint(b, &req) };
+            let mut hints = match (&dupes, existed) {
+                // --silent drops the candidate lines (they are recorded and
+                // listed by `sd dupes`), never an UNKNOWN check.
+                (Some((found, unknown)), false) => {
+                    crate::intake::hint_lines(if a.silent { &[] } else { found.as_slice() }, unknown.as_deref())
+                }
+                _ => vec![],
+            };
+            if !(existed || a.silent) { hints.extend(intake::directive_hint(b, &req)); }
             Ok(ok(json, output::with_tx(seed.to_json(), tx), text, hints))
         }
         Command::Q(a) => {
@@ -3479,6 +3495,7 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 vec![],
             ))
         }
+        Command::Dupes { command } => intake::dupes(b, ctx, command.as_ref(), json),
         Command::Update(a) => {
             let req = engine::UpdateReq {
                 title: a.title.clone(),
@@ -3525,11 +3542,22 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
                 .map(|s| format!("updated {}{}", output::seed_line(s), tx_note(tx)))
                 .collect::<Vec<_>>()
                 .join("\n");
+            // A title or description edit re-runs duplicate hints (8dda.12);
+            // the edit is already written, so a failure is only a warning.
+            let mut warnings = vec![];
+            if req.title.is_some() || req.description.is_some() {
+                for s in &seeds {
+                    match intake::rehint(b, ctx, s) {
+                        Ok(lines) => warnings.extend(lines.into_iter().map(|l| format!("{}: {l}", s.id))),
+                        Err(e) => warnings.push(format!("{}: duplicate check UNKNOWN: {}; the edit is written", s.id, e.message)),
+                    }
+                }
+            }
             Ok(ok(
                 json,
                 output::with_tx(output::seeds_json(&seeds), Some(tx)),
                 text,
-                vec![],
+                warnings,
             ))
         }
         Command::Close(a) => {

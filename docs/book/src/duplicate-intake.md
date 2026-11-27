@@ -13,7 +13,8 @@ call the configured Quipu server's read-only `/resolve`, which combines name
 matching and its configured embedding search over title plus description.
 The client filters those candidates to this project's active seeds. Server
 errors, invalid responses, partial vector scope, and results reaching the 1,000
-candidate cap refuse creation: they are incomplete coverage, not an empty match.
+candidate cap refuse quick and bulk creates: they are incomplete coverage, not an empty match.
+`sd create` records them as UNKNOWN instead (see [Hint mode](#hint-mode)).
 The thresholds are similarities, not calibrated probabilities. A retained
 seven-day canonical replay flagged 119/533 proposals at 0.92; inspecting those
 found different identifiers in shared templates. The 0.99 name floor retained
@@ -46,3 +47,71 @@ canonical-name resolver. Its output estimates canonical-name refusals on the ret
 embeddings. Current titles/descriptions and recorded close times cannot reconstruct
 unrecorded past edits, reopenings, or deletions. Live creates/closes rates are
 installed acceptance, measured after normal deployment, not source-test results.
+
+## Hint mode
+
+Below the refusal gate, `sd create` also **hints** (aegis-8dda.12). It runs the
+same Quipu resolver over a wider corpus: WorkItems that are active or were
+closed in the last **30 days**, excluding inbox pointers (`inbox:`/`mail:`
+titles, the `inbox` label), ephemeral seeds and machine records (`ops`, `ask`).
+Canonical-name matches at **0.90** (Jaro-Winkler included) and the remote
+embedding candidates become hints. Nothing is merged.
+
+The new seed must itself be eligible: an inbox pointer, an ephemeral seed or
+a machine record (`ops`, `ask`) is never hinted. It names other work by design,
+so it records no hint facts, never appears in `sd dupes`, and `--strict` does
+not refuse it for a candidate (a failed resolver still refuses under
+`--strict`, because the refusal gate is then incomplete).
+
+The create succeeds (exit 0). The top three candidates are printed on stderr
+with id, status, score and title, and recorded on the new seed:
+
+| Predicate | Value |
+|---|---|
+| `seeds:possibleDuplicateOf` | one IRI per candidate |
+| `seeds:duplicateHintState` | `hinted`, `none` or `unknown` |
+| `seeds:duplicateHint` | JSON: threshold and Quipu `resolution_hints`-shaped candidates (`iri`, `score`, `matched_on`) |
+
+If the resolver fails (a timeout, for example), the state is `unknown` and the
+warning says UNKNOWN. That is never reported as "no duplicates". In hint mode
+the failure no longer refuses `sd create`; this is the item's acceptance test
+("a Quipu timeout leaves the hint UNKNOWN and the create proceeds with a
+warning"). The resolver call is shared, so the failure also skips the remote
+(embedding) half of the refusal gate. The warning names what was skipped in
+its context: on `sd create`, the hints (when the seed is eligible) and the
+embedding gate; on an `sd update` re-hint, only the hints, since the edit is
+already written and no gate applies.
+The local canonical-name gate (0.99) is unaffected. Use `--strict` to keep
+the create fail-closed. Quick and bulk creates, which have no hint mode,
+still refuse.
+
+The closed half of the corpus is read with a bounded query (seeds closed at
+or after the window start), never a snapshot of every closed seed. Remote
+canonical-name candidates are floored at 0.90, the same as local ones.
+
+- `--strict` refuses (exit 5) when there is any hint or the state is UNKNOWN.
+- `--silent` drops the candidate lines, like directive hints: they are
+  still recorded and `sd dupes` lists them. An UNKNOWN warning is always
+  printed, because it means the refusal gate was incomplete.
+- `--distinct-from <id>` (repeatable; each id must exist) records `quipu:distinctFrom` on the new
+  seed. That pair is never hinted again, whichever side carries it.
+- A title or description edit (`sd update`) re-runs the hints and replaces
+  the recorded hint facts. The edit is already written, so a failure is only
+  a warning. Closed seeds, inbox pointers, ephemeral seeds and machine
+  records are not re-hinted.
+
+`seeds:possibleDuplicateOf` and `seeds:duplicateHintState` are seeds' stopgap
+terms, like `seeds:workflowRun`. They are to be proposed to camayoc.
+
+### Grooming: `sd dupes`
+
+`sd dupes` lists the open hint pairs: the hinted seed is not closed, and
+neither side records `distinctFrom`. `--json` returns an array of
+`{id, title, status, duplicate_of, duplicate_of_title, duplicate_of_status}`
+(pinned in `tests/json_schema.rs`; the last two are `null`, never absent, when
+the target is unreadable).
+
+```sh
+sd dupes resolve <id> <of> --duplicate  # close <id>, outcome superseded, reason "duplicate of <of>"
+sd dupes resolve <id> <of> --distinct   # record quipu:distinctFrom, drop the hint
+```

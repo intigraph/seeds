@@ -33,6 +33,8 @@ pub type Warnings = Vec<String>;
 pub struct CreateReq {
     /// Creation intake override audit, committed with the new seed.
     pub intake_comment: Option<String>,
+    /// Facts recorded on the new seed as-is (duplicate hints, distinctFrom).
+    pub extra: Vec<(String, model::Obj)>,
     /// Deployment-provided calendar days by P0-P4; explicit due wins.
     pub due_priority_days: Option<[u32; 5]>,
     /// Title (required, non-empty).
@@ -574,7 +576,8 @@ pub fn create_outcome(b: &mut dyn Backend, ctx: &Ctx, req: &CreateReq) -> Result
         // Native commit still requires absence atomically under the write lock.
         snap.seeds.extend(occupied.seeds);
     };
-    let seed = new_seed(&snap, ctx, req, id, title, run.clone())?;
+    let mut seed = new_seed(&snap, ctx, req, id, title, run.clone())?;
+    seed.extra.extend(req.extra.iter().cloned());
     if req.dry_run {
         return Ok(Created {
             seed,
@@ -3895,7 +3898,7 @@ pub fn parse_estimate(value: &str) -> Result<u32> {
 
 /// A stored date (`YYYY-MM-DD`, read as its first instant, UTC) or RFC 3339
 /// instant, as epoch seconds.
-fn epoch_of(v: &str) -> Option<i64> {
+pub(crate) fn epoch_of(v: &str) -> Option<i64> {
     if v.len() == 10 {
         parse_date(v).map(|d| d * 86_400)
     } else {
@@ -3944,7 +3947,7 @@ fn parse_instant(t: &str) -> Option<i64> {
     Some(parse_date(&t[..10])? * 86_400 + h * 3600 + mi * 60 + s)
 }
 
-fn format_instant(t: i64) -> String {
+pub(crate) fn format_instant(t: i64) -> String {
     let (days, secs) = (t.div_euclid(86_400), t.rem_euclid(86_400));
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -4798,6 +4801,41 @@ pub fn comment_add(
     }
 }
 
+/// Replace a seed's unmodelled facts in one revision-checked write: drop
+/// every fact `remove` matches, then add `add` (duplicate hints and
+/// `distinctFrom`, aegis-8dda.12). Returns the new seed and transaction.
+pub fn amend_extra(
+    b: &mut dyn Backend,
+    ctx: &Ctx,
+    id: &str,
+    remove: &dyn Fn(&str, &model::Obj) -> bool,
+    add: Vec<(String, model::Obj)>,
+    source: &str,
+) -> Result<(Seed, u64)> {
+    let snap = b.snapshot_items(&[id.to_string()])?;
+    let before = snap.get(id)?.clone();
+    let mut s = before.clone();
+    s.extra.retain(|(p, o)| !remove(p, o));
+    s.extra.extend(add);
+    if s.extra == before.extra {
+        return Ok((before, 0));
+    }
+    s.updated_at = ctx.now.clone();
+    s.revision = before.revision + 1;
+    let tx = b.commit(
+        &WriteBatch {
+            seeds: vec![SeedWrite {
+                seed: s.clone(),
+                expected_revision: Some(before.revision),
+            }],
+            source: source.into(),
+            ..WriteBatch::default()
+        },
+        ctx,
+    )?;
+    Ok((s, tx))
+}
+
 /// `sd comments list <id>`, as of `at`.
 pub fn comment_list(b: &dyn Backend, id: &str, at: Option<u64>) -> Result<Vec<Comment>> {
     // Exact-ID comment reads need neither unrelated seeds nor their comments.
@@ -4861,11 +4899,16 @@ fn clean_labels(labels: &[String]) -> BTreeSet<String> {
 
 /// Inbox pointers are delivery records rather than deadline-bearing work.
 pub fn deadline_message(seed: &Seed) -> bool {
-    let title = seed.title.trim_start();
+    is_message_text(&seed.title, &seed.labels)
+}
+
+/// Whether a title and labels mark a message (an inbox pointer or a delivery
+/// record) rather than work: an `inbox:`/`mail:` title or the `inbox` label.
+pub fn is_message_text(title: &str, labels: &[String]) -> bool {
+    let title = title.trim_start();
     title.starts_with("inbox:")
         || title.starts_with("mail:")
-        || seed
-            .labels
+        || labels
             .iter()
             .any(|label| label.eq_ignore_ascii_case("inbox"))
 }

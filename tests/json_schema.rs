@@ -52,6 +52,16 @@ const SEED_KEYS: &[&str] = &[
 ];
 const EDGE_KEYS: &[&str] = &["dependency_type", "id", "priority", "status", "title"];
 const COMMENT_KEYS: &[&str] = &["author", "created_at", "id", "issue_id", "text"];
+/// One `sd dupes` row (aegis-8dda.12). `duplicate_of_title` and
+/// `duplicate_of_status` are null when the target is unreadable, never absent.
+const DUPE_PAIR_KEYS: &[&str] = &[
+    "duplicate_of",
+    "duplicate_of_status",
+    "duplicate_of_title",
+    "id",
+    "status",
+    "title",
+];
 
 #[test]
 fn the_published_schema_tables_equal_the_golden_key_lists() {
@@ -239,6 +249,52 @@ fn every_verb_prints_its_documented_keys() {
 
     let rm = st.json(&["dep", "remove", &a, &b]);
     assert_eq!(rm["action"], "removed");
+}
+
+#[test]
+fn dupes_and_dupes_resolve_print_their_documented_keys() {
+    let st = Store::new("dupes");
+    let old = st.json(&["create", "StopFailure hook drops the session report"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let new = st.json(&["create", "StopFailure hook drops session reports"]);
+    assert_eq!(keys(&new), with(SEED_KEYS, &["tx"]), "create with a hint");
+    let new = new["id"].as_str().unwrap().to_string();
+
+    let pairs = st.json(&["dupes"]);
+    let pairs = pairs.as_array().expect("sd dupes is an array");
+    assert_eq!(pairs.len(), 1, "{pairs:?}");
+    assert_eq!(keys(&pairs[0]), set(DUPE_PAIR_KEYS), "dupes");
+    assert_eq!(pairs[0]["id"], new.as_str());
+    assert_eq!(pairs[0]["duplicate_of"], old.as_str());
+
+    let distinct = st.json(&["dupes", "resolve", &new, &old, "--distinct"]);
+    assert_eq!(
+        keys(&distinct),
+        with(SEED_KEYS, &["tx"]),
+        "dupes resolve --distinct"
+    );
+    assert_eq!(st.json(&["dupes"]), Value::Array(vec![]));
+
+    let third = st.json(&[
+        "create",
+        "Session report missing after StopFailure",
+        "--distinct-from",
+        &new,
+    ])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dup = st.json(&["dupes", "resolve", &third, &old, "--duplicate"]);
+    assert!(dup.is_array(), "dupes resolve --duplicate");
+    assert_eq!(
+        keys(&dup[0]),
+        with(SEED_KEYS, &["tx"]),
+        "dupes resolve --duplicate"
+    );
+    assert_eq!(dup[0]["status"], "closed");
+    assert_eq!(dup[0]["outcome"], "superseded");
 }
 
 #[test]

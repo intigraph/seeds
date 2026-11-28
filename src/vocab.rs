@@ -341,8 +341,9 @@ pub fn operations_graph(graph: &str) -> String {
 /// (measured on a 28k-seed board, aegis-aane52 S2): the bound status pattern
 /// comes first. The blocker check is correlated to each bound source item,
 /// so it does not materialize every blocked edge elsewhere in the graph.
-/// The right side repeats the source's Action type: redundant for the answer,
-/// but it keeps a multi-pattern blocker join off Quipu's whole-graph read model.
+/// Resolve each blocker's status in a second correlated EXISTS. Each group
+/// then has a bound subject and one pattern. This also avoids the whole-graph
+/// affordability count consulted per row by the multi-pattern FILTER planner.
 pub fn ready_query(graph_iri: &str) -> String {
     format!(
         "PREFIX schema: <{SCHEMA}>\n\
@@ -353,7 +354,7 @@ pub fn ready_query(graph_iri: &str) -> String {
          \x20 ?item a schema:Action ; schema:identifier ?id .\n\
          \x20 FILTER NOT EXISTS {{ ?item seeds:issueType \"ops\" }}\n\
          \x20 FILTER NOT EXISTS {{ ?item seeds:issueType \"ask\" }}\n\
-         \x20 FILTER NOT EXISTS {{ ?item quechua:blockedOn ?blocker . ?blocker seeds:status ?bs . ?item a schema:Action . FILTER(?bs != \"closed\" && ?bs != \"tombstone\") }}\n\
+         \x20 FILTER NOT EXISTS {{ ?item quechua:blockedOn ?blocker . FILTER EXISTS {{ ?blocker seeds:status ?bs . FILTER(?bs != \"closed\" && ?bs != \"tombstone\") }} }}\n\
          }} }}"
     )
 }

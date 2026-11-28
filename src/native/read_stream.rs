@@ -28,6 +28,7 @@ use std::{
 };
 
 mod query_scope;
+mod refusals;
 mod transport;
 
 #[derive(Serialize, Deserialize)]
@@ -894,6 +895,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
     let mut parked: ParkQueue<(UnixStream, Request)> = ParkQueue::default();
     let mut parked_total: u64 = 0;
     let mut stats_at: u64 = 0;
+    let mut refusals = refusals::Refusals::default();
     loop {
         let (now, changed) = clock.sample();
         if changed {
@@ -982,6 +984,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                     &mut clock,
                     since,
                     waited,
+                    &mut refusals,
                 );
             }
             // A long park outlives one proof: keep asking, inside the
@@ -997,6 +1000,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
         }
         if now.saturating_sub(stats_at) >= STATS_EVERY_MS {
             stats_at = now;
+            eprintln!("sd read-stream: {}", refusals.counters());
             eprintln!(
                 "sd read-stream: challenges scheduled={} on_demand={} parked_reads={} as_of_fallbacks={} (since start) {}",
                 live.scheduled_sent,
@@ -1024,7 +1028,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                     Err(e) => {
                         let _ = send(
                             &mut stream,
-                            &Err::<Reply, _>(refusal_reason(&e.message)),
+                            &Err::<Reply, _>(refusals.report(accepted, &e.message)),
                             MAX_REPLY,
                         );
                     }
@@ -1070,6 +1074,7 @@ pub fn run(cfg: &Resolved, path: &Path, check: bool) -> Result<Outcome> {
                                 &mut clock,
                                 accepted,
                                 0,
+                                &mut refusals,
                             );
                         }
                     }
@@ -1224,6 +1229,7 @@ fn answer(
     clock: &mut Clock,
     since: u64,
     waited: u64,
+    refusals: &mut refusals::Refusals,
 ) {
     let (now, changed) = clock.sample();
     if changed {
@@ -1265,6 +1271,7 @@ fn answer(
                 ))
             }
         });
+    let result = result.map_err(|reason| refusals.report(after, &reason));
     let _ = send(stream, &result, MAX_REPLY);
 }
 

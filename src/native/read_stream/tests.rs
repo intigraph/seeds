@@ -1109,6 +1109,7 @@ fn unparked_reply_decodes_with_an_older_client_and_parked_hold_starts_at_accept(
         &mut clock,
         now,
         0,
+        &mut refusals::Refusals::default(),
     );
     let mut header = [0; 4];
     client.read_exact(&mut header).unwrap();
@@ -1134,6 +1135,7 @@ fn unparked_reply_decodes_with_an_older_client_and_parked_hold_starts_at_accept(
         &mut clock,
         since,
         released - since,
+        &mut refusals::Refusals::default(),
     );
     let reply: std::result::Result<Reply, String> = receive(&mut client, MAX_REPLY).unwrap();
     let held = reply.unwrap().held_ms;
@@ -1222,4 +1224,36 @@ fn a_zero_park_never_waits() {
     assert_eq!(park_ms(&r, &off), 0);
     r.park_ms = Some(0);
     assert_eq!(park_ms(&r, &f.cfg), 0);
+}
+
+/// Exercise the real server answer and the client relay, without a live service.
+#[test]
+fn refused_answer_sends_stable_code_and_counts_reason() {
+    let mut f = Fixture::new();
+    let mut clock = Clock::new();
+    let mut refusals = refusals::Refusals::default();
+    let (mut server, mut client) = UnixStream::pair().unwrap();
+    let request = f.request(&["sd", "list"]);
+    answer(
+        &mut server,
+        request,
+        &mut f.board,
+        &f.config,
+        &f.cfg,
+        &mut clock,
+        0,
+        5006,
+        &mut refusals,
+    );
+    let reply: std::result::Result<Reply, String> = receive(&mut client, MAX_REPLY).unwrap();
+    let error = relayed_refusal(&reply.err().expect("unproved replica must refuse"));
+    assert!(
+        error.message.contains("[reason=freshness_unknown]"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("after waiting 5006 ms"));
+    assert!(refusals
+        .counters()
+        .contains("refusals_total{reason=freshness_unknown}=1"));
 }

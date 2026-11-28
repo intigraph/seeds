@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.31.2] - 2026-11-28
+
+### Documentation
+
+- Point the stack table at the intigraph organization (#353) ([9087f46](https://github.com/scbrown/seeds/commit/9087f4678ede7c96d8c9096cecab5f5623b9a63c))
+
 ## [0.31.1] - 2026-11-27
 
 ### Perf

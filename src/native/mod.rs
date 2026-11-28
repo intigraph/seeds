@@ -2896,9 +2896,9 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let mut preview = req.clone();
             preview.dry_run = true;
             let validated = engine::create_outcome(b, ctx, &preview)?;
-            // Started before the duplicate gate so its /hybrid_search runs
-            // alongside /resolve (aegis-n0wc); collected after the create.
-            let directive = if validated.existed || a.silent {
+            // Advisory search is opt-in; admission and validation always run.
+            // When requested, overlap it with the duplicate gate.
+            let directive = if !a.directive_hints || validated.existed || a.silent {
                 intake::DirectiveHint::Skip
             } else {
                 intake::start_directive_hint(b, &req)
@@ -2957,7 +2957,11 @@ fn dispatch(cli: &Cli, cfg: &Resolved, ctx: &Ctx, b: &mut dyn Backend) -> Result
             let mut preview = req.clone();
             preview.dry_run = true;
             engine::create_outcome(b, ctx, &preview)?;
-            let directive = intake::start_directive_hint(b, &req);
+            let directive = if a.directive_hints {
+                intake::start_directive_hint(b, &req)
+            } else {
+                intake::DirectiveHint::Skip
+            };
             intake::check(b, &mut req, &[], None)?;
             let (seed, tx) = engine::create(b, ctx, &req)?;
             let value = serde_json::json!({"id": seed.id, "title": seed.title, "tx": tx});

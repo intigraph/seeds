@@ -48,6 +48,16 @@ embeddings. Current titles/descriptions and recorded close times cannot reconstr
 unrecorded past edits, reopenings, or deletions. Live creates/closes rates are
 installed acceptance, measured after normal deployment, not source-test results.
 
+## Directive suggestions
+
+`sd create` and `sd q` skip the advisory directive search by default.
+Use `--directive-hints` to request suggestions when the new seed does not
+already name a directive. This adds a remote `/hybrid_search`; its results
+and failures only produce stderr hints and never affect admission. Naming
+the governing directive remains the caller's responsibility. Duplicate
+checks, `--strict`, validation, and writer refusals run independently of
+this option. Bulk creation does not support directive suggestions.
+
 ## Hint mode
 
 Below the refusal gate, `sd create` also **hints** (aegis-8dda.12). It runs the

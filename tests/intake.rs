@@ -48,6 +48,9 @@ fn same_title_refuses_with_existing_id_and_preserves_board() {
         "Repair parser authenticaton",
     ] {
         let refused = s.run(&["create", title, "--json"]);
+        let hinted = s.run(&["create", title, "--json", "--directive-hints"]);
+        assert_eq!(hinted.status.code(), refused.status.code());
+        assert_eq!(hinted.stderr, refused.stderr);
         assert_eq!(refused.status.code(), Some(5));
         let error = String::from_utf8_lossy(&refused.stderr);
         assert!(error.contains(id.trim()), "{error}");

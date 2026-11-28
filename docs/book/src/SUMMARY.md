@@ -13,6 +13,7 @@
   - [The storage model](storage.md)
   - [Configuration](config.md)
   - [Storage modes](storage-modes.md)
+  - [Opt-in graph-set client](graph-set-client.md)
   - [Operations log](operations-log.md)
   - [WebAssembly](wasm.md)
   - [Pinning: `--at <tx>`](pinning.md)

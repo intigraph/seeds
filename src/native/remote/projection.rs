@@ -31,6 +31,11 @@ impl RemoteBackend {
     // A missing route is an older server, not an empty board. Auth, timeout,
     // transport and server failures remain errors, never capability absence.
     fn projection_read(&self, body: Json) -> Result<Option<Json>> {
+        #[cfg(unix)]
+        if self.graph_sets.is_some() {
+            return Ok(None);
+        }
+
         let url = format!("{}/projections", self.base);
         match quipu_read_request(self.agent.post(&url), "projections")
             .set("Content-Type", "application/json")

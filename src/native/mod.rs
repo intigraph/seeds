@@ -1345,6 +1345,11 @@ pub fn run_with(cli: &Cli, cfg: &Resolved) -> Result<Outcome> {
     }
     let o = match &cfg.location {
         Location::Url(url) => run_remote(cli, cfg, &ctx, url),
+        Location::Store(_) if std::env::var_os("SEEDS_GRAPH_SET_PROFILE").is_some() => {
+            Err(SdError::refused(
+                "graph-set profile requires an explicit remote primary; no local fallback",
+            ))
+        }
         Location::Store(path) => run_local(cli, cfg, &ctx, path),
     }?;
     Ok(with_notes(o, note.into_iter().collect()))
@@ -1771,7 +1776,22 @@ fn archived_refusal(
 
 /// [`run_remote`] once connected: the identity, the vocabulary check and the
 /// verb.
+#[cfg(unix)]
 fn run_connected(
+    cli: &Cli,
+    cfg: &Resolved,
+    ctx: &Ctx,
+    remote: &mut remote::RemoteBackend,
+) -> Result<Outcome> {
+    if let Some(outcome) = remote.graph_set_prepare(cli, ctx)? {
+        return Ok(outcome);
+    }
+    let outcome = run_connected_inner(cli, cfg, ctx, remote)?;
+    remote.graph_set_finish(cli, outcome)
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+fn run_connected_inner(
     cli: &Cli,
     cfg: &Resolved,
     ctx: &Ctx,
@@ -4805,4 +4825,14 @@ fn msg(
             }
         }
     }
+}
+
+#[cfg(not(unix))]
+fn run_connected(
+    cli: &Cli,
+    cfg: &Resolved,
+    ctx: &Ctx,
+    remote: &mut remote::RemoteBackend,
+) -> Result<Outcome> {
+    run_connected_inner(cli, cfg, ctx, remote)
 }

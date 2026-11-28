@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.31.3] - 2026-11-28
+
+### Fixed
+
+- *(native)* Classify and journal reader refusals (#358) ([480d9a8](https://github.com/scbrown/seeds/commit/480d9a842697db93f9cb9a24b4c76cb64531eb69))
+
+### Perf
+
+- *(remote)* Avoid per-row graph counts in ready (#357) ([72ee6f5](https://github.com/scbrown/seeds/commit/72ee6f51b307c14c6e8cf95cae7138b196997642))
+
 ## [0.31.2] - 2026-11-28
 
 ### Documentation

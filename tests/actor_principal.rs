@@ -170,6 +170,31 @@ fn shared_host_key_observes_each_actor_without_replacing_it_and_enforce_refuses(
     assert!(requests.lock().unwrap().is_empty());
     let first = run("worker-a", None);
     let second = run("worker-b", None);
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(h, _)| !h.starts_with("POST /hybrid_search ")),
+        "default creates must not search directives"
+    );
+    let mut opted_in = command("host-principal", None);
+    opted_in.args(["--directive-hints", "--dry-run"]);
+    let hinted = opted_in.output().unwrap();
+    assert!(
+        hinted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hinted.stderr)
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(h, _)| h.starts_with("POST /hybrid_search "))
+            .count(),
+        1
+    );
     let refused = run("worker-c", Some("enforce"));
     let off = run("worker-d", Some("off"));
     let matching = run("host-principal", Some("enforce"));

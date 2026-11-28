@@ -599,6 +599,9 @@ pub struct SyncArgs {
 /// `sd create`.
 #[derive(Debug, Args)]
 pub struct CreateArgs {
+    /// Look up advisory governing directive suggestions (adds a remote search)
+    #[arg(long, conflicts_with = "file")]
+    pub directive_hints: bool,
     /// Explicitly reject a near-duplicate candidate (repeat for each candidate)
     #[arg(long, requires = "because")]
     pub new_despite: Vec<String>,
@@ -1012,6 +1015,9 @@ pub struct StatsArgs {
 /// `sd q`.
 #[derive(Debug, Args)]
 pub struct QArgs {
+    /// Look up advisory governing directive suggestions (adds a remote search)
+    #[arg(long)]
+    pub directive_hints: bool,
     /// Title words (joined with spaces)
     #[arg(required = true)]
     pub title: Vec<String>,

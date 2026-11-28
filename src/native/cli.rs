@@ -597,7 +597,7 @@ pub struct SyncArgs {
 }
 
 /// `sd create`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize)]
 pub struct CreateArgs {
     /// Explicitly reject a near-duplicate candidate (repeat for each candidate)
     #[arg(long, requires = "because")]
@@ -1136,7 +1136,7 @@ pub struct CountArgs {
 }
 
 /// `sd update`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize)]
 pub struct UpdateArgs {
     /// Seed id(s)
     #[arg(required = true)]
@@ -1265,7 +1265,7 @@ pub struct UpdateArgs {
 }
 
 /// `sd close`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize)]
 pub struct CloseArgs {
     /// Seed id(s)
     #[arg(required = true)]
@@ -1508,7 +1508,7 @@ pub enum BlockersCommand {
 }
 
 /// `sd comments ...`.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, serde::Serialize)]
 pub enum CommentsCommand {
     /// Add a comment to a seed
     Add {

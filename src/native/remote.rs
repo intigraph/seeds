@@ -55,6 +55,8 @@ mod brief;
 mod comment_tests;
 #[cfg(test)]
 mod gateway_tests;
+#[cfg(unix)]
+mod graph_sets;
 pub mod history;
 mod message_listing;
 #[cfg(test)]
@@ -339,6 +341,8 @@ fn batch_subjects(batch: &WriteBatch) -> BTreeSet<String> {
 
 /// A project stored as a named graph on a quipu server.
 pub struct RemoteBackend {
+    #[cfg(unix)]
+    graph_sets: Option<graph_sets::Mode>,
     base: String,
     graph: String,
     token: Option<String>,
@@ -696,6 +700,8 @@ impl RemoteBackend {
             token,
             signer,
             audience: None,
+            #[cfg(unix)]
+            graph_sets: None,
             agent,
             graph_registered: false,
             lane_caps: Default::default(),
@@ -735,6 +741,14 @@ impl RemoteBackend {
         match health {
             Ok(response) => {
                 b.replica = super::replica::Staleness::from_headers(|name| response.header(name));
+                #[cfg(unix)]
+                {
+                    b.graph_sets = graph_sets::Mode::from_env(&b)?;
+                }
+                #[cfg(not(unix))]
+                if std::env::var_os("SEEDS_GRAPH_SET_PROFILE").is_some() {
+                    return Err(SdError::refused("graph-set pilot requires Unix"));
+                }
                 Ok(b)
             }
             Err(ureq::Error::Transport(t)) => Err(transport(&b.base, &t)),
@@ -888,6 +902,19 @@ impl RemoteBackend {
         body: &str,
         auth: bool,
     ) -> std::result::Result<String, (bool, SdError)> {
+        #[cfg(unix)]
+        if let Some(mode) = &self.graph_sets {
+            return if path == "/query" {
+                mode.query(self, body).map_err(|e| (false, e))
+            } else {
+                Err((
+                    false,
+                    SdError::refused(
+                        "graph-set pilot refuses this unjournaled endpoint; no fallback",
+                    ),
+                ))
+            };
+        }
         let url = format!("{}{path}", self.base);
         let request = self.agent.post(&url);
         let request = if self.signer.is_some() {
@@ -1665,6 +1692,13 @@ impl RemoteBackend {
     }
 
     fn register_graph(&mut self, ephemeral: bool) -> Result<()> {
+        #[cfg(unix)]
+        if self.graph_sets.is_some() {
+            self.graph_registered = true;
+            self.ephemeral_registered = true;
+            return Ok(());
+        }
+
         if self.graph_registered && (!ephemeral || self.ephemeral_registered) {
             return Ok(());
         }
@@ -1699,6 +1733,11 @@ impl RemoteBackend {
     /// The server's registered graph IRIs, or `None` if it would not say (an
     /// older server, or any failure): then every graph is created, as before.
     fn graph_iris(&self) -> Option<std::collections::BTreeSet<String>> {
+        #[cfg(unix)]
+        if let Some(mode) = &self.graph_sets {
+            return Some(mode.members().into_iter().collect());
+        }
+
         let response = if self.signer.is_some() {
             self.signed_request("GET", "/graphs", "", b"")
                 .map(|r| super::provenance::apply_signed_read(r, "graphs"))
@@ -2765,6 +2804,10 @@ impl Backend for RemoteBackend {
         title: &str,
         description: Option<&str>,
     ) -> Result<Option<Vec<quipu::resolution::EntityCandidate>>> {
+        #[cfg(unix)]
+        if self.graph_sets.is_some() {
+            return Ok(None);
+        }
         let input = serde_json::json!({
             "name": title.trim(), "properties": {"description": description.unwrap_or("")},
             "threshold": crate::intake::THRESHOLD, "top_k": crate::intake::CANDIDATE_CAP
@@ -2796,6 +2839,10 @@ impl Backend for RemoteBackend {
         text: &str,
         limit: usize,
     ) -> Option<crate::backend::DirectiveHintsJob> {
+        #[cfg(unix)]
+        if self.graph_sets.is_some() {
+            return None;
+        }
         let path = "/hybrid_search";
         let content_type = "application/json";
         let body = directive_hints_input(text, limit);
@@ -3335,6 +3382,10 @@ impl Backend for RemoteBackend {
                 form.len(),
                 self.max_write_bytes
             )));
+        }
+        #[cfg(unix)]
+        if let Some(mode) = &self.graph_sets {
+            return mode.commit(self, batch, &update, &form, &write_record);
         }
         let sent = self.send("/update", "application/x-www-form-urlencoded", &form, true);
         if sent.is_ok() && !insert[1].is_empty() {
